@@ -9,6 +9,7 @@ import json
 import plotly.graph_objs as go
 import google.generativeai as genai
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI
+from google_drive_handler import get_google_drive_service, list_pdf_files, download_file
 
 # --- Configuration for Standardization ---
 TEST_NAME_MAPPING = {
@@ -586,42 +587,84 @@ if 'chat_history' not in st.session_state:
 if 'raw_texts' not in st.session_state:
     st.session_state.raw_texts = []
 
-
-# --- File Uploader ---
-uploaded_files = st.file_uploader(
-    "📄 Upload Medical Report PDFs (multiple allowed)", 
-    type="pdf", 
-    accept_multiple_files=True
+# --- File Upload Options ---
+upload_option = st.radio(
+    "Choose upload method:",
+    ("Upload from Computer", "Select from Google Drive"),
+    horizontal=True
 )
 
-if uploaded_files:
+if upload_option == "Upload from Computer":
+    uploaded_files = st.file_uploader(
+        "📄 Upload Medical Report PDFs (multiple allowed)", 
+        type="pdf", 
+        accept_multiple_files=True
+    )
+    files_to_process = uploaded_files if uploaded_files else []
+else:
+    try:
+        drive_service = get_google_drive_service()
+        pdf_files = list_pdf_files(drive_service)
+        
+        if pdf_files:
+            selected_files = st.multiselect(
+                "📄 Select PDF files from Google Drive",
+                options=[file['name'] for file in pdf_files],
+                format_func=lambda x: f"📄 {x}"
+            )
+            
+            files_to_process = [
+                {"name": file['name'], "id": file['id']}
+                for file in pdf_files
+                if file['name'] in selected_files
+            ]
+        else:
+            st.info("No PDF files found in your Google Drive.")
+            files_to_process = []
+    except Exception as e:
+        st.error(f"Error accessing Google Drive: {str(e)}")
+        files_to_process = []
+
+if files_to_process:
     if st.button("🔬 Analyze Reports", key="analyze_btn"):
         st.session_state.analysis_done = False
         st.session_state.report_df = pd.DataFrame()
         st.session_state.consolidated_patient_info = {}
-        st.session_state.chat_history = [] # Reset chat on new analysis
+        st.session_state.chat_history = []
         st.session_state.raw_texts = []
         all_dfs = []
         all_patient_infos_from_pdfs = []
+
         with st.spinner("Processing PDFs and analyzing with AI... This may take a moment."):
-            for i, uploaded_file in enumerate(uploaded_files):
-                st.write(f"--- Processing: {uploaded_file.name} ---")
-                file_content = uploaded_file.read()
+            for item in files_to_process:
+                if upload_option == "Upload from Computer":
+                    file_name = item.name
+                    file_content = item.read()
+                else:
+                    file_name = item['name']
+                    st.write(f"--- Processing: {file_name} ---")
+                    try:
+                        file_content = download_file(drive_service, item['id']).read()
+                    except Exception as e:
+                        st.error(f"Error downloading {file_name} from Google Drive: {str(e)}")
+                        continue
+
                 report_text = extract_text_from_pdf(file_content)
-                st.session_state.raw_texts.append({"name": uploaded_file.name, "text": report_text[:2000]}) # Store snippet
+                st.session_state.raw_texts.append({"name": file_name, "text": report_text[:2000]})
+                
                 if report_text:
                     gemini_analysis_json = analyze_medical_report_with_gemini(report_text, api_key)
                     if gemini_analysis_json:
-                        df_single, patient_info_single = create_structured_dataframe(gemini_analysis_json, uploaded_file.name)
+                        df_single, patient_info_single = create_structured_dataframe(gemini_analysis_json, file_name)
                         if not df_single.empty:
                             all_dfs.append(df_single)
-                        if patient_info_single: # Add even if empty dict for alignment
+                        if patient_info_single:
                             all_patient_infos_from_pdfs.append(patient_info_single)
-                        st.success(f"✅ Analyzed: {uploaded_file.name}")
+                        st.success(f"✅ Analyzed: {file_name}")
                     else:
-                        st.error(f"⚠️ Failed to get structured analysis from AI for {uploaded_file.name}.")
+                        st.error(f"⚠️ Failed to get structured analysis from AI for {file_name}.")
                 else:
-                    st.error(f"⚠️ Could not extract text from {uploaded_file.name}.")
+                    st.error(f"⚠️ Could not extract text from {file_name}.")
             if all_dfs:
                 st.session_state.report_df = pd.concat(all_dfs, ignore_index=True)
                 # Ensure Test_Date_dt is present after concat

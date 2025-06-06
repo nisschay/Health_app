@@ -59,6 +59,15 @@ pip install -r requirements.txt
 streamlit run Medical_Project.py
 ```
 
+## 🔑 Setting up Google Drive Integration
+
+1. Visit the [Google Cloud Console](https://console.cloud.google.com)
+2. Create a new project or select an existing one
+3. Enable the Google Drive API for your project
+4. Go to "Credentials" and create a new OAuth 2.0 Client ID
+5. Download the client configuration file and save it as `credentials.json` in the project root
+6. The first time you run the application and select Google Drive upload, you'll be prompted to authorize the application
+
 ## 📊 Features in Detail
 
 ### Data Processing
@@ -85,6 +94,11 @@ streamlit run Medical_Project.py
 - Lipid Profile
 - Thyroid Profile
 - And more...
+
+### Data Import Options
+- Upload PDFs directly from your computer
+- Select PDFs from your Google Drive account
+- Support for multiple file selection
 
 ## 🏗 Project Structure
 
