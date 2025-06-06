@@ -149,21 +149,6 @@ def extract_text_from_pdf(file_content):
         st.error(f"Error reading PDF: {str(e)}")
         return None
 
-def get_gemini_api_key():
-    try:
-        api_key = st.secrets.get("GEMINI_API_KEY")
-        if api_key:
-            return api_key
-    except Exception:
-        pass
-    with st.expander("🔑 API Key Configuration"):
-        api_key_input = st.text_input(
-            "Enter your Gemini API Key:",
-            type="password",
-            help="You can set this permanently using Streamlit Secrets."
-        )
-    return api_key_input
-
 def init_gemini_models(api_key_for_gemini):
     global gemini_model_extraction, gemini_model_chat
     try:
@@ -584,11 +569,10 @@ st.set_page_config(page_title="Medical Report Analyzer", layout="wide")
 st.title("⚕️ Medical Report Analyzer & Health Insights")
 st.markdown("Upload your medical PDF reports to get structured data, a health summary, and visualizations.")
 
-# --- API Key Input ---
-api_key = get_gemini_api_key()
-if not api_key:
-    st.error("🚨 Gemini API Key is required for analysis. Please check the configuration.")
-
+# --- Gemini API Key from secrets.toml ---
+api_key = st.secrets["GEMINI_API_KEY"]
+if not init_gemini_models(api_key):
+    st.error("🚨 Unable to initialize Gemini models. Please check the server configuration.")
 
 # --- Initialize session state ---
 if 'analysis_done' not in st.session_state:
@@ -611,51 +595,43 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    if not api_key:
-        st.error("🚨 Gemini API Key is required. Please enter it in the sidebar.")
-    else:
-        if st.button("🔬 Analyze Reports", key="analyze_btn"):
-            st.session_state.analysis_done = False
-            st.session_state.report_df = pd.DataFrame()
-            st.session_state.consolidated_patient_info = {}
-            st.session_state.chat_history = [] # Reset chat on new analysis
-            st.session_state.raw_texts = []
-            
-            all_dfs = []
-            all_patient_infos_from_pdfs = []
-            
-            with st.spinner("Processing PDFs and analyzing with AI... This may take a moment."):
-                for i, uploaded_file in enumerate(uploaded_files):
-                    st.write(f"--- Processing: {uploaded_file.name} ---")
-                    file_content = uploaded_file.read()
-                    report_text = extract_text_from_pdf(file_content)
-                    st.session_state.raw_texts.append({"name": uploaded_file.name, "text": report_text[:2000]}) # Store snippet
-
-                    if report_text:
-                        gemini_analysis_json = analyze_medical_report_with_gemini(report_text, api_key)
-                        if gemini_analysis_json:
-                            df_single, patient_info_single = create_structured_dataframe(gemini_analysis_json, uploaded_file.name)
-                            if not df_single.empty:
-                                all_dfs.append(df_single)
-                            if patient_info_single: # Add even if empty dict for alignment
-                                all_patient_infos_from_pdfs.append(patient_info_single)
-                            st.success(f"✅ Analyzed: {uploaded_file.name}")
-                        else:
-                            st.error(f"⚠️ Failed to get structured analysis from AI for {uploaded_file.name}.")
+    if st.button("🔬 Analyze Reports", key="analyze_btn"):
+        st.session_state.analysis_done = False
+        st.session_state.report_df = pd.DataFrame()
+        st.session_state.consolidated_patient_info = {}
+        st.session_state.chat_history = [] # Reset chat on new analysis
+        st.session_state.raw_texts = []
+        all_dfs = []
+        all_patient_infos_from_pdfs = []
+        with st.spinner("Processing PDFs and analyzing with AI... This may take a moment."):
+            for i, uploaded_file in enumerate(uploaded_files):
+                st.write(f"--- Processing: {uploaded_file.name} ---")
+                file_content = uploaded_file.read()
+                report_text = extract_text_from_pdf(file_content)
+                st.session_state.raw_texts.append({"name": uploaded_file.name, "text": report_text[:2000]}) # Store snippet
+                if report_text:
+                    gemini_analysis_json = analyze_medical_report_with_gemini(report_text, api_key)
+                    if gemini_analysis_json:
+                        df_single, patient_info_single = create_structured_dataframe(gemini_analysis_json, uploaded_file.name)
+                        if not df_single.empty:
+                            all_dfs.append(df_single)
+                        if patient_info_single: # Add even if empty dict for alignment
+                            all_patient_infos_from_pdfs.append(patient_info_single)
+                        st.success(f"✅ Analyzed: {uploaded_file.name}")
                     else:
-                        st.error(f"⚠️ Could not extract text from {uploaded_file.name}.")
-
-                if all_dfs:
-                    st.session_state.report_df = pd.concat(all_dfs, ignore_index=True)
-                    # Ensure Test_Date_dt is present after concat
-                    if 'Test_Date' in st.session_state.report_df.columns:
-                        st.session_state.report_df['Test_Date_dt'] = pd.to_datetime(st.session_state.report_df['Test_Date'], errors='coerce')
-                    
-                    st.session_state.consolidated_patient_info = consolidate_patient_info(all_patient_infos_from_pdfs)
-                    st.session_state.analysis_done = True
-                    st.balloons()
+                        st.error(f"⚠️ Failed to get structured analysis from AI for {uploaded_file.name}.")
                 else:
-                    st.warning("No data could be extracted from any of the uploaded PDFs.")
+                    st.error(f"⚠️ Could not extract text from {uploaded_file.name}.")
+            if all_dfs:
+                st.session_state.report_df = pd.concat(all_dfs, ignore_index=True)
+                # Ensure Test_Date_dt is present after concat
+                if 'Test_Date' in st.session_state.report_df.columns:
+                    st.session_state.report_df['Test_Date_dt'] = pd.to_datetime(st.session_state.report_df['Test_Date'], errors='coerce')
+                st.session_state.consolidated_patient_info = consolidate_patient_info(all_patient_infos_from_pdfs)
+                st.session_state.analysis_done = True
+                st.balloons()
+            else:
+                st.warning("No data could be extracted from any of the uploaded PDFs.")
 
 
 # --- Main content area: Display after analysis ---
