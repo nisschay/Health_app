@@ -1,0 +1,93 @@
+/* Chat container styling */
+.stChatFloatingInputContainer {
+    margin-bottom: 20px;
+    background: #0e1117;
+}
+
+.stChatInputContainer {
+    background-color: #262730 !important;
+    border-radius: 15px;
+    padding: 10px;
+    border: 1px solid #4a4a4a;
+}
+
+.stTextInput input {
+    color: white !important;
+    background-color: #262730 !important;
+}
+
+/* Button styling */
+.stButton button {
+    background-color: #262730;
+    color: white;
+    border: 1px solid #4a4a4a;
+    border-radius: 15px;
+    padding: 15px 20px;
+    transition: all 0.3s ease;
+    margin: 5px 0;
+    width: 100%;
+    text-align: left;
+}
+
+.stButton button:hover {
+    background-color: #e0e2e6;
+    transform: translateY(-2px);
+}
+
+/* Chat message styling */
+.stChatMessage {
+    padding: 15px;
+    border-radius: 15px;
+    margin: 10px 0;
+    background-color: #262730 !important;
+    border: 1px solid #4a4a4a;
+}
+
+/* Style message content */
+.stChatMessage p {
+    color: #ffffff !important;
+    margin: 0;
+    padding: 0;
+}
+
+/* User message specific styling */
+[data-testid="chat-message-user"] {
+    background-color: #1e1e1e !important;
+}
+
+/* Assistant message specific styling */
+[data-testid="chat-message-assistant"] {
+    background-color: #262730 !important;
+}
+
+/* Avatar styling */
+[data-testid="chat-message-avatar"] {
+    background-color: transparent !important;
+}
+
+/* Header styling */
+h1 {
+    color: #1e88e5;
+    margin-bottom: 30px;
+}
+
+h5 {
+    color: #666;
+    margin: 20px 0 10px 0;
+}
+
+/* Question buttons styling */
+.question-button {
+    margin: 5px;
+    padding: 10px;
+    border-radius: 10px;
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    transition: all 0.2s;
+}
+
+.question-button:hover {
+    background: #e9ecef;
+    transform: translateY(-2px);
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}

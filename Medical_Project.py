@@ -374,8 +374,15 @@ def get_chatbot_response(report_df_for_prompt, user_question, chat_history_for_p
 
     prompt = f"""You are a helpful medical report assistant.
 Based on the provided medical test results and chat history, answer the user's question.
-Do not provide medical advice or diagnosis. Stick to summarizing and explaining the data.
-If the question is about overall health, you can provide a general summary based on the findings (normal, abnormal, concerning).
+Important guidelines:
+- Structure your response in clear, concise bullet points
+- Present one piece of information per bullet point
+- Use sub-bullets for additional details when needed
+- Keep explanations brief and focused
+- Do not provide medical advice or diagnosis
+- Stick to summarizing and explaining the data
+- For abnormal values, include the reference range in brackets
+- If answering about overall health, categorize findings as: Normal, Borderline, or Concerning
 
 Chat History:
 {history_context}
@@ -385,7 +392,7 @@ Available Medical Report Data (summary):
 
 User Question: {user_question}
 
-Assistant Response:
+Assistant Response (please use bullet points):
 """
     try:
         response = gemini_model_chat.generate_content(prompt)
@@ -566,6 +573,11 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
 
 # --- Streamlit App UI ---
 st.set_page_config(page_title="Medical Report Analyzer", layout="wide")
+
+# Load custom CSS
+with open('/root/Medical_Project/style.css') as f:
+    st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+
 st.title("⚕️ Medical Report Analyzer & Health Insights")
 st.markdown("Upload your medical PDF reports to get structured data, a health summary, and visualizations.")
 
@@ -651,64 +663,63 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
 
     # --- Chatbot Interface ---
     st.header("💬 Health Report Assistant")
-    
-    # Create a container with custom styling for the chat interface
+
+    # Create a link-like icon in the header
+    st.markdown('<div style="text-align: right; margin-top: -50px; color: #4a4a4a;">🔗</div>', unsafe_allow_html=True)
+
+    # Chat input at the top
+    user_query = st.chat_input("How can I help you today?")
+
+    # Create a container for the chat interface with dark theme
     chat_container = st.container()
-    with chat_container:
-        # Display chat history with Gemini-like styling
-        for i, message in enumerate(st.session_state.chat_history):
-            with st.container():
-                if message["role"] == "user":
-                    st.write(f"👤 **You:** {message['content']}")
-                else:
-                    st.write(f"🤖 **Assistant:** {message['content']}")
-                st.divider()
 
-    # Example questions with improved styling
-    st.markdown("##### 💡 Try asking:")
-    example_questions = [
-        "Provide a general health summary",
-        "Any concerning findings?",
-        "Explain my blood test results",
-        "Show my test trends over time"
-    ]
-    
-    # Display example questions in two rows
-    col1, col2 = st.columns(2)
-    for i, question in enumerate(example_questions[:2]):
-        if col1.button(f"• {question}", key=f"example_q_{i}", use_container_width=True):
-            st.session_state.user_query = question
-    for i, question in enumerate(example_questions[2:]):
-        if col2.button(f"• {question}", key=f"example_q_{i+2}", use_container_width=True):
-            st.session_state.user_query = question
+    # Example questions with improved styling - show only if no chat history
+    if not st.session_state.chat_history:
+        st.markdown("##### 💡 Try asking:")
+        
+        # Define the example questions in a 2x2 grid
+        example_questions = [
+            "What does my ultrasound report show?",
+            "Explain my blood test results",
+            "Any concerning findings?",
+            "Show my test trends over time"
+        ]
+        
+        col1, col2 = st.columns(2)
+        cols = [col1, col2, col1, col2]
+        
+        # Display questions in a grid with improved styling
+        for i, question in enumerate(example_questions):
+            if cols[i].button(
+                question,
+                key=f"example_q_{i}",
+                use_container_width=True,
+            ):
+                user_query = question
 
-    if 'user_query' not in st.session_state:
-        st.session_state.user_query = ""
-
-    # Create a custom chat input with Gemini-like styling
-    st.markdown("---")
-    user_query = st.chat_input("Ask me anything about your medical report...", key="chat_in")
-    
-    if st.session_state.user_query and not user_query: # Process button-clicked query
-        user_query = st.session_state.user_query
-        st.session_state.user_query = "" # Reset after processing
-
+    # Handle user query
     if user_query:
         st.session_state.chat_history.append({"role": "user", "content": user_query})
-        st.chat_message("user", avatar="🧑‍💻").write(user_query) # Display immediately
-
-        with st.spinner("Assistant is thinking..."):
-            # Pass relevant chat history for context
-            history_for_prompt = st.session_state.chat_history[:-1] # Exclude current user query
+        
+        # Process the query and get response
+        with st.spinner("Thinking..."):
             assistant_response = get_chatbot_response(
-                st.session_state.report_df, 
-                user_query, 
-                history_for_prompt,
+                st.session_state.report_df,
+                user_query,
+                st.session_state.chat_history[:-1],
                 api_key
             )
             st.session_state.chat_history.append({"role": "assistant", "content": assistant_response})
-            st.chat_message("assistant", avatar="🤖").write(assistant_response) # Display AI response
-            # st.rerun() # To update the chat display smoothly
+
+    # Display chat history in a Q&A format
+    for i in range(0, len(st.session_state.chat_history), 2):
+        if i + 1 < len(st.session_state.chat_history):
+            # Question
+            with st.chat_message("user"):
+                st.write(st.session_state.chat_history[i]["content"])
+            # Answer
+            with st.chat_message("assistant", avatar="🤖"):
+                st.write(st.session_state.chat_history[i + 1]["content"])
 
     st.divider()
 
