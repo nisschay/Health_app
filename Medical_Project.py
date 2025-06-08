@@ -577,7 +577,7 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
 st.set_page_config(page_title="Medical Report Analyzer", layout="wide")
 
 # Load custom CSS
-with open('/root/Medical_Project/style.css') as f:
+with open('style.css') as f:
     st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
 
 st.title("⚕️ Medical Report Analyzer & Health Insights")
