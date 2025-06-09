@@ -385,6 +385,7 @@ Important guidelines:
 - If answering about overall health, categorize findings as: Normal, Borderline, or Concerning
 - If the question is about a specific test, focus on that test's results and context
 - Explain medical jargon in simple terms please 
+- If the question is about trends, summarize changes over time for relevant tests
 
 Chat History:
 {history_context}
