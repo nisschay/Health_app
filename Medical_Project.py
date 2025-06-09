@@ -841,6 +841,42 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
             
                 st.divider()
 
+    # --- Organised Data Section ---
+    st.header("📊 Organised Data by Date")
+    if not st.session_state.report_df.empty:
+        try:
+            # Pivot the DataFrame: rows are Test_Name, columns are Test_Date
+            # Handle potential duplicates by taking the first result for a given Test_Name and Test_Date
+            organized_df = st.session_state.report_df.pivot_table(
+                index='Test_Name',
+                columns='Test_Date',
+                values='Result',
+                aggfunc='first' # Or 'last', 'join', etc. depending on desired behavior for duplicates
+            )
+            
+            st.write("Download your medical test results organised by test name (rows) and date (columns).")
+            
+            # Convert the pivoted DataFrame to CSV
+            csv_organized = organized_df.to_csv().encode('utf-8')
+            
+            # Get patient name for filename
+            p_info = st.session_state.consolidated_patient_info
+            patient_name_for_file = "".join(c if c.isalnum() else "_" for c in p_info.get('name', 'medical_data'))
+
+            st.download_button(
+                label="📥 Download Organised Data as CSV",
+                data=csv_organized,
+                file_name=f"organised_medical_reports_{patient_name_for_file}.csv",
+                mime='text/csv',
+            )
+        except Exception as e:
+            st.error(f"Error generating organised data: {str(e)}")
+            st.info("Could not create the organised data table. This might happen if there are duplicate test entries for the same date.")
+    else:
+        st.info("No data available to organise. Please analyze reports first.")
+
+    st.divider()
+
     # --- Extracted Data Section (Moved to Bottom and Collapsible) ---
     st.header("🗂️ Extracted Report Data Details")
     with st.expander("View/Hide Raw Extracted Data Table", expanded=False):
