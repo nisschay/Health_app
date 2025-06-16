@@ -601,15 +601,34 @@ if 'chat_history' not in st.session_state:
 if 'raw_texts' not in st.session_state:
     st.session_state.raw_texts = []
 
+# --- New Feature: Upload Mode Selection ---
+upload_mode = st.radio(
+    "Select what you want to do:",
+    [
+        "Upload new medical reports",
+        "Add new medical reports to an existing Excel/CSV file"
+    ],
+    index=0
+)
 
-# --- File Uploader ---
+uploaded_excel = None
+if upload_mode == "Add new medical reports to an existing Excel/CSV file":
+    uploaded_excel = st.file_uploader(
+        "Upload your previously downloaded Excel or CSV file (from this website)",
+        type=["csv", "xlsx"],
+        accept_multiple_files=False,
+        key="excel_uploader"
+    )
+
+# --- File Uploader for PDFs ---
 uploaded_files = st.file_uploader(
     "📄 Upload Medical Report PDFs (multiple allowed)", 
     type="pdf", 
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    key="pdf_uploader"
 )
 
-if uploaded_files:
+if uploaded_files and (upload_mode == "Upload new medical reports" or (upload_mode == "Add new medical reports to an existing Excel/CSV file" and uploaded_excel)):
     if st.button("🔬 Analyze Reports", key="analyze_btn"):
         st.session_state.analysis_done = False
         st.session_state.report_df = pd.DataFrame()
@@ -638,11 +657,28 @@ if uploaded_files:
                 else:
                     st.error(f"⚠️ Could not extract text from {uploaded_file.name}.")
             if all_dfs:
-                st.session_state.report_df = pd.concat(all_dfs, ignore_index=True)
+                new_data_df = pd.concat(all_dfs, ignore_index=True)
                 # Ensure Test_Date_dt is present after concat
-                if 'Test_Date' in st.session_state.report_df.columns:
-                    st.session_state.report_df['Test_Date_dt'] = pd.to_datetime(st.session_state.report_df['Test_Date'], errors='coerce')
+                if 'Test_Date' in new_data_df.columns:
+                    new_data_df['Test_Date_dt'] = pd.to_datetime(new_data_df['Test_Date'], errors='coerce')
                 st.session_state.consolidated_patient_info = consolidate_patient_info(all_patient_infos_from_pdfs)
+                # If merging with Excel/CSV, load and append
+                if upload_mode == "Add new medical reports to an existing Excel/CSV file" and uploaded_excel:
+                    try:
+                        if uploaded_excel.name.endswith('.csv'):
+                            existing_df = pd.read_csv(uploaded_excel)
+                        else:
+                            existing_df = pd.read_excel(uploaded_excel)
+                        # Try to ensure column compatibility
+                        combined_df = pd.concat([existing_df, new_data_df], ignore_index=True)
+                        # Remove duplicates if any (optional, based on key columns)
+                        combined_df = combined_df.drop_duplicates()
+                        st.session_state.report_df = combined_df
+                    except Exception as e:
+                        st.error(f"Error reading or merging Excel/CSV file: {e}")
+                        st.session_state.report_df = new_data_df
+                else:
+                    st.session_state.report_df = new_data_df
                 st.session_state.analysis_done = True
                 st.balloons()
             else:
@@ -682,7 +718,7 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
         
         # Define the example questions in a 2x2 grid
         example_questions = [
-            "What does my ultrasound report show?",
+            "show a general overview of my report",
             "Explain my blood test results",
             "Any concerning findings?",
             "Show my test trends over time"
@@ -737,6 +773,9 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
         with col1:
             df_for_viz = st.session_state.report_df.copy()
             df_for_viz = df_for_viz[~df_for_viz['Test_Name'].isin(['N/A', 'UnknownTest', 'Unknown Test']) & df_for_viz['Test_Name'].notna()]
+
+            # Ensure all Test_Category values are strings and handle NaN/None
+            df_for_viz['Test_Category'] = df_for_viz['Test_Category'].fillna('Other').astype(str)
 
             if not df_for_viz.empty:
                 # Get all unique body parts from all categories
