@@ -762,8 +762,49 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
             st.warning("No data could be extracted or merged from the provided files.")
             st.session_state.analysis_done = False # Reset analysis_done if no data
 
+# --- Utility: Combine duplicate test names and assign most common category ---
+def combine_duplicate_tests(df):
+    # Normalize test names (already done via standardize_value, but just in case)
+    df = df.copy()
+    # Group by Test_Name, Test_Category, Test_Date to count occurrences
+    group = df.groupby(['Test_Name', 'Test_Category', 'Test_Date']).size().reset_index(name='count')
+    # For each Test_Name, get the category with the most test_dates (count unique dates)
+    test_cat_counts = (
+        df.groupby(['Test_Name', 'Test_Category'])['Test_Date']
+        .nunique()
+        .reset_index()
+        .rename(columns={'Test_Date': 'date_count'})
+    )
+    # For ties, use the category with the most total rows in the CSV
+    test_cat_total = (
+        df.groupby(['Test_Name', 'Test_Category']).size().reset_index(name='row_count')
+    )
+    # Merge counts
+    merged = pd.merge(test_cat_counts, test_cat_total, on=['Test_Name', 'Test_Category'])
+    # For each Test_Name, pick the best Test_Category
+    def pick_category(subdf):
+        max_date = subdf['date_count'].max()
+        candidates = subdf[subdf['date_count'] == max_date]
+        if len(candidates) == 1:
+            return candidates.iloc[0]['Test_Category']
+        # Tie: pick the one with most rows
+        max_row = candidates['row_count'].max()
+        return candidates[candidates['row_count'] == max_row].iloc[0]['Test_Category']
+    best_cats = merged.groupby('Test_Name').apply(pick_category).reset_index()
+    best_cats.columns = ['Test_Name', 'Best_Test_Category']
+    # Map best category back to df
+    df = pd.merge(df, best_cats, on='Test_Name', how='left')
+    df['Test_Category'] = df['Best_Test_Category']
+    df = df.drop(columns=['Best_Test_Category'])
+    # Drop duplicate Test_Name/Test_Date rows, keep first (since category is now unified)
+    df = df.sort_values(['Test_Name', 'Test_Date', 'Test_Category']).drop_duplicates(['Test_Name', 'Test_Date'])
+    df = df.reset_index(drop=True)
+    return df
+
 # --- Main content area: Display after analysis ---
 if st.session_state.analysis_done and not st.session_state.report_df.empty:
+    # Combine duplicate test names and unify categories before display/organizing
+    st.session_state.report_df = combine_duplicate_tests(st.session_state.report_df)
     
     # --- Patient Information Display ---
     st.header("👤 Patient Information")
