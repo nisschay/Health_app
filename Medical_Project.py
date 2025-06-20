@@ -675,10 +675,14 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
                     existing_pivoted_df = pd.read_excel(uploaded_excel, index_col='Test_Name')
 
                 # Unpivot the existing data
-                # Handle potential MultiIndex if stack results in one
                 existing_raw_df = existing_pivoted_df.stack().reset_index(name='Result')
                 # The column name for dates after stack is usually 'level_1' if index_col was 'Test_Name'
                 existing_raw_df.rename(columns={'level_1': 'Test_Date'}, inplace=True)
+
+                # Standardize Test_Name from the existing data using the same mapping as for PDFs
+                existing_raw_df['Test_Name'] = existing_raw_df['Test_Name'].apply(
+                    lambda x: standardize_value(x, TEST_NAME_MAPPING, default_case='title')
+                )
 
                 # Add missing columns with default values to match the structure of new_data_df
                 # Define the full set of expected columns in the raw DataFrame
@@ -697,7 +701,8 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
                 # Fill specific columns with more meaningful defaults where possible
                 existing_raw_df['Source_Filename'] = uploaded_excel.name
                 existing_raw_df['Processed_Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                existing_raw_df['Original_Test_Name'] = existing_raw_df['Test_Name'] # Assume original name is the same as standardized name from pivot
+                # For existing data, Original_Test_Name might be the same as the standardized one after the above step
+                existing_raw_df['Original_Test_Name'] = existing_raw_df['Test_Name']
 
                 # Convert data types for consistency
                 existing_raw_df['Result_Numeric'] = pd.to_numeric(existing_raw_df['Result'], errors='coerce')
