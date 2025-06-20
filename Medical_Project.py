@@ -608,17 +608,27 @@ upload_mode = st.radio(
         "Upload new medical reports",
         "Add new medical reports to an existing Excel/CSV file"
     ],
-    index=0
+    index=0,
+    key="upload_mode_selector"
 )
 
-uploaded_excel = None
+# Only show the Excel/CSV uploader if the user selects the second option
 if upload_mode == "Add new medical reports to an existing Excel/CSV file":
-    uploaded_excel = st.file_uploader(
+    uploaded_excel_file_object = st.file_uploader(
         "Upload your previously downloaded Excel or CSV file (from this website)",
         type=["csv", "xlsx"],
         accept_multiple_files=False,
         key="excel_uploader"
     )
+    if uploaded_excel_file_object is not None:
+        st.session_state.uploaded_excel_data = uploaded_excel_file_object.getvalue()
+        st.session_state.uploaded_excel_name = uploaded_excel_file_object.name
+        st.session_state.uploaded_excel_type = uploaded_excel_file_object.type
+else:
+    # Remove any previously stored excel data if switching back to PDF-only mode
+    st.session_state.pop('uploaded_excel_data', None)
+    st.session_state.pop('uploaded_excel_name', None)
+    st.session_state.pop('uploaded_excel_type', None)
 
 # --- File Uploader for PDFs ---
 uploaded_files = st.file_uploader(
@@ -666,13 +676,15 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
         # --- Handle Existing Excel/CSV Merge ---
         combined_raw_df = pd.DataFrame()
 
-        if upload_mode == "Add new medical reports to an existing Excel/CSV file" and uploaded_excel:
+        # Check if the upload mode is 'Add to existing' AND if the excel data is in session state
+        if st.session_state.get('upload_mode_selector') == "Add new medical reports to an existing Excel/CSV file" and 'uploaded_excel_data' in st.session_state:
             try:
-                st.write(f"--- Processing existing file: {uploaded_excel.name} ---")
-                if uploaded_excel.name.endswith('.csv'):
-                    existing_pivoted_df = pd.read_csv(uploaded_excel, index_col='Test_Name')
+                st.write(f"--- Processing existing file from session state: {st.session_state.uploaded_excel_name} ---")
+                # Read from the stored data in session state
+                if st.session_state.uploaded_excel_name.endswith('.csv'):
+                    existing_pivoted_df = pd.read_csv(io.BytesIO(st.session_state.uploaded_excel_data), index_col='Test_Name')
                 else:
-                    existing_pivoted_df = pd.read_excel(uploaded_excel, index_col='Test_Name')
+                    existing_pivoted_df = pd.read_excel(io.BytesIO(st.session_state.uploaded_excel_data), index_col='Test_Name')
 
                 # Unpivot the existing data
                 existing_raw_df = existing_pivoted_df.stack().reset_index(name='Result')
@@ -683,6 +695,9 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
                 existing_raw_df['Test_Name'] = existing_raw_df['Test_Name'].apply(
                     lambda x: standardize_value(x, TEST_NAME_MAPPING, default_case='title')
                 )
+
+                # Ensure Test_Date is in YYYY-MM-DD format for consistency before merging
+                existing_raw_df['Test_Date'] = pd.to_datetime(existing_raw_df['Test_Date'], errors='coerce').dt.strftime('%Y-%m-%d')
 
                 # Add missing columns with default values to match the structure of new_data_df
                 # Define the full set of expected columns in the raw DataFrame
@@ -699,32 +714,37 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
                         existing_raw_df[col] = 'N/A' # Default value
 
                 # Fill specific columns with more meaningful defaults where possible
-                existing_raw_df['Source_Filename'] = uploaded_excel.name
+                existing_raw_df['Source_Filename'] = st.session_state.uploaded_excel_name # Use stored name
                 existing_raw_df['Processed_Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 # For existing data, Original_Test_Name might be the same as the standardized one after the above step
                 existing_raw_df['Original_Test_Name'] = existing_raw_df['Test_Name']
 
-                # Convert data types for consistency
+                # Convert data types for consistency (Result_Numeric and Test_Date_dt)
                 existing_raw_df['Result_Numeric'] = pd.to_numeric(existing_raw_df['Result'], errors='coerce')
                 existing_raw_df['Test_Date_dt'] = pd.to_datetime(existing_raw_df['Test_Date'], errors='coerce')
 
                 # Reindex to ensure correct column order
                 existing_raw_df = existing_raw_df.reindex(columns=expected_columns)
 
-                combined_raw_df = existing_raw_df
+                # Check if existing_raw_df is empty after processing
+                if existing_raw_df.empty:
+                    st.warning(f"⚠️ No data could be extracted or unpivoted from the existing file: {st.session_state.uploaded_excel_name}.")
+                    combined_raw_df = new_data_df # Fallback to only new data
+                else:
+                    combined_raw_df = existing_raw_df
+                    if not new_data_df.empty:
+                        # Concatenate existing raw data with new raw data from PDFs
+                        combined_raw_df = pd.concat([combined_raw_df, new_data_df], ignore_index=True)
 
-                if not new_data_df.empty:
-                    # Concatenate existing raw data with new raw data from PDFs
-                    combined_raw_df = pd.concat([combined_raw_df, new_data_df], ignore_index=True)
-
-                st.success(f"✅ Processed existing file: {uploaded_excel.name}")
+                    st.success(f"✅ Processed existing file from session state: {st.session_state.uploaded_excel_name}")
 
             except Exception as e:
-                st.error(f"Error reading or processing existing Excel/CSV file: {str(e)}")
+                st.error(f"Error reading or processing existing Excel/CSV file from session state: {str(e)}")
+                st.error(f"Details: {e}") # Print exception details
                 # If existing file processing fails, fall back to just new data
                 combined_raw_df = new_data_df
         else:
-            # If not adding to existing, just use the new data from PDFs
+            # If not adding to existing, or if no excel data in session state, just use the new data from PDFs
             combined_raw_df = new_data_df
 
         # --- Finalize and Store Data ---
@@ -732,6 +752,9 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
 
         if not st.session_state.report_df.empty:
             # Consolidate patient info (currently only from new PDFs)
+            # Note: Patient info consolidation currently only uses info from newly uploaded PDFs.
+            # If you need to consolidate info from the existing Excel/CSV as well, 
+            # you would need to extract it during the unpivoting step and add it to all_patient_infos_from_pdfs.
             st.session_state.consolidated_patient_info = consolidate_patient_info(all_patient_infos_from_pdfs)
             st.session_state.analysis_done = True
             st.balloons()
