@@ -628,62 +628,111 @@ uploaded_files = st.file_uploader(
     key="pdf_uploader"
 )
 
-if uploaded_files and (upload_mode == "Upload new medical reports" or (upload_mode == "Add new medical reports to an existing Excel/CSV file" and uploaded_excel)):
-    if st.button("🔬 Analyze Reports", key="analyze_btn"):
-        st.session_state.analysis_done = False
-        st.session_state.report_df = pd.DataFrame()
-        st.session_state.consolidated_patient_info = {}
-        st.session_state.chat_history = [] # Reset chat on new analysis
-        st.session_state.raw_texts = []
-        all_dfs = []
-        all_patient_infos_from_pdfs = []
-        with st.spinner("Processing PDFs and analyzing with AI... This may take a moment."):
+# Trigger analysis button
+if st.button("🔬 Analyze Reports", key="analyze_btn"):
+    st.session_state.analysis_done = False
+    st.session_state.report_df = pd.DataFrame() # Reset report_df at the start
+    st.session_state.consolidated_patient_info = {}
+    st.session_state.chat_history = [] # Reset chat on new analysis
+    st.session_state.raw_texts = []
+
+    all_dfs = [] # DataFrames from new PDFs (raw format)
+    all_patient_infos_from_pdfs = [] # Patient info dicts from new PDFs
+
+    with st.spinner("Processing reports and analyzing with AI... This may take a moment."):
+        # --- Process New PDFs ---
+        if uploaded_files:
             for i, uploaded_file in enumerate(uploaded_files):
                 st.write(f"--- Processing: {uploaded_file.name} ---")
                 file_content = uploaded_file.read()
                 report_text = extract_text_from_pdf(file_content)
-                st.session_state.raw_texts.append({"name": uploaded_file.name, "text": report_text[:2000]}) # Store snippet
+                st.session_state.raw_texts.append({"name": uploaded_file.name, "text": report_text[:2000] if report_text else "No text extracted"}) # Store snippet
                 if report_text:
                     gemini_analysis_json = analyze_medical_report_with_gemini(report_text, api_key)
                     if gemini_analysis_json:
                         df_single, patient_info_single = create_structured_dataframe(gemini_analysis_json, uploaded_file.name)
                         if not df_single.empty:
                             all_dfs.append(df_single)
-                        if patient_info_single: # Add even if empty dict for alignment
+                        if patient_info_single:
                             all_patient_infos_from_pdfs.append(patient_info_single)
                         st.success(f"✅ Analyzed: {uploaded_file.name}")
                     else:
                         st.error(f"⚠️ Failed to get structured analysis from AI for {uploaded_file.name}.")
                 else:
                     st.error(f"⚠️ Could not extract text from {uploaded_file.name}.")
-            if all_dfs:
-                new_data_df = pd.concat(all_dfs, ignore_index=True)
-                # Ensure Test_Date_dt is present after concat
-                if 'Test_Date' in new_data_df.columns:
-                    new_data_df['Test_Date_dt'] = pd.to_datetime(new_data_df['Test_Date'], errors='coerce')
-                st.session_state.consolidated_patient_info = consolidate_patient_info(all_patient_infos_from_pdfs)
-                # If merging with Excel/CSV, load and append
-                if upload_mode == "Add new medical reports to an existing Excel/CSV file" and uploaded_excel:
-                    try:
-                        if uploaded_excel.name.endswith('.csv'):
-                            existing_df = pd.read_csv(uploaded_excel)
-                        else:
-                            existing_df = pd.read_excel(uploaded_excel)
-                        # Try to ensure column compatibility
-                        combined_df = pd.concat([existing_df, new_data_df], ignore_index=True)
-                        # Remove duplicates if any (optional, based on key columns)
-                        combined_df = combined_df.drop_duplicates()
-                        st.session_state.report_df = combined_df
-                    except Exception as e:
-                        st.error(f"Error reading or merging Excel/CSV file: {e}")
-                        st.session_state.report_df = new_data_df
-                else:
-                    st.session_state.report_df = new_data_df
-                st.session_state.analysis_done = True
-                st.balloons()
-            else:
-                st.warning("No data could be extracted from any of the uploaded PDFs.")
 
+        new_data_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+
+        # --- Handle Existing Excel/CSV Merge ---
+        combined_raw_df = pd.DataFrame()
+
+        if upload_mode == "Add new medical reports to an existing Excel/CSV file" and uploaded_excel:
+            try:
+                st.write(f"--- Processing existing file: {uploaded_excel.name} ---")
+                if uploaded_excel.name.endswith('.csv'):
+                    existing_pivoted_df = pd.read_csv(uploaded_excel, index_col='Test_Name')
+                else:
+                    existing_pivoted_df = pd.read_excel(uploaded_excel, index_col='Test_Name')
+
+                # Unpivot the existing data
+                # Handle potential MultiIndex if stack results in one
+                existing_raw_df = existing_pivoted_df.stack().reset_index(name='Result')
+                # The column name for dates after stack is usually 'level_1' if index_col was 'Test_Name'
+                existing_raw_df.rename(columns={'level_1': 'Test_Date'}, inplace=True)
+
+                # Add missing columns with default values to match the structure of new_data_df
+                # Define the full set of expected columns in the raw DataFrame
+                expected_columns = [
+                    'Source_Filename', 'Patient_ID', 'Patient_Name', 'Age', 'Gender',
+                    'Test_Date', 'Test_Category', 'Original_Test_Name', 'Test_Name',
+                    'Result', 'Unit', 'Reference_Range', 'Status', 'Processed_Date',
+                    'Result_Numeric', 'Test_Date_dt'
+                ]
+
+                # Add columns that exist in expected_columns but not in existing_raw_df
+                for col in expected_columns:
+                    if col not in existing_raw_df.columns:
+                        existing_raw_df[col] = 'N/A' # Default value
+
+                # Fill specific columns with more meaningful defaults where possible
+                existing_raw_df['Source_Filename'] = uploaded_excel.name
+                existing_raw_df['Processed_Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                existing_raw_df['Original_Test_Name'] = existing_raw_df['Test_Name'] # Assume original name is the same as standardized name from pivot
+
+                # Convert data types for consistency
+                existing_raw_df['Result_Numeric'] = pd.to_numeric(existing_raw_df['Result'], errors='coerce')
+                existing_raw_df['Test_Date_dt'] = pd.to_datetime(existing_raw_df['Test_Date'], errors='coerce')
+
+                # Reindex to ensure correct column order
+                existing_raw_df = existing_raw_df.reindex(columns=expected_columns)
+
+                combined_raw_df = existing_raw_df
+
+                if not new_data_df.empty:
+                    # Concatenate existing raw data with new raw data from PDFs
+                    combined_raw_df = pd.concat([combined_raw_df, new_data_df], ignore_index=True)
+
+                st.success(f"✅ Processed existing file: {uploaded_excel.name}")
+
+            except Exception as e:
+                st.error(f"Error reading or processing existing Excel/CSV file: {str(e)}")
+                # If existing file processing fails, fall back to just new data
+                combined_raw_df = new_data_df
+        else:
+            # If not adding to existing, just use the new data from PDFs
+            combined_raw_df = new_data_df
+
+        # --- Finalize and Store Data ---
+        st.session_state.report_df = combined_raw_df
+
+        if not st.session_state.report_df.empty:
+            # Consolidate patient info (currently only from new PDFs)
+            st.session_state.consolidated_patient_info = consolidate_patient_info(all_patient_infos_from_pdfs)
+            st.session_state.analysis_done = True
+            st.balloons()
+        else:
+            st.warning("No data could be extracted or merged from the provided files.")
+            st.session_state.analysis_done = False # Reset analysis_done if no data
 
 # --- Main content area: Display after analysis ---
 if st.session_state.analysis_done and not st.session_state.report_df.empty:
