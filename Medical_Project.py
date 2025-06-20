@@ -962,20 +962,22 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
     st.header("📊 Organised Data by Date")
     if not st.session_state.report_df.empty:
         try:
-            # Pivot the DataFrame: rows are (Test_Category, Test_Name), columns are Test_Date
+            # Pivot the DataFrame: rows are (Test_Name, Test_Category), columns are Test_Date
             organized_df = st.session_state.report_df.pivot_table(
                 index=['Test_Name', 'Test_Category'],
                 columns='Test_Date',
                 values='Result',
-                aggfunc='first' # Or 'last', 'join', etc. depending on desired behavior for duplicates
+                aggfunc='first'
             )
-            organized_df = organized_df.reset_index()  # So both columns appear in CSV
-            st.write("Download your medical test results organised by category, test name (rows), and date (columns).")
+            organized_df = organized_df.reset_index()
+            # Sort by Test_Name, then Test_Category for consistent order
+            organized_df = organized_df.sort_values(['Test_Name', 'Test_Category']).reset_index(drop=True)
+            st.write("Download your medical test results organised by test name, category (rows), and date (columns).")
 
             # Convert the pivoted DataFrame to CSV
             csv_organized = organized_df.to_csv(index=False).encode('utf-8')
 
-            # Get patient name for filename
+            # Get patient name for file filename
             p_info = st.session_state.consolidated_patient_info
             patient_name_for_file = "".join(c if c.isalnum() else "_" for c in p_info.get('name', 'medical_data'))
 
