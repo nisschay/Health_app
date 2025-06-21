@@ -9,6 +9,7 @@ import json
 import plotly.graph_objs as go
 import google.generativeai as genai
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI
+from unify_test_names import unify_test_names
 
 # --- Configuration for Standardization ---
 TEST_NAME_MAPPING = {
@@ -803,6 +804,8 @@ def combine_duplicate_tests(df):
 
 # --- Main content area: Display after analysis ---
 if st.session_state.analysis_done and not st.session_state.report_df.empty:
+    # Unify similar test names before combining duplicates
+    st.session_state.report_df = unify_test_names(st.session_state.report_df)
     # Combine duplicate test names and unify categories before display/organizing
     st.session_state.report_df = combine_duplicate_tests(st.session_state.report_df)
     
