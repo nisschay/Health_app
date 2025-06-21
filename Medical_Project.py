@@ -11,6 +11,18 @@ import google.generativeai as genai
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI
 from unify_test_names import unify_test_names
 
+import sys
+import os
+
+# Add the directory containing this script to the Python path
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir) # Assuming unify_test_names.py is in the parent directory of the script's directory if running from a subdirectory like 'health_app'
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+# If unify_test_names.py is in the same directory as Medical_Project.py, use script_dir instead of parent_dir
+if script_dir not in sys.path:
+    sys.path.append(script_dir)
+
 # --- Configuration for Standardization ---
 TEST_NAME_MAPPING = {
     re.compile(r'haemoglobin', re.IGNORECASE): 'Haemoglobin',
