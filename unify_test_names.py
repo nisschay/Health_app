@@ -54,6 +54,18 @@ def unify_test_names(df, threshold=90):
     """
     # Handle NaN values in Test_Name before getting unique names
     df['Test_Name'] = df['Test_Name'].fillna('N/A')
+
+    # --- Explicit mapping for specific names ---
+    # Ensure all Vitamin B12 variants are mapped to 'Vitamin B12'
+    vitamin_b12_variants = [
+        'Vitamin B-12', 'Vitamin B12', 'Vitamin B 12',
+        'Vitamin B-12 Level', 'Vitamin B12 Level', 'Vitamin B 12 Level',
+        'vitamin b-12', 'vitamin b12', 'vitamin b 12',
+        'vitamin b-12 level', 'vitamin b12 level', 'vitamin b 12 level'
+    ]
+    explicit_map = {v: 'Vitamin B12' for v in vitamin_b12_variants}
+    df['Test_Name'] = df['Test_Name'].replace(explicit_map)
+
     original_names = df['Test_Name'].unique().tolist()
     n = len(original_names)
 
@@ -66,15 +78,46 @@ def unify_test_names(df, threshold=90):
 
     # Compute distance matrix using token_set_ratio on *normalized* names
     dist = np.zeros((n, n))
-    for i in range(n):
-        for j in range(i+1, n):
-            # Use token_set_ratio on normalized names
-            score = fuzz.token_set_ratio(normalized_names[i], normalized_names[j]) / 100.0
-            dist[i, j] = dist[j, i] = 1 - score
 
     # Cluster names using agglomerative clustering
     threshold = max(0, min(100, threshold))
     distance_threshold_val = 1 - (threshold / 100.0)
+
+    for i in range(n):
+        for j in range(i+1, n):
+            name1 = original_names[i].lower()
+            name2 = original_names[j].lower()
+
+            # --- Custom logic to prevent merging specific cholesterol types ---
+            prevent_merge = False
+            is_chol1 = 'cholesterol' in name1
+            is_chol2 = 'cholesterol' in name2
+            is_hdl1 = 'hdl' in name1
+            is_hdl2 = 'hdl' in name2
+            is_ldl1 = 'ldl' in name1
+            is_ldl2 = 'ldl' in name2
+            is_vldl1 = 'vldl' in name1
+            is_vldl2 = 'vldl' in name2
+            is_total1 = 'total' in name1
+            is_total2 = 'total' in name2
+
+            # Prevent merging if one is HDL/LDL/VLDL and the other is generic/total cholesterol
+            if (is_hdl1 or is_ldl1 or is_vldl1) and is_chol2 and not (is_hdl2 or is_ldl2 or is_vldl2):
+                 prevent_merge = True
+            if (is_hdl2 or is_ldl2 or is_vldl2) and is_chol1 and not (is_hdl1 or is_ldl1 or is_vldl1):
+                 prevent_merge = True
+
+            # Prevent merging between different lipoprotein variants
+            if (is_hdl1 and (is_ldl2 or is_vldl2)) or (is_ldl1 and (is_hdl2 or is_vldl2)) or (is_vldl1 and (is_hdl2 or is_ldl1)):
+                 prevent_merge = True
+
+            if prevent_merge:
+                score = 0.0 # Maximum distance (1 - 0.0 = 1.0)
+            else:
+                # Use token_set_ratio on normalized names for other cases
+                score = fuzz.token_set_ratio(normalized_names[i], normalized_names[j]) / 100.0
+
+            dist[i, j] = dist[j, i] = 1 - score
 
     # Handle edge cases for clustering
     if n > 0 and np.all(dist <= distance_threshold_val):
@@ -109,17 +152,48 @@ def unify_test_names(df, threshold=90):
 
     labels = clustering.fit_predict(dist)
 
-    # Map each original name to the most common original name in its cluster
+    # --- Value-based cluster splitting ---
+    # For each cluster, check if any names have median 'Result' values >20% off from the cluster median
+    # If so, split them into separate subclusters
     name_map = {}
     labeled_original_names = list(zip(labels, original_names))
-
+    used_label = max(labels) + 1
     for label in set(labels):
+        cluster_original_names = [name for lbl, name in labeled_original_names if lbl == label]
+        # Only consider clusters with more than 1 name
+        if len(cluster_original_names) > 1:
+            # Compute median Result for each name
+            medians = {}
+            for name in cluster_original_names:
+                vals = pd.to_numeric(df[df['Test_Name'] == name]['Result'], errors='coerce')
+                vals = vals.dropna()
+                if len(vals) > 0:
+                    medians[name] = vals.median()
+                else:
+                    medians[name] = np.nan
+            # Compute cluster median (ignoring NaN)
+            cluster_median = np.nanmedian(list(medians.values()))
+            # Split names whose median is >30% off from cluster median
+            for name in cluster_original_names:
+                m = medians[name]
+                if not np.isnan(m) and cluster_median > 0:
+                    diff = abs(m - cluster_median) / cluster_median
+                    if diff > 0.3:
+                        # Assign a new label for this outlier
+                        for i, (lbl, n) in enumerate(labeled_original_names):
+                            if n == name:
+                                labeled_original_names[i] = (used_label, n)
+                        used_label += 1
+        # else: keep as is
+
+    # Now, re-map names to most common original name in their (possibly split) cluster
+    for label in set(lbl for lbl, _ in labeled_original_names):
         cluster_original_names = [name for lbl, name in labeled_original_names if lbl == label]
         counts = Counter(df[df['Test_Name'].isin(cluster_original_names)]['Test_Name'])
         if counts:
-             most_common_original_name = counts.most_common(1)[0][0]
+            most_common_original_name = counts.most_common(1)[0][0]
         else:
-             most_common_original_name = cluster_original_names[0] if cluster_original_names else 'N/A'
+            most_common_original_name = cluster_original_names[0] if cluster_original_names else 'N/A'
         for original_name in cluster_original_names:
             name_map[original_name] = most_common_original_name
 
