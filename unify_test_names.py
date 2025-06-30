@@ -56,15 +56,42 @@ def unify_test_names(df, threshold=90):
     df['Test_Name'] = df['Test_Name'].fillna('N/A')
 
     # --- Explicit mapping for specific names ---
-    # Ensure all Vitamin B12 variants are mapped to 'Vitamin B12'
+    # First, find most common category for each test name
+    test_categories = {}
+    for test_name in df['Test_Name'].unique():
+        categories = df[df['Test_Name'] == test_name]['Test_Category'].dropna()
+        if not categories.empty:
+            most_common_category = categories.mode().iloc[0]
+            test_categories[test_name] = most_common_category
+
+    # Create explicit mapping for vitamin B12 variants while preserving categories
     vitamin_b12_variants = [
         'Vitamin B-12', 'Vitamin B12', 'Vitamin B 12',
         'Vitamin B-12 Level', 'Vitamin B12 Level', 'Vitamin B 12 Level',
         'vitamin b-12', 'vitamin b12', 'vitamin b 12',
-        'vitamin b-12 level', 'vitamin b12 level', 'vitamin b 12 level'
+        'vitamin b-12 level', 'vitamin b12 level', 'vitamin b 12 level',
+        'Vitamin B - 12', 'Vitamin B - 12 Level', # Added variants with spaces around dash
+        'vitamin b - 12', 'vitamin b - 12 level' # Added lowercase variants with spaces around dash
     ]
-    explicit_map = {v: 'Vitamin B12' for v in vitamin_b12_variants}
+
+    # Map all variants to 'Vitamin B12' and update their category if exists
+    target_name = 'Vitamin B12'
+    explicit_map = {v: target_name for v in vitamin_b12_variants}
     df['Test_Name'] = df['Test_Name'].replace(explicit_map)
+
+    # After name replacement, update categories
+    for old_name in vitamin_b12_variants:
+        if old_name in test_categories:
+            mask = df['Test_Name'] == target_name
+            df.loc[mask & df['Test_Category'].isna(), 'Test_Category'] = test_categories[old_name]
+
+    # For any remaining N/A categories, try to fill from existing data
+    for test_name in df['Test_Name'].unique():
+        mask = (df['Test_Name'] == test_name) & (df['Test_Category'].isna() | (df['Test_Category'] == 'N/A'))
+        existing_categories = df[df['Test_Name'] == test_name]['Test_Category'].dropna()
+        if not existing_categories.empty and any(mask):
+            most_common_category = existing_categories[existing_categories != 'N/A'].mode().iloc[0] if not existing_categories[existing_categories != 'N/A'].empty else existing_categories.mode().iloc[0]
+            df.loc[mask, 'Test_Category'] = most_common_category
 
     original_names = df['Test_Name'].unique().tolist()
     n = len(original_names)
@@ -103,13 +130,13 @@ def unify_test_names(df, threshold=90):
 
             # Prevent merging if one is HDL/LDL/VLDL and the other is generic/total cholesterol
             if (is_hdl1 or is_ldl1 or is_vldl1) and is_chol2 and not (is_hdl2 or is_ldl2 or is_vldl2):
-                 prevent_merge = True
+                prevent_merge = True
             if (is_hdl2 or is_ldl2 or is_vldl2) and is_chol1 and not (is_hdl1 or is_ldl1 or is_vldl1):
-                 prevent_merge = True
+                prevent_merge = True
 
             # Prevent merging between different lipoprotein variants
-            if (is_hdl1 and (is_ldl2 or is_vldl2)) or (is_ldl1 and (is_hdl2 or is_vldl2)) or (is_vldl1 and (is_hdl2 or is_ldl1)):
-                 prevent_merge = True
+            if (is_hdl1 and (is_ldl2 or is_vldl2)) or (is_ldl1 and (is_hdl2 or is_vldl2)) or (is_vldl1 and (is_hdl2 or is_ldl2)):
+                prevent_merge = True
 
             if prevent_merge:
                 score = 0.0 # Maximum distance (1 - 0.0 = 1.0)
