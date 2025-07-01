@@ -1018,28 +1018,25 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
     st.header("📊 Organised Data by Date")
     if not st.session_state.report_df.empty:
         try:
-            # Pivot with only Test_Name as index
+            # Pivot with Test_Category as primary index, then Test_Name
             organized_df = st.session_state.report_df.pivot_table(
-                index='Test_Name',
+                index=['Test_Category', 'Test_Name'],
                 columns='Test_Date',
                 values='Result',
                 aggfunc='first'
             )
             organized_df = organized_df.reset_index()
-            # Merge Test_Category back in (take first non-null for each Test_Name)
-            test_cat_map = st.session_state.report_df.drop_duplicates('Test_Name')[['Test_Name', 'Test_Category']]
-            organized_df = pd.merge(organized_df, test_cat_map, on='Test_Name', how='left')
-            # Reorder columns: Test_Name, Test_Category, then all dates
-            date_cols = [col for col in organized_df.columns if col not in ['Test_Name', 'Test_Category']]
-            organized_df = organized_df[['Test_Name', 'Test_Category'] + date_cols]
-            # Sort by Test_Name for consistency
-            organized_df = organized_df.sort_values(['Test_Name', 'Test_Category']).reset_index(drop=True)
-            st.write("Download your medical test results organised by test name, category (columns), and date (columns).")
+            # Reorder columns: Test_Category, Test_Name, then all dates
+            date_cols = [col for col in organized_df.columns if col not in ['Test_Category', 'Test_Name']]
+            organized_df = organized_df[['Test_Category', 'Test_Name'] + date_cols]
+            # Sort by Test_Category, then Test_Name
+            organized_df = organized_df.sort_values(['Test_Category', 'Test_Name']).reset_index(drop=True)
+            st.write("Download your medical test results organised by test category, test name, and date (columns).")
 
             # Convert the pivoted DataFrame to CSV
             csv_organized = organized_df.to_csv(index=False).encode('utf-8')
 
-            # Get patient name for filename
+            # Get patient name for file filename
             p_info = st.session_state.consolidated_patient_info
             patient_name_for_file = "".join(c if c.isalnum() else "_" for c in p_info.get('name', 'medical_data'))
 
