@@ -1033,19 +1033,37 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
             organized_df = organized_df.sort_values(['Test_Category', 'Test_Name']).reset_index(drop=True)
             st.write("Download your medical test results organised by test category, test name, and date (columns).")
 
-            # Convert the pivoted DataFrame to CSV
-            csv_organized = organized_df.to_csv(index=False).encode('utf-8')
-
-            # Get patient name for file filename
+            # Get patient name for filename
             p_info = st.session_state.consolidated_patient_info
             patient_name_for_file = "".join(c if c.isalnum() else "_" for c in p_info.get('name', 'medical_data'))
 
-            st.download_button(
-                label="📥 Download Organised Data as CSV",
-                data=csv_organized,
-                file_name=f"organised_medical_reports_{patient_name_for_file}.csv",
-                mime='text/csv',
-            )
+            # Create Excel file with formatted headers
+            output_excel = io.BytesIO()
+            with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
+                organized_df.to_excel(writer, index=False, sheet_name='Organised Data')
+                workbook = writer.book
+                worksheet = writer.sheets['Organised Data']
+                
+                # Add header format
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'underline': True
+                })
+                
+                # Apply format to header row
+                for col_num, value in enumerate(organized_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+            excel_data = output_excel.getvalue()
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label="📥 Download as Excel",
+                    data=excel_data,
+                    file_name=f"organised_medical_reports_{patient_name_for_file}.xlsx",
+                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                )
         except Exception as e:
             st.error(f"Error generating organised data: {str(e)}")
             st.info("Could not create the organised data table. This might happen if there are duplicate test entries for the same date.")
