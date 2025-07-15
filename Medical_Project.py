@@ -1049,11 +1049,11 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                     'bold': True,
                     'underline': True
                 })
-                
                 # Apply format to header row
                 for col_num, value in enumerate(organized_df.columns.values):
                     worksheet.write(0, col_num, value, header_format)
-                
+                # Add autofilter to header row
+                worksheet.autofilter(0, 0, 0, len(organized_df.columns) - 1)
             excel_data = output_excel.getvalue()
 
             col1, col2 = st.columns(2)
