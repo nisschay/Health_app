@@ -196,7 +196,7 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     Analyze this medical test report. Extract all patient information and test results.
     The patient's full name is critical. Prioritize complete and formal names (e.g., "Nisschay Khandelwal" over "SelfNisschay Khandelwal" or "N Khandelwal"). Avoid prefixes like "Self" if a clearer name is available.
     Also extract Patient ID, Age (e.g., "35 years", "35 Y", "35"), and Gender (e.g., "Male", "Female", "M", "F").
-    The report date or collection date is also critical. Ensure date is in YYYY-MM-DD format if possible. If multiple dates are present (collection, report), prefer collection date.
+    The report date or collection date is also critical. Ensure date is in DD-MM-YYYY format if possible. If multiple dates are present (collection, report), prefer collection date.
 
     For each test parameter, extract:
     - Test Name (e.g., "Haemoglobin", "Total Leucocyte Count")
@@ -213,7 +213,7 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
             "age": "Age",
             "gender": "Gender",
             "patient_id": "Patient ID or Registration No.",
-            "date": "Test Date or Report Date (YYYY-MM-DD)"
+            "date": "Test Date or Report Date (DD-MM-YYYY)"
         }},
         "test_results": [
             {{
@@ -759,8 +759,8 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
                     lambda x: standardize_value(x, TEST_NAME_MAPPING, default_case='title')
                 )
 
-                # Ensure Test_Date is in YYYY-MM-DD format for consistency before merging
-                existing_raw_df['Test_Date'] = pd.to_datetime(existing_raw_df['Test_Date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                # Ensure Test_Date is in DD-MM-YYYY format for consistency before merging
+                existing_raw_df['Test_Date'] = pd.to_datetime(existing_raw_df['Test_Date'], errors='coerce').dt.strftime('%d-%m-%Y')
 
                 # Add missing columns with default values to match the structure of new_data_df
                 # Define the full set of expected columns in the raw DataFrame
