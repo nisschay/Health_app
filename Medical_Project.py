@@ -318,11 +318,61 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
     
     return df, patient_info_dict
 
+def normalize_name(name):
+    """Normalize a name for comparison by removing titles, extra spaces, and converting to lowercase."""
+    if not name or name == 'N/A':
+        return ''
+    # Remove common titles and prefixes
+    titles = ['mr', 'mrs', 'ms', 'dr', 'prof', 'self']
+    name = name.lower().strip()
+    for title in titles:
+        name = re.sub(rf'\b{title}\b\.?\s*', '', name)
+    # Remove extra whitespace and convert to lowercase
+    name = ' '.join(name.split())
+    return name
+
+def are_names_matching(name1, name2):
+    """Check if two names match or are variations of the same name."""
+    name1 = normalize_name(name1)
+    name2 = normalize_name(name2)
+    
+    if not name1 or not name2:
+        return True  # Consider empty/N/A names as matching to handle missing data
+        
+    name1_parts = set(name1.split())
+    name2_parts = set(name2.split())
+    
+    # If one name is completely contained within another, consider it a match
+    if name1_parts.issubset(name2_parts) or name2_parts.issubset(name1_parts):
+        return True
+        
+    # Calculate name parts that match
+    matching_parts = name1_parts.intersection(name2_parts)
+    total_unique_parts = name1_parts.union(name2_parts)
+    
+    # If we have at least 2 matching parts (like first and last name)
+    # and they make up at least 60% of the total unique parts
+    if len(matching_parts) >= 2 and len(matching_parts) / len(total_unique_parts) >= 0.6:
+        return True
+    
+    return False
+
 def consolidate_patient_info(patient_info_list):
     if not patient_info_list:
         return {}
 
+    # First, verify that all names in the list are compatible
     names = [pi.get('name') for pi in patient_info_list if pi.get('name') and pi.get('name') not in ['N/A', '']]
+    if len(names) >= 2:
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                if not are_names_matching(names[i], names[j]):
+                    # Return a special dictionary indicating name mismatch
+                    return {
+                        'error': 'name_mismatch',
+                        'conflicting_names': [names[i], names[j]]
+                    }
+
     ages = [pi.get('age') for pi in patient_info_list if pi.get('age') and pi.get('age') not in ['N/A', '']]
     genders = [pi.get('gender') for pi in patient_info_list if pi.get('gender') and pi.get('gender') not in ['N/A', '']]
     patient_ids = [pi.get('patient_id') for pi in patient_info_list if pi.get('patient_id') and pi.get('patient_id') not in ['N/A', '']]
@@ -761,14 +811,45 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
             combined_raw_df = new_data_df
 
         # --- Finalize and Store Data ---
+        # First check for name compatibility
+        consolidated_info = consolidate_patient_info(all_patient_infos_from_pdfs)
+        
+        if 'error' in consolidated_info and consolidated_info['error'] == 'name_mismatch':
+            # Show error popup for name mismatch
+            st.error("⚠️ Name Mismatch Detected!")
+            # Get conflicting names from the consolidated info
+            name1, name2 = consolidated_info.get('conflicting_names', ['Unknown', 'Unknown'])
+            
+            # Create columns for better layout
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.warning(
+                    f"The uploaded reports appear to be for different patients:\n\n"
+                    f"• {name1}\n"
+                    f"• {name2}\n\n"
+                    "These names appear to be different people. If this is incorrect, please ensure:\n"
+                    "1. All reports belong to the same person\n"
+                    "2. Names are spelled consistently across reports\n"
+                )
+            
+            with col2:
+                if st.button("🔄 Reload & Try Again"):
+                    st.session_state.clear()
+                    st.experimental_rerun()
+            
+            st.error(
+                "For privacy and accuracy, we cannot combine reports that appear to be for different patients. "
+                "Please verify the reports and try uploading again."
+            )
+            
+            st.session_state.analysis_done = False
+            st.stop()
+            
+        # If names match, proceed with data processing
         st.session_state.report_df = combined_raw_df
 
         if not st.session_state.report_df.empty:
-            # Consolidate patient info (currently only from new PDFs)
-            # Note: Patient info consolidation currently only uses info from newly uploaded PDFs.
-            # If you need to consolidate info from the existing Excel/CSV as well, 
-            # you would need to extract it during the unpivoting step and add it to all_patient_infos_from_pdfs.
-            st.session_state.consolidated_patient_info = consolidate_patient_info(all_patient_infos_from_pdfs)
+            st.session_state.consolidated_patient_info = consolidated_info
             st.session_state.analysis_done = True
             st.balloons()
         else:
