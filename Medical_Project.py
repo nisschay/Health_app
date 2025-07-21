@@ -361,15 +361,16 @@ def consolidate_patient_info(patient_info_list):
     if not patient_info_list:
         return {}
 
-    # First, verify that all names in the list are compatible
+    # First, check for name mismatches and return them if found
     names = [pi.get('name') for pi in patient_info_list if pi.get('name') and pi.get('name') not in ['N/A', '']]
+    
     if len(names) >= 2:
         for i in range(len(names)):
             for j in range(i + 1, len(names)):
                 if not are_names_matching(names[i], names[j]):
-                    # Return a special dictionary indicating name mismatch
                     return {
                         'error': 'name_mismatch',
+                        'names': names,
                         'conflicting_names': [names[i], names[j]]
                     }
 
@@ -811,17 +812,19 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
             combined_raw_df = new_data_df
 
         # --- Finalize and Store Data ---
+        # Initialize proceed_anyway in session state if not present
+        if 'proceed_anyway' not in st.session_state:
+            st.session_state.proceed_anyway = False
+            
         # First check for name compatibility
         consolidated_info = consolidate_patient_info(all_patient_infos_from_pdfs)
         
         if 'error' in consolidated_info and consolidated_info['error'] == 'name_mismatch':
             # Show error popup for name mismatch
             st.error("⚠️ Name Mismatch Detected!")
-            # Get conflicting names from the consolidated info
             name1, name2 = consolidated_info.get('conflicting_names', ['Unknown', 'Unknown'])
             
-            # Create columns for better layout
-            col1, col2 = st.columns([3, 1])
+            col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 st.warning(
                     f"The uploaded reports appear to be for different patients:\n\n"
@@ -837,15 +840,27 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
                     st.session_state.clear()
                     st.experimental_rerun()
             
-            st.error(
-                "For privacy and accuracy, we cannot combine reports that appear to be for different patients. "
-                "Please verify the reports and try uploading again."
-            )
+            with col3:
+                if st.button("✅ Proceed Anyway"):
+                    st.session_state.proceed_anyway = True
             
-            st.session_state.analysis_done = False
-            st.stop()
-            
-        # If names match, proceed with data processing
+            if not st.session_state.proceed_anyway:
+                st.error(
+                    "For privacy and accuracy, we cannot combine reports that appear to be for different patients. "
+                    "Please verify the reports and try uploading again."
+                )
+                st.stop()
+            else:
+                # If proceeding anyway, create a new consolidated info without the error
+                consolidated_info = {
+                    'name': consolidated_info['names'][0],  # Use the first name
+                    'age': next((pi.get('age', 'N/A') for pi in all_patient_infos_from_pdfs if pi.get('age')), 'N/A'),
+                    'gender': next((pi.get('gender', 'N/A') for pi in all_patient_infos_from_pdfs if pi.get('gender')), 'N/A'),
+                    'patient_id': next((pi.get('patient_id', 'N/A') for pi in all_patient_infos_from_pdfs if pi.get('patient_id')), 'N/A'),
+                    'date': next((pi.get('date', 'N/A') for pi in all_patient_infos_from_pdfs if pi.get('date')), 'N/A')
+                }
+        
+        # If names match or we're proceeding anyway, continue with data processing
         st.session_state.report_df = combined_raw_df
 
         if not st.session_state.report_df.empty:
