@@ -2,6 +2,13 @@
 
 A powerful web application built with Streamlit that analyzes medical test reports in PDF format, providing structured data visualization and AI-powered insights.
 
+## 🚀 Setup
+
+1. Clone the repository
+2. Copy `.streamlit/secrets.template.toml` to `.streamlit/secrets.toml`
+3. Get a Gemini API key from Google Cloud Console
+4. Add your API key to `.streamlit/secrets.toml`
+
 ## 🌟 Features
 
 - **PDF Report Analysis**: Extract medical test data from PDF reports

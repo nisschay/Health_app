@@ -294,7 +294,7 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
         
         # Attempt to parse date from patient_info_dict, could be None
         report_date_str = patient_info_dict.get('date', 'N/A')
-        parsed_date = pd.to_datetime(report_date_str, errors='coerce').strftime('%Y-%m-%d') if pd.notna(pd.to_datetime(report_date_str, errors='coerce')) else 'N/A'
+        parsed_date = pd.to_datetime(report_date_str, errors='coerce').strftime('%d-%m-%Y') if pd.notna(pd.to_datetime(report_date_str, errors='coerce')) else 'N/A'
 
 
         row = {
@@ -425,13 +425,11 @@ def consolidate_patient_info(patient_info_list):
     final_gender = Counter(genders).most_common(1)[0][0] if genders else "N/A"
     final_patient_id = Counter(patient_ids).most_common(1)[0][0] if patient_ids else "N/A"
     
-    # For date, might prefer the latest or earliest, or just the most common
+        # For date, might prefer the latest or earliest, or just the most common
     # For now, most common valid date. If dates are datetime objects, this needs adjustment.
     parsed_dates = [pd.to_datetime(d, errors='coerce') for d in dates]
     valid_parsed_dates = [d for d in parsed_dates if pd.notna(d)]
-    final_date = max(valid_parsed_dates).strftime('%Y-%m-%d') if valid_parsed_dates else "N/A"
-
-
+    final_date = max(valid_parsed_dates).strftime('%d-%m-%Y') if valid_parsed_dates else "N/A"
     return {
         'name': final_name,
         'age': final_age,
