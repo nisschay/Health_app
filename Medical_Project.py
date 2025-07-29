@@ -166,16 +166,24 @@ def init_gemini_models(api_key_for_gemini):
     global gemini_model_extraction, gemini_model_chat
     try:
         if not api_key_for_gemini:
-            # st.error("Gemini API Key is missing. Cannot initialize models.")
+            st.error("Gemini API Key is missing. Cannot initialize models.")
             return False
+        
+        # Reset models to force reinitialization with new key
+        gemini_model_extraction = None
+        gemini_model_chat = None
         
         genai.configure(api_key=api_key_for_gemini)
         
-        if not gemini_model_extraction:
-            gemini_model_extraction = genai.GenerativeModel('gemini-1.5-flash')
-        if not gemini_model_chat:
-            gemini_model_chat = genai.GenerativeModel('gemini-1.5-flash')
-        return True
+        # Always create new model instances with the new key
+        gemini_model_extraction = genai.GenerativeModel('gemini-1.5-flash')
+        gemini_model_chat = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Test the connection with a simple generation
+        test_response = gemini_model_extraction.generate_content("Test connection")
+        if test_response:
+            st.success("Successfully connected to Gemini API")
+            return True
     except Exception as e:
         st.error(f"Error configuring Gemini: {e}. Please ensure your API key is correct and valid.")
         gemini_model_extraction = None
@@ -319,17 +327,26 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
     return df, patient_info_dict
 
 def normalize_name(name):
-    """Normalize a name for comparison by removing titles, extra spaces, and converting to lowercase."""
+    """Normalize a name for comparison by removing titles, extra spaces, and standardizing case."""
     if not name or name == 'N/A':
         return ''
-    # Remove common titles and prefixes
-    titles = ['mr', 'mrs', 'ms', 'dr', 'prof', 'self']
-    name = name.lower().strip()
+    
+    # Convert to title case first and strip
+    name = name.strip()
+    
+    # Remove common titles and prefixes (case insensitive)
+    titles = ['mr', 'mrs', 'ms', 'dr', 'prof', 'self', 'mr.', 'mrs.', 'ms.', 'dr.', 'prof.']
+    name_lower = name.lower()
     for title in titles:
-        name = re.sub(rf'\b{title}\b\.?\s*', '', name)
-    # Remove extra whitespace and convert to lowercase
-    name = ' '.join(name.split())
-    return name
+        name_lower = re.sub(rf'\b{title}\b\.?\s*', '', name_lower)
+    
+    # Split into words and remove any empty strings
+    words = [word for word in name_lower.split() if word]
+    
+    # Convert to title case and join
+    normalized = ' '.join(word.title() for word in words)
+    
+    return normalized
 
 def are_names_matching(name1, name2):
     """Check if two names match or are variations of the same name."""
@@ -379,16 +396,20 @@ def consolidate_patient_info(patient_info_list):
     patient_ids = [pi.get('patient_id') for pi in patient_info_list if pi.get('patient_id') and pi.get('patient_id') not in ['N/A', '']]
     dates = [pi.get('date') for pi in patient_info_list if pi.get('date') and pi.get('date') not in ['N/A', '']]
 
-    # Consolidate Name: Prefer longer, non-"Self" names, most common
-    sensible_names = [name for name in names if not re.search(r'\bself\b', name, re.IGNORECASE)]
-    if not sensible_names: sensible_names = names # Fallback to original names if all contain "Self" or are empty
+    # Normalize all names first
+    normalized_names = [normalize_name(name) for name in names]
+    normalized_names = [name for name in normalized_names if name]  # Remove empty strings
     
     final_name = "N/A"
-    if sensible_names:
-        name_counts = Counter(sensible_names)
+    if normalized_names:
+        # Count occurrences of normalized names
+        name_counts = Counter(normalized_names)
         most_common_names = name_counts.most_common()
         if most_common_names:
-            # Prefer longer names among the most common ones
+            # Use the most common normalized name, prefer longer names if there's a tie
+            max_count = most_common_names[0][1]
+            most_frequent_names = [name for name, count in most_common_names if count == max_count]
+            final_name = max(most_frequent_names, key=len)# Prefer longer names among the most common ones
             max_len = 0
             best_name_candidate = ""
             for name, count in most_common_names:
@@ -819,8 +840,34 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
         # First check for name compatibility
         consolidated_info = consolidate_patient_info(all_patient_infos_from_pdfs)
         
-        if 'error' in consolidated_info and consolidated_info['error'] == 'name_mismatch':
-            # Show error popup for name mismatch
+        # Initialize or update proceed_anyway in session state if not present
+        if 'proceed_anyway' not in st.session_state:
+            st.session_state.proceed_anyway = False
+        
+        if 'error' in consolidated_info and consolidated_info['error'] == 'name_mismatch' and not st.session_state.proceed_anyway:
+            # Show name mismatch warning with buttons
+            st.warning("⚠️ Different patient names detected in reports!")
+            st.write("Found these different names:", ", ".join(consolidated_info['names']))
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔄 Reload & Try Again"):
+                    st.session_state.proceed_anyway = False
+                    st.rerun()
+            with col2:
+                if st.button("✅ Proceed Anyway"):
+                    st.session_state.proceed_anyway = True
+                    # Rerun consolidation without name check
+                    consolidated_info = {
+                        'name': max(consolidated_info['names'], key=len),  # Use longest name
+                        'age': all_patient_infos_from_pdfs[0].get('age', 'N/A'),
+                        'gender': all_patient_infos_from_pdfs[0].get('gender', 'N/A'),
+                        'patient_id': all_patient_infos_from_pdfs[0].get('patient_id', 'N/A'),
+                        'date': all_patient_infos_from_pdfs[0].get('date', 'N/A')
+                    }
+        
+        if not ('error' in consolidated_info and consolidated_info['error'] == 'name_mismatch') or st.session_state.proceed_anyway:
+            # Process the data whether we're proceeding anyway or there was no name mismatch# Show error popup for name mismatch
             st.error("⚠️ Name Mismatch Detected!")
             name1, name2 = consolidated_info.get('conflicting_names', ['Unknown', 'Unknown'])
             
@@ -892,13 +939,16 @@ def combine_duplicate_tests(df):
     merged = pd.merge(test_cat_counts, test_cat_total, on=['Test_Name', 'Test_Category'])
     # For each Test_Name, pick the best Test_Category
     def pick_category(subdf):
-        max_date = subdf['date_count'].max()
-        candidates = subdf[subdf['date_count'] == max_date]
-        if len(candidates) == 1:
-            return candidates.iloc[0]['Test_Category']
-        # Tie: pick the one with most rows
-        max_row = candidates['row_count'].max()
-        return candidates[candidates['row_count'] == max_row].iloc[0]['Test_Category']
+        # First try to pick by most dates
+        max_dates = subdf['date_count'].max()
+        date_winners = subdf[subdf['date_count'] == max_dates]
+        if len(date_winners) == 1:
+            return date_winners.iloc[0]['Test_Category']
+        # If tie in dates, use most rows
+        max_rows = date_winners['row_count'].max()
+        row_winners = date_winners[date_winners['row_count'] == max_rows]
+        # Return first category alphabetically if still tied
+        return row_winners.iloc[0]['Test_Category']
     best_cats = merged.groupby('Test_Name').apply(pick_category).reset_index()
     best_cats.columns = ['Test_Name', 'Best_Test_Category']
     # Map best category back to df
