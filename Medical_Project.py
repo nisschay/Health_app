@@ -1159,10 +1159,11 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                 st.divider()
 
     # --- Organised Data Section ---
+    # --- Organised Data Section with Enhanced Excel Export ---
     st.header("📊 Organised Data by Date")
     if not st.session_state.report_df.empty:
         try:
-            # Pivot with Test_Category as primary index, then Test_Name
+            # Create pivot table with Test_Category as primary index, then Test_Name
             organized_df = st.session_state.report_df.pivot_table(
                 index=['Test_Category', 'Test_Name'],
                 columns='Test_Date',
@@ -1170,51 +1171,233 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                 aggfunc='first'
             )
             organized_df = organized_df.reset_index()
-            # Reorder columns: Test_Category, Test_Name, then all dates
+            
+            # Reorder columns: Test_Category, Test_Name, then all dates (sorted chronologically)
             date_cols = [col for col in organized_df.columns if col not in ['Test_Category', 'Test_Name']]
-            organized_df = organized_df[['Test_Category', 'Test_Name'] + date_cols]
+            # Sort date columns chronologically
+            try:
+                date_cols_sorted = sorted(date_cols, key=lambda x: pd.to_datetime(x, format='%d-%m-%Y', errors='coerce'))
+            except:
+                date_cols_sorted = sorted(date_cols)  # Fallback to alphabetical sort
+                
+            organized_df = organized_df[['Test_Category', 'Test_Name'] + date_cols_sorted]
+            
             # Sort by Test_Category, then Test_Name
             organized_df = organized_df.sort_values(['Test_Category', 'Test_Name']).reset_index(drop=True)
-            st.write("Download your medical test results organised by test category, test name, and date (columns).")
+            
+            # Display the organized data in Streamlit
+            st.write("Download your medical test results organised by test category, test name, and date (columns) with embedded trend charts in Excel.")
+            st.dataframe(organized_df, use_container_width=True)
 
             # Get patient name for filename
             p_info = st.session_state.consolidated_patient_info
             patient_name_for_file = "".join(c if c.isalnum() else "_" for c in p_info.get('name', 'medical_data'))
 
-            # Create Excel file with formatted headers
+            # Create enhanced Excel file with trend charts
             output_excel = io.BytesIO()
             with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-                organized_df.to_excel(writer, index=False, sheet_name='Organised Data')
-                workbook = writer.book
-                worksheet = writer.sheets['Organised Data']
+                # Write the main data
+                organized_df.to_excel(writer, index=False, sheet_name='Medical Data with Trends', startrow=1)
                 
-                # Add header format
+                workbook = writer.book
+                worksheet = writer.sheets['Medical Data with Trends']
+                
+                # Add title
+                title_format = workbook.add_format({
+                    'bold': True,
+                    'font_size': 16,
+                    'align': 'center',
+                    'bg_color': '#4472C4',
+                    'font_color': 'white'
+                })
+                worksheet.merge_range('A1:' + chr(65 + len(organized_df.columns) - 1) + '1', 
+                                    'Medical Test Results - Organized by Date with Trends', title_format)
+                
+                # Format headers
                 header_format = workbook.add_format({
                     'bold': True,
-                    'underline': True
+                    'bg_color': '#D9E2F3',
+                    'border': 1,
+                    'align': 'center',
+                    'valign': 'vcenter'
                 })
-                # Apply format to header row
+                
+                # Apply header formatting
                 for col_num, value in enumerate(organized_df.columns.values):
-                    worksheet.write(0, col_num, value, header_format)
-                # Add autofilter to header row
-                worksheet.autofilter(0, 0, 0, len(organized_df.columns) - 1)
+                    worksheet.write(1, col_num, value, header_format)
+                
+                # Format data cells
+                data_format = workbook.add_format({
+                    'border': 1,
+                    'align': 'center',
+                    'valign': 'vcenter'
+                })
+                
+                numeric_format = workbook.add_format({
+                    'border': 1,
+                    'align': 'center',
+                    'valign': 'vcenter',
+                    'num_format': '0.00'
+                })
+                
+                # Apply data formatting and convert numeric values
+                for row_num in range(len(organized_df)):
+                    for col_num in range(len(organized_df.columns)):
+                        value = organized_df.iloc[row_num, col_num]
+                        
+                        # Skip Test_Category and Test_Name columns for numeric conversion
+                        if col_num < 2:
+                            worksheet.write(row_num + 2, col_num, value, data_format)
+                        else:
+                            # Try to convert to float for date columns
+                            try:
+                                if pd.notna(value) and str(value).strip() != '':
+                                    float_val = float(value)
+                                    worksheet.write(row_num + 2, col_num, float_val, numeric_format)
+                                else:
+                                    worksheet.write(row_num + 2, col_num, value if pd.notna(value) else '', data_format)
+                            except (ValueError, TypeError):
+                                # Keep as string if not numeric
+                                worksheet.write(row_num + 2, col_num, str(value) if pd.notna(value) else '', data_format)
+                
+                # Set row heights for better chart visibility
+                # Set header row height
+                worksheet.set_row(1, 35)
+                
+                # Set data row heights to accommodate much larger charts (250 pixels = about 187.5 points)
+                for row_num in range(len(organized_df)):
+                    worksheet.set_row(row_num + 2, 187.5)  # Much larger row height for bigger charts
+                
+                # Add trend charts for each test that has numeric data
+                chart_col = len(organized_df.columns)  # Column after the last data column
+                chart_row_start = 2  # Start after headers
+                
+                # Add "Trends Chart" header
+                worksheet.write(1, chart_col, "Trends Chart", header_format)
+                
+                for row_num in range(len(organized_df)):
+                    test_category = organized_df.iloc[row_num, 0]
+                    test_name = organized_df.iloc[row_num, 1]
+                    
+                    # Get numeric values for this row (excluding Test_Category and Test_Name)
+                    row_values = []
+                    date_labels = []
+                    
+                    for col_idx, col_name in enumerate(date_cols_sorted):
+                        value = organized_df.iloc[row_num, col_idx + 2]  # +2 to skip Test_Category and Test_Name
+                        if pd.notna(value) and str(value).strip() != '':
+                            try:
+                                float_val = float(value)
+                                row_values.append(float_val)
+                                date_labels.append(col_name)
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    # Create chart only if we have at least 2 numeric values
+                    if len(row_values) >= 2:
+                        # Create a line chart
+                        chart = workbook.add_chart({'type': 'line'})
+                        
+                        # Add the data series with thicker line and bigger markers
+                        chart.add_series({
+                            'name': f'{test_name}',
+                            'categories': [worksheet.name, row_num + 2, 2, row_num + 2, len(date_cols_sorted) + 1],
+                            'values': [worksheet.name, row_num + 2, 2, row_num + 2, len(date_cols_sorted) + 1],
+                            'line': {'color': '#4472C4', 'width': 3},  # Thicker line
+                            'marker': {'type': 'circle', 'size': 8, 'border': {'color': '#4472C4', 'width': 2}, 'fill': {'color': '#4472C4'}},  # Bigger markers
+                        })
+                        
+                        # Configure chart
+                        chart.set_title({
+                            'name': f'{test_name} Trend',
+                            'name_font': {'size': 12, 'bold': True}  # Bigger title font
+                        })
+                        
+                        chart.set_x_axis({
+                            'name': 'Date',
+                            'name_font': {'size': 11, 'bold': True},  # Bigger axis label font
+                            'num_font': {'size': 9, 'rotation': 45}  # Bigger axis values font
+                        })
+                        
+                        chart.set_y_axis({
+                            'name': 'Value',
+                            'name_font': {'size': 11, 'bold': True},  # Bigger axis label font
+                            'num_font': {'size': 9}  # Bigger axis values font
+                        })
+                        
+                        chart.set_legend({'none': True})
+                        chart.set_size({'width': 450, 'height': 180})  # Much larger chart size
+                        
+                        # Insert chart in the trends column with proper positioning
+                        # Position chart slightly inset from cell boundaries for better appearance
+                        worksheet.insert_chart(row_num + 2, chart_col, chart, {
+                            'x_offset': 5,
+                            'y_offset': 5
+                        })
+                        
+                    else:
+                        # If no numeric trend available, write "No trend data"
+                        worksheet.write(row_num + 2, chart_col, "No numeric trend data", data_format)
+                
+                # Adjust column widths
+                worksheet.set_column('A:A', 20)  # Test Category
+                worksheet.set_column('B:B', 25)  # Test Name
+                for i, col in enumerate(date_cols_sorted):
+                    worksheet.set_column(i + 2, i + 2, 12)  # Date columns
+                worksheet.set_column(chart_col, chart_col, 60)  # Much wider trends column for larger charts
+                
+                # Add autofilter
+                worksheet.autofilter(1, 0, len(organized_df) + 1, len(organized_df.columns) - 1)
+                
+                # Freeze panes for better navigation
+                worksheet.freeze_panes(2, 2)
+                
+                # Add summary sheet
+                summary_sheet = workbook.add_worksheet('Summary')
+                
+                # Summary title
+                summary_sheet.merge_range('A1:D1', 'Medical Report Summary', title_format)
+                
+                # Patient info
+                info_format = workbook.add_format({'bold': True, 'bg_color': '#E7E6E6'})
+                summary_sheet.write('A3', 'Patient Information:', info_format)
+                summary_sheet.write('A4', f"Name: {p_info.get('name', 'N/A')}")
+                summary_sheet.write('A5', f"Age: {p_info.get('age', 'N/A')}")
+                summary_sheet.write('A6', f"Gender: {p_info.get('gender', 'N/A')}")
+                summary_sheet.write('A7', f"Patient ID: {p_info.get('patient_id', 'N/A')}")
+                
+                # Report statistics
+                summary_sheet.write('A9', 'Report Statistics:', info_format)
+                summary_sheet.write('A10', f"Total Test Categories: {organized_df['Test_Category'].nunique()}")
+                summary_sheet.write('A11', f"Total Tests: {len(organized_df)}")
+                summary_sheet.write('A12', f"Date Range: {min(date_cols_sorted)} to {max(date_cols_sorted)}")
+                summary_sheet.write('A13', f"Generated on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
+                
+                # Test categories breakdown
+                summary_sheet.write('A15', 'Test Categories:', info_format)
+                categories = organized_df['Test_Category'].value_counts()
+                for i, (category, count) in enumerate(categories.items()):
+                    summary_sheet.write(f'A{16+i}', f"• {category}: {count} tests")
+
             excel_data = output_excel.getvalue()
 
             col1, col2 = st.columns(2)
             with col1:
                 st.download_button(
-                    label="📥 Download as Excel",
+                    label="📥 Download Enhanced Excel with Trend Charts",
                     data=excel_data,
-                    file_name=f"organised_medical_reports_{patient_name_for_file}.xlsx",
+                    file_name=f"medical_reports_with_trends_{patient_name_for_file}.xlsx",
                     mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 )
+            
+            with col2:
+                st.info("📊 **Excel Features:**\n- Organized data by category & test\n- Numeric values converted to numbers\n- Embedded trend line charts\n- Summary sheet with patient info\n- Auto-filtering and frozen panes")
+                
         except Exception as e:
             st.error(f"Error generating organised data: {str(e)}")
             st.info("Could not create the organised data table. This might happen if there are duplicate test entries for the same date.")
     else:
         st.info("No data available to organise. Please analyze reports first.")
-
-    st.divider()
 
     # --- Extracted Data Section (Moved to Bottom and Collapsible) ---
     st.header("🗂️ Extracted Report Data Details")
