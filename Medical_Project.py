@@ -176,8 +176,8 @@ def init_gemini_models(api_key_for_gemini):
         genai.configure(api_key=api_key_for_gemini)
         
         # Always create new model instances with the new key
-        gemini_model_extraction = genai.GenerativeModel('gemini-1.5-flash')
-        gemini_model_chat = genai.GenerativeModel('gemini-1.5-flash')
+        gemini_model_extraction = genai.GenerativeModel('gemini-2.5-flash')
+        gemini_model_chat = genai.GenerativeModel('gemini-2.5-flash')
         
         # Test the connection with a simple generation
         test_response = gemini_model_extraction.generate_content("Test connection")
