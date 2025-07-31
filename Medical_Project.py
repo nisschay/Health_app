@@ -393,15 +393,23 @@ def create_consolidated_info_with_smart_selection(patient_info_list):
     dates = [pi.get('date') for pi in patient_info_list if pi.get('date') and pi.get('date') not in ['N/A', '']]
     lab_names = [pi.get('lab_name') for pi in patient_info_list if pi.get('lab_name') and pi.get('lab_name') not in ['N/A', '']]
 
-    # 1. Most common name (normalized)
-    normalized_names = [normalize_name(name) for name in names]
-    normalized_names = [name for name in normalized_names if name]  # Remove empty strings
-    
+    # 1. Smart name selection - prefer the longest, most complete name
     final_name = "N/A"
-    if normalized_names:
-        name_counts = Counter(normalized_names)
-        # Get the most common name
-        final_name = name_counts.most_common(1)[0][0]
+    if names:
+        # Normalize names first
+        normalized_names = [normalize_name(name) for name in names]
+        normalized_names = [name for name in normalized_names if name]  # Remove empty strings
+        
+        if normalized_names:
+            # Count occurrences of normalized names
+            name_counts = Counter(normalized_names)
+            
+            # Get the most frequent names
+            max_count = max(name_counts.values())
+            most_frequent_names = [name for name, count in name_counts.items() if count == max_count]
+            
+            # Among the most frequent names, choose the longest one (most complete)
+            final_name = max(most_frequent_names, key=len) if most_frequent_names else normalized_names[0]
 
     # 2. Age from the PDF with the most recent date
     final_age = "N/A"
@@ -423,6 +431,9 @@ def create_consolidated_info_with_smart_selection(patient_info_list):
             # Sort by date and get the age from the most recent date
             date_info_pairs.sort(key=lambda x: x[0], reverse=True)
             final_age = date_info_pairs[0][1]  # Age from most recent date
+        elif ages:
+            # If no valid dates, just use the most common age
+            final_age = Counter(ages).most_common(1)[0][0]
 
     # 3. Other fields: most frequent valid value
     final_gender = Counter(genders).most_common(1)[0][0] if genders else "N/A"
@@ -794,12 +805,15 @@ uploaded_files = st.file_uploader(
 )
 
 # Trigger analysis button
+
+
 if st.button("🔬 Analyze Reports", key="analyze_btn"):
     st.session_state.analysis_done = False
     st.session_state.report_df = pd.DataFrame() # Reset report_df at the start
     st.session_state.consolidated_patient_info = {}
     st.session_state.chat_history = [] # Reset chat on new analysis
     st.session_state.raw_texts = []
+    st.session_state.proceed_anyway = False  # Reset proceed_anyway flag
 
     all_dfs = [] # DataFrames from new PDFs (raw format)
     all_patient_infos_from_pdfs = [] # Patient info dicts from new PDFs
@@ -902,49 +916,33 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
             # If not adding to existing, or if no excel data in session state, just use the new data from PDFs
             combined_raw_df = new_data_df
 
-        # --- Finalize and Store Data ---
-        # Initialize proceed_anyway in session state if not present
-        if 'proceed_anyway' not in st.session_state:
-            st.session_state.proceed_anyway = False
-            
-        # First check for name compatibility
+        # --- Handle Name Conflicts with Automatic Resolution ---
+        # Check for name compatibility first
         consolidated_info = consolidate_patient_info(all_patient_infos_from_pdfs)
         
-        # Initialize or update proceed_anyway in session state if not present
-        if 'proceed_anyway' not in st.session_state:
-            st.session_state.proceed_anyway = False
-        
-        if 'error' in consolidated_info and consolidated_info['error'] == 'name_mismatch' and not st.session_state.proceed_anyway:
-            # Show name mismatch warning with buttons
+        # If there's a name mismatch, automatically use smart selection instead of blocking
+        if 'error' in consolidated_info and consolidated_info['error'] == 'name_mismatch':
             st.warning("⚠️ Different patient names detected in reports!")
             st.write("Found these different names:", ", ".join(consolidated_info['names']))
+            st.info("🔄 Automatically resolving name conflicts using smart selection...")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("🔄 Reload & Try Again"):
-                    st.session_state.proceed_anyway = False
-                    st.rerun()
-            with col2:
-                if st.button("✅ Proceed Anyway"):
-                    st.session_state.proceed_anyway = True
-                    st.rerun()  # This will reprocess the data with proceed_anyway = True
-        
-        # Process data if no name mismatch OR if user chose to proceed anyway
-        if not ('error' in consolidated_info and consolidated_info['error'] == 'name_mismatch') or st.session_state.proceed_anyway:
-            # If proceeding anyway after name mismatch, create new consolidated info
-            if st.session_state.proceed_anyway and 'error' in consolidated_info:
-                consolidated_info = create_consolidated_info_with_smart_selection(all_patient_infos_from_pdfs)
-            # Process the data whether we're proceeding anyway or there was no name mismatch
-            st.session_state.report_df = combined_raw_df
+            # Automatically use smart selection to resolve the conflict
+            consolidated_info = create_consolidated_info_with_smart_selection(all_patient_infos_from_pdfs)
+            st.success(f"✅ Resolved name conflict. Using: **{consolidated_info.get('name', 'N/A')}**")
 
-            if not st.session_state.report_df.empty:
-                st.session_state.consolidated_patient_info = consolidated_info
-                st.session_state.analysis_done = True
-                st.session_state.proceed_anyway = False  # Reset the flag after successful processing
-                st.balloons()
-            else:
-                st.warning("No data could be extracted or merged from the provided files.")
-                st.session_state.analysis_done = False # Reset analysis_done if no data
+        # --- Always Process Data (No Blocking) ---
+        st.session_state.report_df = combined_raw_df
+
+        if not st.session_state.report_df.empty:
+            st.session_state.consolidated_patient_info = consolidated_info
+            st.session_state.analysis_done = True
+            st.balloons()
+        else:
+            st.warning("No data could be extracted or merged from the provided files.")
+            st.session_state.analysis_done = False # Reset analysis_done if no data
+
+
+
 
 # --- Utility: Combine duplicate test names and assign most common category ---
 def combine_duplicate_tests(df):
