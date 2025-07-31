@@ -206,6 +206,8 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     Also extract Patient ID, Age (e.g., "35 years", "35 Y", "35"), and Gender (e.g., "Male", "Female", "M", "F").
     The report date or collection date is also critical. Ensure date is in DD-MM-YYYY format if possible. If multiple dates are present (collection, report), prefer collection date.
 
+    IMPORTANT: Also extract the laboratory name or medical center name that conducted the tests. Look for names like "Apollo Hospital", "Quest Diagnostics", "Dr. Lal PathLabs", etc. This is usually at the top of the report or in the header/footer.
+
     For each test parameter, extract:
     - Test Name (e.g., "Haemoglobin", "Total Leucocyte Count")
     - Result (numerical value or finding like "Detected", "Not Detected", "Positive", "Negative")
@@ -221,7 +223,8 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
             "age": "Age",
             "gender": "Gender",
             "patient_id": "Patient ID or Registration No.",
-            "date": "Test Date or Report Date (DD-MM-YYYY)"
+            "date": "Test Date or Report Date (DD-MM-YYYY)",
+            "lab_name": "Laboratory or Medical Center Name"
         }},
         "test_results": [
             {{
@@ -296,6 +299,8 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
         report_date_str = patient_info_dict.get('date', 'N/A')
         parsed_date = pd.to_datetime(report_date_str, errors='coerce').strftime('%d-%m-%Y') if pd.notna(pd.to_datetime(report_date_str, errors='coerce')) else 'N/A'
 
+        # Extract lab name from patient info
+        lab_name = patient_info_dict.get('lab_name', 'N/A')
 
         row = {
             'Source_Filename': source_filename,
@@ -304,6 +309,7 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
             'Age': patient_info_dict.get('age', 'N/A'),
             'Gender': patient_info_dict.get('gender', 'N/A'),
             'Test_Date': parsed_date,
+            'Lab_Name': lab_name,  # Add lab name to each row
             'Test_Category': standardize_value(test_result.get('category', 'N/A'), {}, default_case='title'),
             'Original_Test_Name': raw_test_name,
             'Test_Name': std_test_name,
@@ -374,6 +380,69 @@ def are_names_matching(name1, name2):
     
     return False
 
+def create_consolidated_info_with_smart_selection(patient_info_list):
+    """Create consolidated patient info with smart selection for name and age."""
+    if not patient_info_list:
+        return {}
+
+    # Get all valid data
+    names = [pi.get('name') for pi in patient_info_list if pi.get('name') and pi.get('name') not in ['N/A', '']]
+    ages = [pi.get('age') for pi in patient_info_list if pi.get('age') and pi.get('age') not in ['N/A', '']]
+    genders = [pi.get('gender') for pi in patient_info_list if pi.get('gender') and pi.get('gender') not in ['N/A', '']]
+    patient_ids = [pi.get('patient_id') for pi in patient_info_list if pi.get('patient_id') and pi.get('patient_id') not in ['N/A', '']]
+    dates = [pi.get('date') for pi in patient_info_list if pi.get('date') and pi.get('date') not in ['N/A', '']]
+    lab_names = [pi.get('lab_name') for pi in patient_info_list if pi.get('lab_name') and pi.get('lab_name') not in ['N/A', '']]
+
+    # 1. Most common name (normalized)
+    normalized_names = [normalize_name(name) for name in names]
+    normalized_names = [name for name in normalized_names if name]  # Remove empty strings
+    
+    final_name = "N/A"
+    if normalized_names:
+        name_counts = Counter(normalized_names)
+        # Get the most common name
+        final_name = name_counts.most_common(1)[0][0]
+
+    # 2. Age from the PDF with the most recent date
+    final_age = "N/A"
+    if dates and ages:
+        # Create list of (date, patient_info) pairs
+        date_info_pairs = []
+        for pi in patient_info_list:
+            pi_date = pi.get('date')
+            pi_age = pi.get('age')
+            if pi_date and pi_date not in ['N/A', ''] and pi_age and pi_age not in ['N/A', '']:
+                try:
+                    parsed_date = pd.to_datetime(pi_date, format='%d-%m-%Y', errors='coerce')
+                    if pd.notna(parsed_date):
+                        date_info_pairs.append((parsed_date, pi_age))
+                except:
+                    continue
+        
+        if date_info_pairs:
+            # Sort by date and get the age from the most recent date
+            date_info_pairs.sort(key=lambda x: x[0], reverse=True)
+            final_age = date_info_pairs[0][1]  # Age from most recent date
+
+    # 3. Other fields: most frequent valid value
+    final_gender = Counter(genders).most_common(1)[0][0] if genders else "N/A"
+    final_patient_id = Counter(patient_ids).most_common(1)[0][0] if patient_ids else "N/A"
+    final_lab_name = Counter(lab_names).most_common(1)[0][0] if lab_names else "N/A"
+    
+    # For date, use the most recent one
+    parsed_dates = [pd.to_datetime(d, format='%d-%m-%Y', errors='coerce') for d in dates]
+    valid_parsed_dates = [d for d in parsed_dates if pd.notna(d)]
+    final_date = max(valid_parsed_dates).strftime('%d-%m-%Y') if valid_parsed_dates else "N/A"
+    
+    return {
+        'name': final_name,
+        'age': final_age,
+        'gender': final_gender,
+        'patient_id': final_patient_id,
+        'date': final_date,
+        'lab_name': final_lab_name
+    }
+
 def consolidate_patient_info(patient_info_list):
     if not patient_info_list:
         return {}
@@ -395,6 +464,7 @@ def consolidate_patient_info(patient_info_list):
     genders = [pi.get('gender') for pi in patient_info_list if pi.get('gender') and pi.get('gender') not in ['N/A', '']]
     patient_ids = [pi.get('patient_id') for pi in patient_info_list if pi.get('patient_id') and pi.get('patient_id') not in ['N/A', '']]
     dates = [pi.get('date') for pi in patient_info_list if pi.get('date') and pi.get('date') not in ['N/A', '']]
+    lab_names = [pi.get('lab_name') for pi in patient_info_list if pi.get('lab_name') and pi.get('lab_name') not in ['N/A', '']]
 
     # Normalize all names first
     normalized_names = [normalize_name(name) for name in names]
@@ -419,23 +489,25 @@ def consolidate_patient_info(patient_info_list):
                         best_name_candidate = name
             final_name = best_name_candidate if best_name_candidate else most_common_names[0][0]
 
-
     # Consolidate other info: most frequent valid value
     final_age = Counter(ages).most_common(1)[0][0] if ages else "N/A"
     final_gender = Counter(genders).most_common(1)[0][0] if genders else "N/A"
     final_patient_id = Counter(patient_ids).most_common(1)[0][0] if patient_ids else "N/A"
+    final_lab_name = Counter(lab_names).most_common(1)[0][0] if lab_names else "N/A"
     
-        # For date, might prefer the latest or earliest, or just the most common
+    # For date, might prefer the latest or earliest, or just the most common
     # For now, most common valid date. If dates are datetime objects, this needs adjustment.
     parsed_dates = [pd.to_datetime(d, errors='coerce') for d in dates]
     valid_parsed_dates = [d for d in parsed_dates if pd.notna(d)]
     final_date = max(valid_parsed_dates).strftime('%d-%m-%Y') if valid_parsed_dates else "N/A"
+    
     return {
         'name': final_name,
         'age': final_age,
         'gender': final_gender,
         'patient_id': final_patient_id,
-        'date': final_date # This represents the most common/latest date from patient_info blocks, not necessarily all test dates
+        'date': final_date, # This represents the most common/latest date from patient_info blocks, not necessarily all test dates
+        'lab_name': final_lab_name
     }
 
 def get_chatbot_response(report_df_for_prompt, user_question, chat_history_for_prompt, api_key_for_gemini):
@@ -786,7 +858,7 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
                 # Define the full set of expected columns in the raw DataFrame
                 expected_columns = [
                     'Source_Filename', 'Patient_ID', 'Patient_Name', 'Age', 'Gender',
-                    'Test_Date', 'Test_Category', 'Original_Test_Name', 'Test_Name',
+                    'Test_Date', 'Lab_Name', 'Test_Category', 'Original_Test_Name', 'Test_Name',
                     'Result', 'Unit', 'Reference_Range', 'Status', 'Processed_Date',
                     'Result_Numeric', 'Test_Date_dt'
                 ]
@@ -855,66 +927,24 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
             with col2:
                 if st.button("✅ Proceed Anyway"):
                     st.session_state.proceed_anyway = True
-                    # Rerun consolidation without name check
-                    consolidated_info = {
-                        'name': max(consolidated_info['names'], key=len),  # Use longest name
-                        'age': all_patient_infos_from_pdfs[0].get('age', 'N/A'),
-                        'gender': all_patient_infos_from_pdfs[0].get('gender', 'N/A'),
-                        'patient_id': all_patient_infos_from_pdfs[0].get('patient_id', 'N/A'),
-                        'date': all_patient_infos_from_pdfs[0].get('date', 'N/A')
-                    }
+                    st.rerun()  # This will reprocess the data with proceed_anyway = True
         
+        # Process data if no name mismatch OR if user chose to proceed anyway
         if not ('error' in consolidated_info and consolidated_info['error'] == 'name_mismatch') or st.session_state.proceed_anyway:
-            # Process the data whether we're proceeding anyway or there was no name mismatch# Show error popup for name mismatch
-            st.error("⚠️ Name Mismatch Detected!")
-            name1, name2 = consolidated_info.get('conflicting_names', ['Unknown', 'Unknown'])
-            
-            col1, col2, col3 = st.columns([3, 1, 1])
-            with col1:
-                st.warning(
-                    f"The uploaded reports appear to be for different patients:\n\n"
-                    f"• {name1}\n"
-                    f"• {name2}\n\n"
-                    "These names appear to be different people. If this is incorrect, please ensure:\n"
-                    "1. All reports belong to the same person\n"
-                    "2. Names are spelled consistently across reports\n"
-                )
-            
-            with col2:
-                if st.button("🔄 Reload & Try Again"):
-                    st.session_state.clear()
-                    st.experimental_rerun()
-            
-            with col3:
-                if st.button("✅ Proceed Anyway"):
-                    st.session_state.proceed_anyway = True
-            
-            if not st.session_state.proceed_anyway:
-                st.error(
-                    "For privacy and accuracy, we cannot combine reports that appear to be for different patients. "
-                    "Please verify the reports and try uploading again."
-                )
-                st.stop()
-            else:
-                # If proceeding anyway, create a new consolidated info without the error
-                consolidated_info = {
-                    'name': consolidated_info['names'][0],  # Use the first name
-                    'age': next((pi.get('age', 'N/A') for pi in all_patient_infos_from_pdfs if pi.get('age')), 'N/A'),
-                    'gender': next((pi.get('gender', 'N/A') for pi in all_patient_infos_from_pdfs if pi.get('gender')), 'N/A'),
-                    'patient_id': next((pi.get('patient_id', 'N/A') for pi in all_patient_infos_from_pdfs if pi.get('patient_id')), 'N/A'),
-                    'date': next((pi.get('date', 'N/A') for pi in all_patient_infos_from_pdfs if pi.get('date')), 'N/A')
-                }
-        
-        # If names match or we're proceeding anyway, continue with data processing
-        st.session_state.report_df = combined_raw_df
+            # If proceeding anyway after name mismatch, create new consolidated info
+            if st.session_state.proceed_anyway and 'error' in consolidated_info:
+                consolidated_info = create_consolidated_info_with_smart_selection(all_patient_infos_from_pdfs)
+            # Process the data whether we're proceeding anyway or there was no name mismatch
+            st.session_state.report_df = combined_raw_df
 
-        if not st.session_state.report_df.empty:
-            st.session_state.consolidated_patient_info = consolidated_info
-            st.session_state.analysis_done = True
-            st.balloons()
-        else:
-            st.warning("No data could be extracted or merged from the provided files.")
-            st.session_state.analysis_done = False # Reset analysis_done if no data
+            if not st.session_state.report_df.empty:
+                st.session_state.consolidated_patient_info = consolidated_info
+                st.session_state.analysis_done = True
+                st.session_state.proceed_anyway = False  # Reset the flag after successful processing
+                st.balloons()
+            else:
+                st.warning("No data could be extracted or merged from the provided files.")
+                st.session_state.analysis_done = False # Reset analysis_done if no data
 
 # --- Utility: Combine duplicate test names and assign most common category ---
 def combine_duplicate_tests(df):
@@ -1142,8 +1172,6 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                         )
                     elif len(available_dates) == 1:
                         selected_plot_date = available_dates[0]
-                        # st.caption(f"Displaying data for {selected_test} from report dated {selected_plot_date}")
-
 
                     plot = generate_test_plot(df_for_viz, selected_test, selected_plot_date)
                     if plot:
@@ -1158,36 +1186,74 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
             
                 st.divider()
 
-    # --- Organised Data Section ---
     # --- Organised Data Section with Enhanced Excel Export ---
     st.header("📊 Organised Data by Date")
     if not st.session_state.report_df.empty:
         try:
+            # Create date-lab combination columns first
+            df_with_date_lab = st.session_state.report_df.copy()
+            
+            # Create a combined date-lab column for pivot
+            df_with_date_lab['Date_Lab'] = df_with_date_lab['Test_Date'] + '_' + df_with_date_lab['Lab_Name']
+            
             # Create pivot table with Test_Category as primary index, then Test_Name
-            organized_df = st.session_state.report_df.pivot_table(
+            organized_df = df_with_date_lab.pivot_table(
                 index=['Test_Category', 'Test_Name'],
-                columns='Test_Date',
+                columns='Date_Lab',
                 values='Result',
                 aggfunc='first'
             )
             organized_df = organized_df.reset_index()
             
-            # Reorder columns: Test_Category, Test_Name, then all dates (sorted chronologically)
-            date_cols = [col for col in organized_df.columns if col not in ['Test_Category', 'Test_Name']]
-            # Sort date columns chronologically
-            try:
-                date_cols_sorted = sorted(date_cols, key=lambda x: pd.to_datetime(x, format='%d-%m-%Y', errors='coerce'))
-            except:
-                date_cols_sorted = sorted(date_cols)  # Fallback to alphabetical sort
-                
-            organized_df = organized_df[['Test_Category', 'Test_Name'] + date_cols_sorted]
+            # Reorder columns: Test_Category, Test_Name, then all date-lab combinations (sorted chronologically)
+            date_lab_cols = [col for col in organized_df.columns if col not in ['Test_Category', 'Test_Name']]
+            
+            # Sort date-lab columns chronologically by extracting date part
+            def extract_date_for_sort(col_name):
+                try:
+                    date_part = col_name.split('_')[0]  # Extract date part before underscore
+                    return pd.to_datetime(date_part, format='%d-%m-%Y', errors='coerce')
+                except:
+                    return pd.to_datetime('1900-01-01')  # Fallback date for sorting
+            
+            date_lab_cols_sorted = sorted(date_lab_cols, key=extract_date_for_sort)
+            organized_df = organized_df[['Test_Category', 'Test_Name'] + date_lab_cols_sorted]
             
             # Sort by Test_Category, then Test_Name
             organized_df = organized_df.sort_values(['Test_Category', 'Test_Name']).reset_index(drop=True)
             
+            # Create a display version with dates and lab names shown separately
+            display_df = organized_df.copy()
+            
+            # Create header rows for better display
+            date_row = {'Test_Category': '📅 Date', 'Test_Name': ''}
+            lab_row = {'Test_Category': '🏥 Lab', 'Test_Name': ''}
+            
+            for date_lab_col in date_lab_cols_sorted:
+                parts = date_lab_col.split('_', 1)  # Split only on first underscore
+                date_part = parts[0] if len(parts) > 0 else 'N/A'
+                lab_part = parts[1] if len(parts) > 1 else 'N/A'
+                
+                date_row[date_lab_col] = date_part
+                lab_row[date_lab_col] = lab_part
+            
+            # Insert the header rows at the beginning
+            header_rows_df = pd.DataFrame([date_row, lab_row])
+            display_df = pd.concat([header_rows_df, display_df], ignore_index=True)
+            
             # Display the organized data in Streamlit
-            st.write("Download your medical test results organised by test category, test name, and date (columns) with embedded trend charts in Excel.")
-            st.dataframe(organized_df, use_container_width=True)
+            st.write("Your medical test results organised by test category, test name, and date with corresponding lab names.")
+            
+            # Style the dataframe to highlight the header rows
+            def highlight_header_rows(row):
+                if row.name == 0:  # First row (date row)
+                    return ['background-color: #E7E6E6; font-weight: bold; color: #2E5C8F'] * len(row)
+                elif row.name == 1:  # Second row (lab row)
+                    return ['background-color: #F0F8FF; font-weight: bold; color: #1E7B3E; font-style: italic'] * len(row)
+                return [''] * len(row)
+            
+            styled_df = display_df.style.apply(highlight_header_rows, axis=1)
+            st.dataframe(styled_df, use_container_width=True)
 
             # Get patient name for filename
             p_info = st.session_state.consolidated_patient_info
@@ -1196,7 +1262,7 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
             # Create enhanced Excel file with trend charts
             output_excel = io.BytesIO()
             with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-                # Write the main data
+                # Write the main data (use original organized_df, not display_df)
                 organized_df.to_excel(writer, index=False, sheet_name='Medical Data with Trends', startrow=1)
                 
                 workbook = writer.book
@@ -1283,13 +1349,13 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                     row_values = []
                     date_labels = []
                     
-                    for col_idx, col_name in enumerate(date_cols_sorted):
+                    for col_idx, col_name in enumerate(date_lab_cols_sorted):
                         value = organized_df.iloc[row_num, col_idx + 2]  # +2 to skip Test_Category and Test_Name
                         if pd.notna(value) and str(value).strip() != '':
                             try:
                                 float_val = float(value)
                                 row_values.append(float_val)
-                                date_labels.append(col_name)
+                                date_labels.append(col_name.split('_')[0])  # Extract date part for label
                             except (ValueError, TypeError):
                                 continue
                     
@@ -1301,8 +1367,8 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                         # Add the data series with thicker line and bigger markers
                         chart.add_series({
                             'name': f'{test_name}',
-                            'categories': [worksheet.name, row_num + 2, 2, row_num + 2, len(date_cols_sorted) + 1],
-                            'values': [worksheet.name, row_num + 2, 2, row_num + 2, len(date_cols_sorted) + 1],
+                            'categories': [worksheet.name, row_num + 2, 2, row_num + 2, len(date_lab_cols_sorted) + 1],
+                            'values': [worksheet.name, row_num + 2, 2, row_num + 2, len(date_lab_cols_sorted) + 1],
                             'line': {'color': '#4472C4', 'width': 3},  # Thicker line
                             'marker': {'type': 'circle', 'size': 8, 'border': {'color': '#4472C4', 'width': 2}, 'fill': {'color': '#4472C4'}},  # Bigger markers
                         })
@@ -1342,8 +1408,8 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                 # Adjust column widths
                 worksheet.set_column('A:A', 20)  # Test Category
                 worksheet.set_column('B:B', 25)  # Test Name
-                for i, col in enumerate(date_cols_sorted):
-                    worksheet.set_column(i + 2, i + 2, 12)  # Date columns
+                for i, col in enumerate(date_lab_cols_sorted):
+                    worksheet.set_column(i + 2, i + 2, 15)  # Date-lab columns (wider for lab names)
                 worksheet.set_column(chart_col, chart_col, 60)  # Much wider trends column for larger charts
                 
                 # Add autofilter
@@ -1365,33 +1431,49 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                 summary_sheet.write('A5', f"Age: {p_info.get('age', 'N/A')}")
                 summary_sheet.write('A6', f"Gender: {p_info.get('gender', 'N/A')}")
                 summary_sheet.write('A7', f"Patient ID: {p_info.get('patient_id', 'N/A')}")
+                summary_sheet.write('A8', f"Primary Lab: {p_info.get('lab_name', 'N/A')}")
                 
                 # Report statistics
-                summary_sheet.write('A9', 'Report Statistics:', info_format)
-                summary_sheet.write('A10', f"Total Test Categories: {organized_df['Test_Category'].nunique()}")
-                summary_sheet.write('A11', f"Total Tests: {len(organized_df)}")
-                summary_sheet.write('A12', f"Date Range: {min(date_cols_sorted)} to {max(date_cols_sorted)}")
-                summary_sheet.write('A13', f"Generated on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
+                summary_sheet.write('A10', 'Report Statistics:', info_format)
+                summary_sheet.write('A11', f"Total Test Categories: {organized_df['Test_Category'].nunique()}")
+                summary_sheet.write('A12', f"Total Tests: {len(organized_df)}")
+                summary_sheet.write('A13', f"Total Date-Lab Combinations: {len(date_lab_cols_sorted)}")
+                if date_lab_cols_sorted:
+                    first_date = date_lab_cols_sorted[0].split('_')[0]
+                    last_date = date_lab_cols_sorted[-1].split('_')[0]
+                    summary_sheet.write('A14', f"Date Range: {first_date} to {last_date}")
+                summary_sheet.write('A15', f"Generated on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
                 
                 # Test categories breakdown
-                summary_sheet.write('A15', 'Test Categories:', info_format)
+                summary_sheet.write('A17', 'Test Categories:', info_format)
                 categories = organized_df['Test_Category'].value_counts()
                 for i, (category, count) in enumerate(categories.items()):
-                    summary_sheet.write(f'A{16+i}', f"• {category}: {count} tests")
+                    summary_sheet.write(f'A{18+i}', f"• {category}: {count} tests")
+                
+                # Lab breakdown
+                summary_sheet.write('A' + str(18 + len(categories) + 2), 'Labs Used:', info_format)
+                unique_labs = set()
+                for col in date_lab_cols_sorted:
+                    if '_' in col:
+                        lab_part = col.split('_', 1)[1]
+                        unique_labs.add(lab_part)
+                
+                for i, lab in enumerate(sorted(unique_labs)):
+                    summary_sheet.write(f'A{18 + len(categories) + 3 + i}', f"• {lab}")
 
             excel_data = output_excel.getvalue()
 
             col1, col2 = st.columns(2)
             with col1:
                 st.download_button(
-                    label="📥 Download Enhanced Excel with Trend Charts",
+                    label="📥 Download Enhanced Excel with Lab Names & Trend Charts",
                     data=excel_data,
-                    file_name=f"medical_reports_with_trends_{patient_name_for_file}.xlsx",
+                    file_name=f"medical_reports_with_labs_trends_{patient_name_for_file}.xlsx",
                     mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 )
             
             with col2:
-                st.info("📊 **Excel Features:**\n- Organized data by category & test\n- Numeric values converted to numbers\n- Embedded trend line charts\n- Summary sheet with patient info\n- Auto-filtering and frozen panes")
+                st.info("📊 **Excel Features:**\n- Organized data by category & test\n- Date-Lab column headers\n- Numeric values converted to numbers\n- Embedded trend line charts\n- Summary sheet with patient & lab info\n- Auto-filtering and frozen panes")
                 
         except Exception as e:
             st.error(f"Error generating organised data: {str(e)}")
@@ -1421,7 +1503,5 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
         else:
             st.info("No raw text snippets available. Analyze reports first.")
 
-
 elif st.session_state.analysis_done and st.session_state.report_df.empty:
     st.warning("Analysis was run, but no data was extracted or processed from any PDF. Cannot show details. Please check the PDF content and API key.")
-
