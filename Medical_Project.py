@@ -207,6 +207,7 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     The report date or collection date is also critical. Ensure date is in DD-MM-YYYY format if possible. If multiple dates are present (collection, report), prefer collection date.
 
     IMPORTANT: Also extract the laboratory name or medical center name that conducted the tests. Look for names like "Apollo Hospital", "Quest Diagnostics", "Dr. Lal PathLabs", etc. This is usually at the top of the report or in the header/footer.
+    Don't take up the lab name as the Bill Loc, it is like the title of the pdf generally on the top right or top left.
 
     For each test parameter, extract:
     - Test Name (e.g., "Haemoglobin", "Total Leucocyte Count")
@@ -1185,14 +1186,59 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                 st.divider()
 
     # --- Organised Data Section with Enhanced Excel Export ---
+    
     st.header("📊 Organised Data by Date")
     if not st.session_state.report_df.empty:
         try:
             # Create date-lab combination columns first
             df_with_date_lab = st.session_state.report_df.copy()
             
+            # Clean lab names to extract location/facility name instead of billing location
+            def clean_lab_name(lab_name):
+                if pd.isna(lab_name) or lab_name == 'N/A':
+                    return 'N/A'
+                
+                # Remove common billing-related terms and extract facility name
+                lab_name = str(lab_name).strip()
+                
+                # Remove billing-related prefixes/suffixes
+                billing_terms = [
+                    'bill', 'billing', 'invoice', 'receipt', 'payment',
+                    'charges', 'collection center', 'collection centre'
+                ]
+                
+                # Split by common separators and clean each part
+                parts = []
+                for separator in ['-', '|', ',', '(', ')']:
+                    if separator in lab_name:
+                        parts = lab_name.split(separator)
+                        break
+                
+                if not parts:
+                    parts = [lab_name]
+                
+                # Find the best part (usually the facility name)
+                cleaned_parts = []
+                for part in parts:
+                    part = part.strip()
+                    # Skip if part contains billing terms
+                    if any(term in part.lower() for term in billing_terms):
+                        continue
+                    # Skip if part is too short or contains only numbers
+                    if len(part) > 2 and not part.isdigit():
+                        cleaned_parts.append(part)
+                
+                # Return the longest meaningful part or the original if nothing found
+                if cleaned_parts:
+                    return max(cleaned_parts, key=len)
+                else:
+                    return lab_name
+            
+            # Apply lab name cleaning
+            df_with_date_lab['Lab_Name_Clean'] = df_with_date_lab['Lab_Name'].apply(clean_lab_name)
+            
             # Create a combined date-lab column for pivot
-            df_with_date_lab['Date_Lab'] = df_with_date_lab['Test_Date'] + '_' + df_with_date_lab['Lab_Name']
+            df_with_date_lab['Date_Lab'] = df_with_date_lab['Test_Date'] + '_' + df_with_date_lab['Lab_Name_Clean']
             
             # Create pivot table with Test_Category as primary index, then Test_Name
             organized_df = df_with_date_lab.pivot_table(
@@ -1202,6 +1248,15 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                 aggfunc='first'
             )
             organized_df = organized_df.reset_index()
+            
+            # Also create reference range pivot for chart generation
+            ref_range_df = df_with_date_lab.pivot_table(
+                index=['Test_Category', 'Test_Name'],
+                columns='Date_Lab',
+                values='Reference_Range',
+                aggfunc='first'
+            )
+            ref_range_df = ref_range_df.reset_index()
             
             # Reorder columns: Test_Category, Test_Name, then all date-lab combinations (sorted chronologically)
             date_lab_cols = [col for col in organized_df.columns if col not in ['Test_Category', 'Test_Name']]
@@ -1216,9 +1271,11 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
             
             date_lab_cols_sorted = sorted(date_lab_cols, key=extract_date_for_sort)
             organized_df = organized_df[['Test_Category', 'Test_Name'] + date_lab_cols_sorted]
+            ref_range_df = ref_range_df[['Test_Category', 'Test_Name'] + date_lab_cols_sorted]
             
             # Sort by Test_Category, then Test_Name
             organized_df = organized_df.sort_values(['Test_Category', 'Test_Name']).reset_index(drop=True)
+            ref_range_df = ref_range_df.sort_values(['Test_Category', 'Test_Name']).reset_index(drop=True)
             
             # Create a display version with dates and lab names shown separately
             display_df = organized_df.copy()
@@ -1324,13 +1381,12 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                                 # Keep as string if not numeric
                                 worksheet.write(row_num + 2, col_num, str(value) if pd.notna(value) else '', data_format)
                 
-                # Set row heights for better chart visibility
-                # Set header row height
+                # Set row heights for better chart visibility - INCREASED FOR LARGER CHARTS
                 worksheet.set_row(1, 35)
                 
-                # Set data row heights to accommodate much larger charts (250 pixels = about 187.5 points)
+                # Much larger row heights to accommodate bigger charts (300 pixels = about 225 points)
                 for row_num in range(len(organized_df)):
-                    worksheet.set_row(row_num + 2, 187.5)  # Much larger row height for bigger charts
+                    worksheet.set_row(row_num + 2, 225)  # Even larger row height for bigger charts
                 
                 # Add trend charts for each test that has numeric data
                 chart_col = len(organized_df.columns)  # Column after the last data column
@@ -1346,69 +1402,156 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                     # Get numeric values for this row (excluding Test_Category and Test_Name)
                     row_values = []
                     date_labels = []
+                    ref_ranges = []
                     
                     for col_idx, col_name in enumerate(date_lab_cols_sorted):
                         value = organized_df.iloc[row_num, col_idx + 2]  # +2 to skip Test_Category and Test_Name
+                        ref_range = ref_range_df.iloc[row_num, col_idx + 2]  # Get corresponding reference range
+                        
                         if pd.notna(value) and str(value).strip() != '':
                             try:
                                 float_val = float(value)
                                 row_values.append(float_val)
                                 date_labels.append(col_name.split('_')[0])  # Extract date part for label
+                                ref_ranges.append(ref_range)
                             except (ValueError, TypeError):
                                 continue
                     
-                    # Create chart only if we have at least 2 numeric values
-                    if len(row_values) >= 2:
+                    # Create chart only if we have at least 1 numeric value
+                    if len(row_values) >= 1:
                         # Create a line chart
                         chart = workbook.add_chart({'type': 'line'})
+                        
+                        # Calculate correct column ranges for the chart data
+                        first_data_col = 2  # Column C (0-indexed: A=0, B=1, C=2)
+                        last_data_col = len(date_lab_cols_sorted) + 1  # Last column with data
                         
                         # Add the data series with thicker line and bigger markers
                         chart.add_series({
                             'name': f'{test_name}',
-                            'categories': [worksheet.name, row_num + 2, 2, row_num + 2, len(date_lab_cols_sorted) + 1],
-                            'values': [worksheet.name, row_num + 2, 2, row_num + 2, len(date_lab_cols_sorted) + 1],
-                            'line': {'color': '#4472C4', 'width': 3},  # Thicker line
-                            'marker': {'type': 'circle', 'size': 8, 'border': {'color': '#4472C4', 'width': 2}, 'fill': {'color': '#4472C4'}},  # Bigger markers
+                            'categories': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
+                            'values': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
+                            'line': {'color': '#4472C4', 'width': 4},  # Even thicker line
+                            'marker': {'type': 'circle', 'size': 10, 'border': {'color': '#4472C4', 'width': 2}, 'fill': {'color': '#4472C4'}},  # Even bigger markers
                         })
                         
-                        # Configure chart
+                        # Add reference range bands if available
+                        if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
+                            # Use the most common reference range for the chart
+                            valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
+                            if valid_ref_ranges:
+                                ref_range_str = max(set(valid_ref_ranges), key=valid_ref_ranges.count)  # Most common
+                                
+                                # Parse reference range
+                                low_ref, high_ref, ref_type = parse_reference_range(ref_range_str)
+                                
+                                if ref_type == "range" and low_ref is not None and high_ref is not None:
+                                    # Create temporary data for reference lines by writing to unused rows
+                                    temp_row_upper = len(organized_df) + 10  # Use rows well below the data
+                                    temp_row_lower = len(organized_df) + 11
+                                    
+                                    # Write reference values to temporary rows
+                                    for col_idx in range(first_data_col, last_data_col + 1):
+                                        worksheet.write(temp_row_upper, col_idx, high_ref)
+                                        worksheet.write(temp_row_lower, col_idx, low_ref)
+                                    
+                                    # Add reference range as horizontal lines
+                                    chart.add_series({
+                                        'name': 'Upper Reference',
+                                        'categories': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
+                                        'values': [worksheet.name, temp_row_upper, first_data_col, temp_row_upper, last_data_col],
+                                        'line': {'color': '#ff6b6b', 'width': 2, 'dash_type': 'dash'},
+                                        'marker': {'type': 'none'}
+                                    })
+                                    
+                                    chart.add_series({
+                                        'name': 'Lower Reference',
+                                        'categories': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
+                                        'values': [worksheet.name, temp_row_lower, first_data_col, temp_row_lower, last_data_col],
+                                        'line': {'color': '#4ecdc4', 'width': 2, 'dash_type': 'dash'},
+                                        'marker': {'type': 'none'}
+                                    })
+                        
+                        # Configure chart with larger size and better formatting
                         chart.set_title({
                             'name': f'{test_name} Trend',
-                            'name_font': {'size': 12, 'bold': True}  # Bigger title font
+                            'name_font': {'size': 14, 'bold': True}  # Even bigger title font
                         })
                         
                         chart.set_x_axis({
                             'name': 'Date',
-                            'name_font': {'size': 11, 'bold': True},  # Bigger axis label font
-                            'num_font': {'size': 9, 'rotation': 45}  # Bigger axis values font
+                            'name_font': {'size': 12, 'bold': True},  # Bigger axis label font
+                            'num_font': {'size': 10, 'rotation': 45}  # Bigger axis values font
                         })
                         
                         chart.set_y_axis({
                             'name': 'Value',
-                            'name_font': {'size': 11, 'bold': True},  # Bigger axis label font
-                            'num_font': {'size': 9}  # Bigger axis values font
+                            'name_font': {'size': 12, 'bold': True},  # Bigger axis label font
+                            'num_font': {'size': 10}  # Bigger axis values font
                         })
                         
-                        chart.set_legend({'none': True})
-                        chart.set_size({'width': 450, 'height': 180})  # Much larger chart size
+                        # Show legend for reference ranges
+                        chart.set_legend({
+                            'position': 'bottom',
+                            'font': {'size': 9}
+                        })
+                        
+                        # MUCH LARGER chart size
+                        chart.set_size({'width': 550, 'height': 220})  # Significantly larger chart
                         
                         # Insert chart in the trends column with proper positioning
-                        # Position chart slightly inset from cell boundaries for better appearance
                         worksheet.insert_chart(row_num + 2, chart_col, chart, {
                             'x_offset': 5,
                             'y_offset': 5
                         })
                         
+                        # ADD DATA TABLE BELOW THE CHART
+                        # Position for data table (below the chart in the same cell area)
+                        data_table_start_row = row_num + 2
+                        data_table_col = chart_col + 1  # Next column after chart
+                        
+                        # Add "Data Table" header
+                        if row_num == 0:  # Add header only once
+                            worksheet.write(1, data_table_col, "Data & Reference Range", header_format)
+                        
+                        # Create data table format
+                        table_format = workbook.add_format({
+                            'border': 1,
+                            'align': 'center',
+                            'valign': 'top',
+                            'font_size': 9,
+                            'text_wrap': True
+                        })
+                        
+                        # Create data table content
+                        data_table_content = f"Test: {test_name}\n"
+                        data_table_content += "Values: " + ", ".join([f"{date_labels[i]}: {row_values[i]}" for i in range(len(row_values))]) + "\n"
+                        
+                        # Add reference range info
+                        if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
+                            valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
+                            if valid_ref_ranges:
+                                ref_range_str = max(set(valid_ref_ranges), key=valid_ref_ranges.count)
+                                data_table_content += f"Ref Range: {ref_range_str}"
+                        else:
+                            data_table_content += "Ref Range: Not available"
+                        
+                        worksheet.write(data_table_start_row, data_table_col, data_table_content, table_format)
+                        
                     else:
                         # If no numeric trend available, write "No trend data"
                         worksheet.write(row_num + 2, chart_col, "No numeric trend data", data_format)
+                        if row_num == 0:
+                            worksheet.write(1, chart_col + 1, "Data & Reference Range", header_format)
+                        worksheet.write(row_num + 2, chart_col + 1, "No data available", data_format)
                 
                 # Adjust column widths
                 worksheet.set_column('A:A', 20)  # Test Category
                 worksheet.set_column('B:B', 25)  # Test Name
                 for i, col in enumerate(date_lab_cols_sorted):
-                    worksheet.set_column(i + 2, i + 2, 15)  # Date-lab columns (wider for lab names)
-                worksheet.set_column(chart_col, chart_col, 60)  # Much wider trends column for larger charts
+                    worksheet.set_column(i + 2, i + 2, 15)  # Date-lab columns
+                worksheet.set_column(chart_col, chart_col, 70)  # Much wider trends column for larger charts
+                worksheet.set_column(chart_col + 1, chart_col + 1, 30)  # Data table column
                 
                 # Add autofilter
                 worksheet.autofilter(1, 0, len(organized_df) + 1, len(organized_df.columns) - 1)
@@ -1448,7 +1591,7 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                 for i, (category, count) in enumerate(categories.items()):
                     summary_sheet.write(f'A{18+i}', f"• {category}: {count} tests")
                 
-                # Lab breakdown
+                # Lab breakdown with cleaned names
                 summary_sheet.write('A' + str(18 + len(categories) + 2), 'Labs Used:', info_format)
                 unique_labs = set()
                 for col in date_lab_cols_sorted:
@@ -1471,11 +1614,11 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                 )
             
             with col2:
-                st.info("📊 **Excel Features:**\n- Organized data by category & test\n- Date-Lab column headers\n- Numeric values converted to numbers\n- Embedded trend line charts\n- Summary sheet with patient & lab info\n- Auto-filtering and frozen panes")
+                st.info("📊 **Excel Features:**\n- Organized data by category & test\n- Clean lab facility names (no billing info)\n- Reference ranges in trend charts\n- Data table below each chart\n- Embedded trend line charts with reference bands\n- Summary sheet with patient & lab info\n- Auto-filtering and frozen panes")
                 
         except Exception as e:
             st.error(f"Error generating organised data: {str(e)}")
-            st.info("Could not create the organised data table. This might happen if there are duplicate test entries for the same date.")
+            st.info("Could not create the organised data table. This might happen if t  here are duplicate test entries for the same date.")
     else:
         st.info("No data available to organise. Please analyze reports first.")
 
