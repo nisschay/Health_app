@@ -206,8 +206,12 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     Also extract Patient ID, Age (e.g., "35 years", "35 Y", "35"), and Gender (e.g., "Male", "Female", "M", "F").
     The report date or collection date is also critical. Ensure date is in DD-MM-YYYY format if possible. If multiple dates are present (collection, report), prefer collection date.
 
-    IMPORTANT: Also extract the laboratory name or medical center name that conducted the tests. Look for names like "Apollo Hospital", "Quest Diagnostics", "Dr. Lal PathLabs", etc. This is usually at the top of the report or in the header/footer.
-    Don't take up the lab name as the Bill Loc, it is like the title of the pdf generally on the top right or top left.
+    IMPORTANT: Extract the main laboratory/hospital name that conducted the tests. Look for prominent facility names like "Neuberg", "Apollo Hospital", "Quest Diagnostics", "Dr. Lal PathLabs", etc. 
+    - This is usually prominently displayed at the top of the report as the main facility name
+    - Ignore billing locations, collection centers, or subsidiary names in smaller text
+    - Look for the main brand/facility name that appears in large text or as a header
+    - If you see names like "Neuberg Abha", "Apollo Hospitals", "Max Healthcare" etc., prefer these over technical/billing names
+    - Avoid names that look like billing addresses or subsidiary locations
 
     For each test parameter, extract:
     - Test Name (e.g., "Haemoglobin", "Total Leucocyte Count")
@@ -343,6 +347,14 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
 
     if not all_rows:
         return pd.DataFrame(), patient_info_dict
+
+    df = pd.DataFrame(all_rows)
+    df['Result_Numeric'] = pd.to_numeric(df['Result'], errors='coerce')
+    # Convert Test_Date to datetime for sorting (handle DD-MM-YYYY format)
+    df['Test_Date_dt'] = pd.to_datetime(df['Test_Date'], format='%d-%m-%Y', errors='coerce')
+    df = df.sort_values(by=['Test_Date_dt', 'Test_Category', 'Test_Name']).reset_index(drop=True)
+    
+    return df, patient_info_dict
 
     df = pd.DataFrame(all_rows)
     df['Result_Numeric'] = pd.to_numeric(df['Result'], errors='coerce')
@@ -818,13 +830,14 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
     return fig
 
 
+
 def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, patient_info):
     """Create enhanced Excel file with properly scaled trend charts and DD-MM-YYYY dates"""
     
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-        # Write the main data
-        organized_df.to_excel(writer, index=False, sheet_name='Medical Data with Trends', startrow=1)
+        # Write the main data starting from row 4 to leave space for date and lab rows
+        organized_df.to_excel(writer, index=False, sheet_name='Medical Data with Trends', startrow=3)
         
         workbook = writer.book
         worksheet = writer.sheets['Medical Data with Trends']
@@ -840,7 +853,41 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
         worksheet.merge_range('A1:' + chr(65 + len(organized_df.columns) - 1) + '1', 
                             'Medical Test Results - Organized by Date with Trends', title_format)
         
-        # Format headers
+        # Add separate date and lab rows
+        date_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#E7E6E6',
+            'border': 1,
+            'align': 'center',
+            'font_color': '#2E5C8F'
+        })
+        
+        lab_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#F0F8FF',
+            'border': 1,
+            'align': 'center',
+            'font_color': '#1E7B3E',
+            'italic': True
+        })
+        
+        # Write "Date" and "Lab" labels
+        worksheet.write(1, 0, '📅 Date', date_format)
+        worksheet.write(2, 0, '🏥 Lab', lab_format)
+        worksheet.write(1, 1, '', date_format)  # Empty cell for Test_Name column
+        worksheet.write(2, 1, '', lab_format)   # Empty cell for Test_Name column
+        
+        # Fill date and lab rows for all date-lab columns
+        for i, date_lab_col in enumerate(date_lab_cols_sorted):
+            col_idx = i + 2  # +2 because first two columns are Test_Category and Test_Name
+            parts = date_lab_col.split('_', 1)
+            date_part = parts[0] if len(parts) > 0 else 'N/A'
+            lab_part = parts[1] if len(parts) > 1 else 'N/A'
+            
+            worksheet.write(1, col_idx, date_part, date_format)
+            worksheet.write(2, col_idx, lab_part, lab_format)
+        
+        # Format headers (now at row 4, index 3)
         header_format = workbook.add_format({
             'bold': True,
             'bg_color': '#D9E2F3',
@@ -849,11 +896,11 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
             'valign': 'vcenter'
         })
         
-        # Apply header formatting
+        # Apply header formatting to row 4 (index 3)
         for col_num, value in enumerate(organized_df.columns.values):
-            worksheet.write(1, col_num, value, header_format)
+            worksheet.write(3, col_num, value, header_format)
         
-        # Format data cells
+        # Format data cells (starting from row 5, index 4)
         data_format = workbook.add_format({
             'border': 1,
             'align': 'center',
@@ -867,33 +914,37 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
             'num_format': '0.00'
         })
         
-        # Apply data formatting
+        # Apply data formatting starting from row 5
         for row_num in range(len(organized_df)):
             for col_num in range(len(organized_df.columns)):
                 value = organized_df.iloc[row_num, col_num]
                 
                 if col_num < 2:
-                    worksheet.write(row_num + 2, col_num, value, data_format)
+                    worksheet.write(row_num + 4, col_num, value, data_format)  # +4 because data starts at row 5
                 else:
                     try:
                         if pd.notna(value) and str(value).strip() != '':
                             float_val = float(value)
-                            worksheet.write(row_num + 2, col_num, float_val, numeric_format)
+                            worksheet.write(row_num + 4, col_num, float_val, numeric_format)
                         else:
-                            worksheet.write(row_num + 2, col_num, value if pd.notna(value) else '', data_format)
+                            worksheet.write(row_num + 4, col_num, value if pd.notna(value) else '', data_format)
                     except (ValueError, TypeError):
-                        worksheet.write(row_num + 2, col_num, str(value) if pd.notna(value) else '', data_format)
+                        worksheet.write(row_num + 4, col_num, str(value) if pd.notna(value) else '', data_format)
         
-        # Set row heights for charts
-        worksheet.set_row(1, 35)
+        # Set row heights for charts - adjusted for new row structure
+        worksheet.set_row(1, 25)  # Date row
+        worksheet.set_row(2, 25)  # Lab row
+        worksheet.set_row(3, 35)  # Header row
         for row_num in range(len(organized_df)):
-            worksheet.set_row(row_num + 2, 225)
+            worksheet.set_row(row_num + 4, 225)  # Data rows with charts
         
-        # Add trend charts with dynamic scaling
+        # Add trend charts with dynamic scaling - adjusted for new row positions
         chart_col = len(organized_df.columns)
-        chart_row_start = 2
         
-        worksheet.write(1, chart_col, "Trends Chart", header_format)
+        # Add headers for chart columns
+        worksheet.write(1, chart_col, "", date_format)  # Empty for date row
+        worksheet.write(2, chart_col, "", lab_format)   # Empty for lab row
+        worksheet.write(3, chart_col, "Trends Chart", header_format)  # Chart header
         
         for row_num in range(len(organized_df)):
             test_category = organized_df.iloc[row_num, 0]
@@ -912,9 +963,8 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                     try:
                         float_val = float(value)
                         row_values.append(float_val)
-                        # FIX 1 & 3: Extract and format date properly (DD-MM-YYYY)
+                        # Extract and format date properly (DD-MM-YYYY)
                         date_part = col_name.split('_')[0]
-                        # Ensure date is in DD-MM-YYYY format for display
                         try:
                             parsed_date = pd.to_datetime(date_part, format='%d-%m-%Y')
                             formatted_date = parsed_date.strftime('%d-%m-%Y')
@@ -925,7 +975,7 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                     except (ValueError, TypeError):
                         continue
             
-            # Create chart only if we have numeric values
+            # Create chart only if we have numeric values - FIXED DYNAMIC SCALING FOR ALL CHARTS
             if len(row_values) >= 1:
                 chart = workbook.add_chart({'type': 'line'})
                 
@@ -935,13 +985,22 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                 # Add the main data series
                 chart.add_series({
                     'name': f'{test_name}',
-                    'categories': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
-                    'values': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
+                    'categories': [worksheet.name, row_num + 4, first_data_col, row_num + 4, last_data_col],  # Adjusted row reference
+                    'values': [worksheet.name, row_num + 4, first_data_col, row_num + 4, last_data_col],       # Adjusted row reference
                     'line': {'color': '#4472C4', 'width': 4},
                     'marker': {'type': 'circle', 'size': 10, 'border': {'color': '#4472C4', 'width': 2}, 'fill': {'color': '#4472C4'}},
                 })
                 
-                # FIX 2: Dynamic reference range calculation for Excel charts
+                # FIXED: Calculate dynamic Y-axis range for EVERY chart
+                data_min = min(row_values)
+                data_max = max(row_values)
+                data_range = data_max - data_min if data_max != data_min else abs(data_max * 0.2)
+                
+                # Default Y-axis range based on data
+                y_min = data_min - abs(data_range * 0.15)
+                y_max = data_max + abs(data_range * 0.15)
+                
+                # Add reference ranges if available and adjust Y-axis accordingly
                 if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
                     valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
                     if valid_ref_ranges:
@@ -949,8 +1008,8 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                         low_ref, high_ref, ref_type = parse_reference_range(ref_range_str)
                         
                         if ref_type == "range" and low_ref is not None and high_ref is not None:
-                            temp_row_upper = len(organized_df) + 10
-                            temp_row_lower = len(organized_df) + 11
+                            temp_row_upper = len(organized_df) + 20  # Use rows well below data
+                            temp_row_lower = len(organized_df) + 21
                             
                             for col_idx in range(first_data_col, last_data_col + 1):
                                 worksheet.write(temp_row_upper, col_idx, high_ref)
@@ -958,7 +1017,7 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                             
                             chart.add_series({
                                 'name': 'Upper Reference',
-                                'categories': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
+                                'categories': [worksheet.name, row_num + 4, first_data_col, row_num + 4, last_data_col],
                                 'values': [worksheet.name, temp_row_upper, first_data_col, temp_row_upper, last_data_col],
                                 'line': {'color': '#ff6b6b', 'width': 2, 'dash_type': 'dash'},
                                 'marker': {'type': 'none'}
@@ -966,25 +1025,24 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                             
                             chart.add_series({
                                 'name': 'Lower Reference',
-                                'categories': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
+                                'categories': [worksheet.name, row_num + 4, first_data_col, row_num + 4, last_data_col],
                                 'values': [worksheet.name, temp_row_lower, first_data_col, temp_row_lower, last_data_col],
                                 'line': {'color': '#4ecdc4', 'width': 2, 'dash_type': 'dash'},
                                 'marker': {'type': 'none'}
                             })
                             
-                            # FIX 2: Set dynamic y-axis range for Excel charts
-                            data_min = min(row_values)
-                            data_max = max(row_values)
-                            y_min = min(data_min, low_ref) * 0.9
-                            y_max = max(data_max, high_ref) * 1.1
-                            
-                            chart.set_y_axis({
-                                'name': 'Value',
-                                'name_font': {'size': 12, 'bold': True},
-                                'num_font': {'size': 10},
-                                'min': y_min,
-                                'max': y_max
-                            })
+                            # Adjust Y-axis to include reference range
+                            y_min = min(y_min, low_ref - abs(data_range * 0.1))
+                            y_max = max(y_max, high_ref + abs(data_range * 0.1))
+                
+                # Apply dynamic Y-axis range to ALL charts
+                chart.set_y_axis({
+                    'name': 'Value',
+                    'name_font': {'size': 12, 'bold': True},
+                    'num_font': {'size': 10},
+                    'min': y_min,
+                    'max': y_max
+                })
                 
                 # Configure chart
                 chart.set_title({
@@ -992,25 +1050,13 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                     'name_font': {'size': 14, 'bold': True}
                 })
                 
-                # FIX 3: Better x-axis configuration for dates
+                # Better x-axis configuration for dates
                 chart.set_x_axis({
                     'name': 'Date (DD-MM-YYYY)',
                     'name_font': {'size': 12, 'bold': True},
                     'num_font': {'size': 9, 'rotation': 45},
-                    'label_position': 'low'  # Position labels below axis
+                    'label_position': 'low'
                 })
-                
-                if 'y_min' not in locals():  # If no reference range was set
-                    data_min = min(row_values)
-                    data_max = max(row_values)
-                    data_range = data_max - data_min if data_max != data_min else data_max * 0.1
-                    chart.set_y_axis({
-                        'name': 'Value',
-                        'name_font': {'size': 12, 'bold': True},
-                        'num_font': {'size': 10},
-                        'min': data_min - data_range * 0.1,
-                        'max': data_max + data_range * 0.1
-                    })
                 
                 chart.set_legend({
                     'position': 'bottom',
@@ -1019,15 +1065,18 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                 
                 chart.set_size({'width': 550, 'height': 220})
                 
-                worksheet.insert_chart(row_num + 2, chart_col, chart, {
+                # Insert chart - adjusted for new row positions
+                worksheet.insert_chart(row_num + 4, chart_col, chart, {
                     'x_offset': 5,
                     'y_offset': 5
                 })
                 
-                # Add data table
+                # Add data table - adjusted positions
                 data_table_col = chart_col + 1
                 if row_num == 0:
-                    worksheet.write(1, data_table_col, "Data & Reference Range", header_format)
+                    worksheet.write(1, data_table_col, "", date_format)
+                    worksheet.write(2, data_table_col, "", lab_format)
+                    worksheet.write(3, data_table_col, "Data & Reference Range", header_format)
                 
                 table_format = workbook.add_format({
                     'border': 1,
@@ -1048,25 +1097,31 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                 else:
                     data_table_content += "Ref Range: Not available"
                 
-                worksheet.write(row_num + 2, data_table_col, data_table_content, table_format)
+                worksheet.write(row_num + 4, data_table_col, data_table_content, table_format)
                 
             else:
-                worksheet.write(row_num + 2, chart_col, "No numeric trend data", data_format)
+                # No numeric data available
+                worksheet.write(row_num + 4, chart_col, "No numeric trend data", data_format)
                 if row_num == 0:
-                    worksheet.write(1, chart_col + 1, "Data & Reference Range", header_format)
-                worksheet.write(row_num + 2, chart_col + 1, "No data available", data_format)
+                    worksheet.write(1, data_table_col, "", date_format)
+                    worksheet.write(2, data_table_col, "", lab_format)
+                    worksheet.write(3, chart_col + 1, "Data & Reference Range", header_format)
+                worksheet.write(row_num + 4, chart_col + 1, "No data available", data_format)
         
         # Adjust column widths
-        worksheet.set_column('A:A', 20)
-        worksheet.set_column('B:B', 25)
+        worksheet.set_column('A:A', 20)  # Test Category
+        worksheet.set_column('B:B', 25)  # Test Name
         for i, col in enumerate(date_lab_cols_sorted):
-            worksheet.set_column(i + 2, i + 2, 15)
-        worksheet.set_column(chart_col, chart_col, 70)
-        worksheet.set_column(chart_col + 1, chart_col + 1, 30)
+            worksheet.set_column(i + 2, i + 2, 15)  # Date-lab columns
+        worksheet.set_column(chart_col, chart_col, 70)  # Trends column
+        worksheet.set_column(chart_col + 1, chart_col + 1, 30)  # Data table column
         
-        # Add autofilter and freeze panes
-        worksheet.autofilter(1, 0, len(organized_df) + 1, len(organized_df.columns) - 1)
-        worksheet.freeze_panes(2, 2)
+        # Add autofilter - adjusted for new structure
+        worksheet.autofilter(3, 0, len(organized_df) + 3, len(organized_df.columns) - 1)
+        
+        # Freeze panes - adjusted for new structure
+        worksheet.freeze_panes(4, 2)  # Freeze at row 5 (after headers) and column C
+
         
         # Add summary sheet
         summary_sheet = workbook.add_worksheet('Summary')
