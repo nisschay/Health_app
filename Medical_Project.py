@@ -832,7 +832,17 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
 
 
 def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, patient_info):
-    """Create enhanced Excel file with properly scaled trend charts and DD-MM-YYYY dates"""
+    """Create enhanced Excel file with properly scaled trend charts and DD-MM-YYYY dates
+    
+    Improvements made:
+    1. Fixed X-axis to show proper dates instead of test values
+    2. Ensured reference ranges are consistent and properly displayed
+    3. Added smooth line connections to prevent disconnected trend lines
+    4. Sorted data by date to ensure proper chronological trend display
+    5. Improved chart formatting and readability
+    6. Dynamic Y-axis scaling appropriate for each test's value range
+    7. Dedicated chart data areas to ensure proper data mapping
+    """
     
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
@@ -947,166 +957,225 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
         worksheet.write(3, chart_col, "Trends Chart", header_format)  # Chart header
         
         for row_num in range(len(organized_df)):
-            test_category = organized_df.iloc[row_num, 0]
-            test_name = organized_df.iloc[row_num, 1]
-            
-            # Get numeric values and dates for this row
-            row_values = []
-            date_labels = []
-            ref_ranges = []
-            
-            for col_idx, col_name in enumerate(date_lab_cols_sorted):
-                value = organized_df.iloc[row_num, col_idx + 2]
-                ref_range = ref_range_df.iloc[row_num, col_idx + 2]
+            try:
+                test_category = organized_df.iloc[row_num, 0]
+                test_name = organized_df.iloc[row_num, 1]
                 
-                if pd.notna(value) and str(value).strip() != '':
-                    try:
-                        float_val = float(value)
-                        row_values.append(float_val)
-                        # Extract and format date properly (DD-MM-YYYY)
-                        date_part = col_name.split('_')[0]
+                # Get numeric values and dates for this row, sorted by date
+                row_data = []
+                
+                for col_idx, col_name in enumerate(date_lab_cols_sorted):
+                    # Add bounds checking to prevent index out of bounds error
+                    if col_idx + 2 < len(organized_df.columns):
+                        value = organized_df.iloc[row_num, col_idx + 2]
+                    else:
+                        value = None
+                    
+                    if col_idx + 2 < len(ref_range_df.columns):
+                        ref_range = ref_range_df.iloc[row_num, col_idx + 2]
+                    else:
+                        ref_range = None
+                    
+                    if pd.notna(value) and str(value).strip() != '':
                         try:
-                            parsed_date = pd.to_datetime(date_part, format='%d-%m-%Y')
-                            formatted_date = parsed_date.strftime('%d-%m-%Y')
-                        except:
-                            formatted_date = date_part
-                        date_labels.append(formatted_date)
-                        ref_ranges.append(ref_range)
-                    except (ValueError, TypeError):
-                        continue
-            
-            # Create chart only if we have numeric values - FIXED DYNAMIC SCALING FOR ALL CHARTS
-            if len(row_values) >= 1:
-                chart = workbook.add_chart({'type': 'line'})
-                
-                first_data_col = 2
-                last_data_col = len(date_lab_cols_sorted) + 1
-                
-                # Add the main data series
-                chart.add_series({
-                    'name': f'{test_name}',
-                    'categories': [worksheet.name, row_num + 4, first_data_col, row_num + 4, last_data_col],  # Adjusted row reference
-                    'values': [worksheet.name, row_num + 4, first_data_col, row_num + 4, last_data_col],       # Adjusted row reference
-                    'line': {'color': '#4472C4', 'width': 4},
-                    'marker': {'type': 'circle', 'size': 10, 'border': {'color': '#4472C4', 'width': 2}, 'fill': {'color': '#4472C4'}},
-                })
-                
-                # FIXED: Calculate dynamic Y-axis range for EVERY chart
-                data_min = min(row_values)
-                data_max = max(row_values)
-                data_range = data_max - data_min if data_max != data_min else abs(data_max * 0.2)
-                
-                # Default Y-axis range based on data
-                y_min = data_min - abs(data_range * 0.15)
-                y_max = data_max + abs(data_range * 0.15)
-                
-                # Add reference ranges if available and adjust Y-axis accordingly
-                if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
-                    valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
-                    if valid_ref_ranges:
-                        ref_range_str = max(set(valid_ref_ranges), key=valid_ref_ranges.count)
-                        low_ref, high_ref, ref_type = parse_reference_range(ref_range_str)
-                        
-                        if ref_type == "range" and low_ref is not None and high_ref is not None:
-                            temp_row_upper = len(organized_df) + 20  # Use rows well below data
-                            temp_row_lower = len(organized_df) + 21
+                            float_val = float(value)
+                            # Extract and format date properly (DD-MM-YYYY)
+                            date_part = col_name.split('_')[0]
+                            try:
+                                parsed_date = pd.to_datetime(date_part, format='%d-%m-%Y')
+                                formatted_date = parsed_date.strftime('%d-%m-%Y')
+                                date_obj = parsed_date
+                            except:
+                                formatted_date = date_part
+                                date_obj = pd.to_datetime('1900-01-01')  # Fallback for sorting
                             
-                            for col_idx in range(first_data_col, last_data_col + 1):
-                                worksheet.write(temp_row_upper, col_idx, high_ref)
-                                worksheet.write(temp_row_lower, col_idx, low_ref)
-                            
-                            chart.add_series({
-                                'name': 'Upper Reference',
-                                'categories': [worksheet.name, row_num + 4, first_data_col, row_num + 4, last_data_col],
-                                'values': [worksheet.name, temp_row_upper, first_data_col, temp_row_upper, last_data_col],
-                                'line': {'color': '#ff6b6b', 'width': 2, 'dash_type': 'dash'},
-                                'marker': {'type': 'none'}
+                            row_data.append({
+                                'value': float_val,
+                                'date_label': formatted_date,
+                                'date_obj': date_obj,
+                                'ref_range': ref_range,
+                                'col_idx': col_idx
                             })
+                        except (ValueError, TypeError):
+                            continue
+                
+                # Sort by date to ensure proper trend line connections
+                row_data.sort(key=lambda x: x['date_obj'])
+                
+                row_values = [item['value'] for item in row_data]
+                date_labels = [item['date_label'] for item in row_data]
+                ref_ranges = [item['ref_range'] for item in row_data]
+                sorted_col_indices = [item['col_idx'] for item in row_data]
+                
+                # Create chart only if we have at least 2 numeric values for a proper trend
+                if len(row_values) >= 2:
+                    chart = workbook.add_chart({'type': 'line'})
+                    
+                    # Create a proper chart with correct data ranges
+                    chart_data_start_row = len(organized_df) + 50  # Well below main data
+                    
+                    # Write sorted data with proper formatting
+                    for i, (date_label, value) in enumerate(zip(date_labels, row_values)):
+                        worksheet.write(chart_data_start_row + i, 0, date_label)
+                        worksheet.write(chart_data_start_row + i, 1, value)
+                    
+                    # Add the main data series
+                    chart.add_series({
+                        'name': f'{test_name}',
+                        'categories': [worksheet.name, chart_data_start_row, 0, chart_data_start_row + len(row_values) - 1, 0],
+                        'values': [worksheet.name, chart_data_start_row, 1, chart_data_start_row + len(row_values) - 1, 1],
+                        'line': {'color': '#4472C4', 'width': 4, 'smooth': True},
+                        'marker': {'type': 'circle', 'size': 10, 'border': {'color': '#4472C4', 'width': 2}, 'fill': {'color': '#4472C4'}},
+                    })
+                    
+                    # Calculate Y-axis range
+                    data_min = min(row_values)
+                    data_max = max(row_values)
+                    data_range = data_max - data_min if data_max != data_min else abs(data_max * 0.2)
+                    
+                    y_min = data_min
+                    y_max = data_max
+                    
+                    if data_range > 0:
+                        padding = data_range * 0.2
+                        y_min = data_min - padding
+                        y_max = data_max + padding
+                    else:
+                        y_min = data_min * 0.9
+                        y_max = data_max * 1.1
+                    
+                    # Add reference ranges if available
+                    if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
+                        valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
+                        if valid_ref_ranges:
+                            ref_range_str = max(set(valid_ref_ranges), key=valid_ref_ranges.count)
+                            low_ref, high_ref, ref_type = parse_reference_range(ref_range_str)
                             
-                            chart.add_series({
-                                'name': 'Lower Reference',
-                                'categories': [worksheet.name, row_num + 4, first_data_col, row_num + 4, last_data_col],
-                                'values': [worksheet.name, temp_row_lower, first_data_col, temp_row_lower, last_data_col],
-                                'line': {'color': '#4ecdc4', 'width': 2, 'dash_type': 'dash'},
-                                'marker': {'type': 'none'}
-                            })
-                            
-                            # Adjust Y-axis to include reference range
-                            y_min = min(y_min, low_ref - abs(data_range * 0.1))
-                            y_max = max(y_max, high_ref + abs(data_range * 0.1))
-                
-                # Apply dynamic Y-axis range to ALL charts
-                chart.set_y_axis({
-                    'name': 'Value',
-                    'name_font': {'size': 12, 'bold': True},
-                    'num_font': {'size': 10},
-                    'min': y_min,
-                    'max': y_max
-                })
-                
-                # Configure chart
-                chart.set_title({
-                    'name': f'{test_name} Trend',
-                    'name_font': {'size': 14, 'bold': True}
-                })
-                
-                # Better x-axis configuration for dates
-                chart.set_x_axis({
-                    'name': 'Date (DD-MM-YYYY)',
-                    'name_font': {'size': 12, 'bold': True},
-                    'num_font': {'size': 9, 'rotation': 45},
-                    'label_position': 'low'
-                })
-                
-                chart.set_legend({
-                    'position': 'bottom',
-                    'font': {'size': 9}
-                })
-                
-                chart.set_size({'width': 550, 'height': 220})
-                
-                # Insert chart - adjusted for new row positions
-                worksheet.insert_chart(row_num + 4, chart_col, chart, {
-                    'x_offset': 5,
-                    'y_offset': 5
-                })
-                
-                # Add data table - adjusted positions
-                data_table_col = chart_col + 1
-                if row_num == 0:
-                    worksheet.write(1, data_table_col, "", date_format)
-                    worksheet.write(2, data_table_col, "", lab_format)
-                    worksheet.write(3, data_table_col, "Data & Reference Range", header_format)
-                
-                table_format = workbook.add_format({
-                    'border': 1,
-                    'align': 'center',
-                    'valign': 'top',
-                    'font_size': 9,
-                    'text_wrap': True
-                })
-                
-                data_table_content = f"Test: {test_name}\n"
-                data_table_content += "Values: " + ", ".join([f"{date_labels[i]}: {row_values[i]}" for i in range(len(row_values))]) + "\n"
-                
-                if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
-                    valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
-                    if valid_ref_ranges:
-                        ref_range_str = max(set(valid_ref_ranges), key=valid_ref_ranges.count)
-                        data_table_content += f"Ref Range: {ref_range_str}"
+                            if ref_type == "range" and low_ref is not None and high_ref is not None:
+                                ref_data_start_row = len(organized_df) + 100
+                                
+                                for i, date_label in enumerate(date_labels):
+                                    worksheet.write(ref_data_start_row + i, 0, date_label)
+                                    worksheet.write(ref_data_start_row + i, 1, high_ref)
+                                    worksheet.write(ref_data_start_row + i, 2, low_ref)
+                                
+                                chart.add_series({
+                                    'name': 'Upper Reference',
+                                    'categories': [worksheet.name, ref_data_start_row, 0, ref_data_start_row + len(date_labels) - 1, 0],
+                                    'values': [worksheet.name, ref_data_start_row, 1, ref_data_start_row + len(date_labels) - 1, 1],
+                                    'line': {'color': '#ff6b6b', 'width': 2, 'dash_type': 'dash', 'smooth': True},
+                                    'marker': {'type': 'none'}
+                                })
+                                
+                                chart.add_series({
+                                    'name': 'Lower Reference',
+                                    'categories': [worksheet.name, ref_data_start_row, 0, ref_data_start_row + len(date_labels) - 1, 0],
+                                    'values': [worksheet.name, ref_data_start_row, 2, ref_data_start_row + len(date_labels) - 1, 2],
+                                    'line': {'color': '#4ecdc4', 'width': 2, 'dash_type': 'dash', 'smooth': True},
+                                    'marker': {'type': 'none'}
+                                })
+                                
+                                y_min = min(y_min, low_ref)
+                                y_max = max(y_max, high_ref)
+                    
+                    # Configure chart
+                    chart.set_title({
+                        'name': f'{test_name} Trend Over Time',
+                        'name_font': {'size': 14, 'bold': True}
+                    })
+                    
+                    chart.set_x_axis({
+                        'name': 'Date (DD-MM-YYYY)',
+                        'name_font': {'size': 12, 'bold': True},
+                        'num_font': {'size': 9, 'rotation': 45},
+                        'label_position': 'low',
+                        'major_tick_mark': 'outside',
+                        'minor_tick_mark': 'none',
+                        'major_gridlines': {'visible': False}
+                    })
+                    
+                    chart.set_y_axis({
+                        'name': 'Value',
+                        'name_font': {'size': 12, 'bold': True},
+                        'num_font': {'size': 10},
+                        'min': y_min,
+                        'max': y_max,
+                        'major_tick_mark': 'outside',
+                        'minor_tick_mark': 'none',
+                        'major_gridlines': {'visible': True, 'line': {'color': '#E0E0E0', 'width': 1}}
+                    })
+                    
+                    chart.set_legend({
+                        'position': 'bottom',
+                        'font': {'size': 9}
+                    })
+                    
+                    chart.set_plotarea({
+                        'border': {'color': '#E0E0E0', 'width': 1},
+                        'fill': {'color': '#FFFFFF'}
+                    })
+                    
+                    chart.set_size({'width': 550, 'height': 220})
+                    
+                    # Insert chart
+                    worksheet.insert_chart(row_num + 4, chart_col, chart, {
+                        'x_offset': 5,
+                        'y_offset': 5
+                    })
+                    
+                    # Add data table
+                    data_table_col = chart_col + 1
+                    if row_num == 0:
+                        worksheet.write(1, data_table_col, "", date_format)
+                        worksheet.write(2, data_table_col, "", lab_format)
+                        worksheet.write(3, data_table_col, "Data & Reference Range", header_format)
+                    
+                    table_format = workbook.add_format({
+                        'border': 1,
+                        'align': 'center',
+                        'valign': 'top',
+                        'font_size': 9,
+                        'text_wrap': True
+                    })
+                    
+                    data_table_content = f"Test: {test_name}\n"
+                    data_table_content += "Values: " + ", ".join([f"{date_labels[i]}: {row_values[i]}" for i in range(len(row_values))]) + "\n"
+                    
+                    if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
+                        valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
+                        if valid_ref_ranges:
+                            ref_range_str = max(set(valid_ref_ranges), key=valid_ref_ranges.count)
+                            data_table_content += f"Ref Range: {ref_range_str}\n"
+                            low_ref, high_ref, ref_type = parse_reference_range(ref_range_str)
+                            if ref_type == "range" and low_ref is not None and high_ref is not None:
+                                data_table_content += f"Normal Range: {low_ref} - {high_ref}"
+                    else:
+                        data_table_content += "Ref Range: Not available"
+                    
+                    worksheet.write(row_num + 4, data_table_col, data_table_content, table_format)
+                    
+                elif len(row_values) == 1:
+                    worksheet.write(row_num + 4, chart_col, f"Single value: {row_values[0]}", data_format)
+                    if row_num == 0:
+                        worksheet.write(1, data_table_col, "", date_format)
+                        worksheet.write(2, data_table_col, "", lab_format)
+                        worksheet.write(3, chart_col + 1, "Data & Reference Range", header_format)
+                    worksheet.write(row_num + 4, chart_col + 1, f"Single value on {date_labels[0]}: {row_values[0]}", data_format)
                 else:
-                    data_table_content += "Ref Range: Not available"
-                
-                worksheet.write(row_num + 4, data_table_col, data_table_content, table_format)
-                
-            else:
-                # No numeric data available
-                worksheet.write(row_num + 4, chart_col, "No numeric trend data", data_format)
+                    worksheet.write(row_num + 4, chart_col, "No numeric trend data", data_format)
+                    if row_num == 0:
+                        worksheet.write(1, data_table_col, "", date_format)
+                        worksheet.write(2, data_table_col, "", lab_format)
+                        worksheet.write(3, chart_col + 1, "Data & Reference Range", header_format)
+                    worksheet.write(row_num + 4, chart_col + 1, "No data available", data_format)
+                    
+            except Exception as e:
+                worksheet.write(row_num + 4, chart_col, f"Error generating chart: {str(e)[:50]}", data_format)
                 if row_num == 0:
                     worksheet.write(1, data_table_col, "", date_format)
                     worksheet.write(2, data_table_col, "", lab_format)
                     worksheet.write(3, chart_col + 1, "Data & Reference Range", header_format)
-                worksheet.write(row_num + 4, chart_col + 1, "No data available", data_format)
+                worksheet.write(row_num + 4, chart_col + 1, "Chart generation failed", data_format)
         
         # Adjust column widths
         worksheet.set_column('A:A', 20)  # Test Category
@@ -1695,12 +1764,43 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                     return pd.to_datetime('1900-01-01')  # Fallback date for sorting
             
             date_lab_cols_sorted = sorted(date_lab_cols, key=extract_date_for_sort)
-            organized_df = organized_df[['Test_Category', 'Test_Name'] + date_lab_cols_sorted]
-            ref_range_df = ref_range_df[['Test_Category', 'Test_Name'] + date_lab_cols_sorted]
+            
+            # Ensure all columns exist in both DataFrames
+            required_cols = ['Test_Category', 'Test_Name'] + date_lab_cols_sorted
+            missing_cols_org = [col for col in required_cols if col not in organized_df.columns]
+            missing_cols_ref = [col for col in required_cols if col not in ref_range_df.columns]
+            
+            if missing_cols_org:
+                st.error(f"Missing columns in organized_df: {missing_cols_org}")
+                
+            if missing_cols_ref:
+                st.error(f"Missing columns in ref_range_df: {missing_cols_ref}")
+                
+            
+            organized_df = organized_df[required_cols]
+            ref_range_df = ref_range_df[required_cols]
             
             # Sort by Test_Category, then Test_Name
             organized_df = organized_df.sort_values(['Test_Category', 'Test_Name']).reset_index(drop=True)
             ref_range_df = ref_range_df.sort_values(['Test_Category', 'Test_Name']).reset_index(drop=True)
+            
+            # Check if DataFrames are empty
+            if organized_df.empty:
+                st.error("No data available to organize. Please check your uploaded reports.")
+            
+            
+            if ref_range_df.empty:
+                st.error("No reference range data available. Please check your uploaded reports.")
+                
+            
+            # Ensure both DataFrames have the same structure
+            if len(organized_df) != len(ref_range_df):
+                st.error(f"Data structure mismatch: organized_df has {len(organized_df)} rows, ref_range_df has {len(ref_range_df)} rows")
+                    
+            # Ensure both DataFrames have the same columns
+            if not organized_df.columns.equals(ref_range_df.columns):
+                st.error("Data structure mismatch: organized_df and ref_range_df have different columns")
+            
             
             # Create a display version with dates and lab names shown separately
             display_df = organized_df.copy()
