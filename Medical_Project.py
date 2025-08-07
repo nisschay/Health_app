@@ -10,16 +10,11 @@ import plotly.graph_objs as go
 import google.generativeai as genai
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI
 from unify_test_names import unify_test_names
-
 import sys
 import os
 
-# Add the directory containing this script to the Python path
+# Add the script's directory to the Python path
 script_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(script_dir) # Assuming unify_test_names.py is in the parent directory of the script's directory if running from a subdirectory like 'health_app'
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
-# If unify_test_names.py is in the same directory as Medical_Project.py, use script_dir instead of parent_dir
 if script_dir not in sys.path:
     sys.path.append(script_dir)
 
@@ -126,291 +121,26 @@ STATUS_MAPPING = {
 
 # Initialize Gemini models globally
 gemini_model_extraction = None
-gemini_model_chat = None # Renamed from gemini_model_summary for clarity
+gemini_model_chat = None
 
 # --- Helper Functions ---
 def standardize_value(value, mapping_dict, default_case='title'):
     if not isinstance(value, str):
         return value
     original_value = value.strip()
-    standardized_value = original_value
     for pattern, standard_form in mapping_dict.items():
         if pattern.search(original_value):
-            standardized_value = standard_form
-            break
+            if default_case == 'title':
+                return standard_form.title()
+            elif default_case == 'lower':
+                return standard_form.lower()
+            return standard_form
     if default_case == 'title':
-        return standardized_value.title() if standardized_value else standardized_value
-    elif default_case == 'original':
-        return standardized_value
+        return original_value.title()
     elif default_case == 'lower':
-        return standardized_value.lower() if standardized_value else standardized_value
-    return standardized_value
+        return original_value.lower()
+    return original_value
 
-def extract_text_from_pdf(file_content):
-    try:
-        pdf_file = io.BytesIO(file_content)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text = ""
-        for page_num, page in enumerate(pdf_reader.pages):
-            page_text = page.extract_text()
-            if page_text:
-                text += f"\n--- Page {page_num+1} ---\n{page_text}" # Add page separator
-        if not text.strip():
-            st.warning("Warning: No text extracted from PDF. PDF might be image-based or empty.")
-        return text
-    except Exception as e:
-        st.error(f"Error reading PDF: {str(e)}")
-        return None
-
-def init_gemini_models(api_key_for_gemini):
-    global gemini_model_extraction, gemini_model_chat
-    try:
-        if not api_key_for_gemini:
-            st.error("Gemini API Key is missing. Cannot initialize models.")
-            return False
-        
-        # Reset models to force reinitialization with new key
-        gemini_model_extraction = None
-        gemini_model_chat = None
-        
-        genai.configure(api_key=api_key_for_gemini)
-        
-        # Always create new model instances with the new key
-        gemini_model_extraction = genai.GenerativeModel('gemini-2.5-flash')
-        gemini_model_chat = genai.GenerativeModel('gemini-2.5-flash')
-        
-        # Test the connection with a simple generation
-        test_response = gemini_model_extraction.generate_content("Test connection")
-        if test_response:
-            st.success("Successfully connected to Gemini API")
-            return True
-    except Exception as e:
-        st.error(f"Error configuring Gemini: {e}. Please ensure your API key is correct and valid.")
-        gemini_model_extraction = None
-        gemini_model_chat = None
-        return False
-
-def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
-    global gemini_model_extraction
-    if not gemini_model_extraction and not init_gemini_models(api_key_for_gemini):
-        st.error("Gemini extraction model not initialized. API key might be missing or invalid.")
-        return None
-
-    if not text_content or not text_content.strip():
-        st.warning("No text provided to analyze.")
-        return None
-
-    prompt = f"""
-    Analyze this medical test report. Extract all patient information and test results.
-    The patient's full name is critical. Prioritize complete and formal names (e.g., "Nisschay Khandelwal" over "SelfNisschay Khandelwal" or "N Khandelwal"). Avoid prefixes like "Self" if a clearer name is available.
-    Also extract Patient ID, Age (e.g., "35 years", "35 Y", "35"), and Gender (e.g., "Male", "Female", "M", "F").
-    The report date or collection date is also critical. Ensure date is in DD-MM-YYYY format if possible. If multiple dates are present (collection, report), prefer collection date.
-
-    IMPORTANT: Extract the main laboratory/hospital name that conducted the tests. Look for prominent facility names like "Neuberg", "Apollo Hospital", "Quest Diagnostics", "Dr. Lal PathLabs", etc. 
-    - This is usually prominently displayed at the top of the report as the main facility name
-    - Ignore billing locations, collection centers, or subsidiary names in smaller text
-    - Look for the main brand/facility name that appears in large text or as a header
-    - If you see names like "Neuberg Abha", "Apollo Hospitals", "Max Healthcare" etc., prefer these over technical/billing names
-    - Avoid names that look like billing addresses or subsidiary locations
-
-    For each test parameter, extract:
-    - Test Name (e.g., "Haemoglobin", "Total Leucocyte Count")
-    - Result (numerical value or finding like "Detected", "Not Detected", "Positive", "Negative")
-    - Unit of measurement (e.g., "g/dL", "cells/µL")
-    - Reference Range (e.g., "13.0 - 17.0", "< 5.0", "Negative")
-    - Status (interpret as "Low", "Normal", "High", "Critical", "Positive", "Negative", or "N/A" if not applicable or clearly stated. If not stated, use "N/A")
-    - Category (e.g., "Haematology", "Liver Function Test", "Kidney Function Test", "Lipid Profile", "Thyroid Profile", "Urinalysis". Infer if not explicitly stated.)
-
-    Return the data in this exact JSON format:
-    {{
-        "patient_info": {{
-            "name": "Full Patient Name",
-            "age": "Age",
-            "gender": "Gender",
-            "patient_id": "Patient ID or Registration No.",
-            "date": "Test Date or Report Date (DD-MM-YYYY)",
-            "lab_name": "Laboratory or Medical Center Name"
-        }},
-        "test_results": [
-            {{
-                "test_name": "Name of the test",
-                "result": "Numerical value or finding",
-                "unit": "Unit of measurement",
-                "reference_range": "Normal reference range",
-                "status": "Low/Normal/High/Critical/Positive/Negative/N/A",
-                "category": "Test category"
-            }}
-        ],
-        "abnormal_findings_summary_from_report": [
-            "List any general abnormal findings or summary remarks directly stated in the report, if present."
-        ]
-    }}
-
-    Medical Report Text:
-    ---
-    {text_content}
-    ---
-    """
-    try:
-        response = gemini_model_extraction.generate_content(prompt)
-        response_text = response.text
-        
-        # Enhanced JSON extraction
-        match_json_block = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
-        if match_json_block:
-            json_str = match_json_block.group(1)
-        else:
-            # Fallback: try to find the first '{' and last '}'
-            start_index = response_text.find('{')
-            end_index = response_text.rfind('}')
-            if start_index != -1 and end_index != -1 and end_index > start_index:
-                json_str = response_text[start_index : end_index+1]
-            else: # Fallback if no clear JSON block is found
-                st.error("Could not find a clear JSON block in Gemini API response.")
-                st.text_area("Gemini API Response (text):", response_text, height=150)
-                return None
-        
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError as json_e:
-            st.error(f"Error decoding JSON from Gemini response: {json_e}")
-            st.text_area("Problematic JSON string:", json_str, height=150)
-            st.text_area("Full Gemini Response (text):", response_text, height=150)
-            return None
-            
-    except Exception as e:
-        st.error(f"Error analyzing report with Gemini: {str(e)}")
-        if "API key not valid" in str(e) or "PERMISSION_DENIED" in str(e):
-             st.error("Please ensure your Gemini API key is correct and has the necessary permissions.")
-        return None
-def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF"):
-    if not ai_results_json or 'test_results' not in ai_results_json:
-        return pd.DataFrame(), {} # Return empty patient_info_dict
-
-    all_rows = []
-    patient_info_dict = ai_results_json.get('patient_info', {})
-    
-    for test_result in ai_results_json.get('test_results', []):
-        raw_test_name = test_result.get('test_name', 'UnknownTest')
-        raw_unit = test_result.get('unit', '')
-        raw_status = test_result.get('status', '')
-
-        std_test_name = standardize_value(raw_test_name, TEST_NAME_MAPPING, default_case='title')
-        std_unit = standardize_value(raw_unit, UNIT_MAPPING, default_case='original')
-        std_status = standardize_value(raw_status, STATUS_MAPPING, default_case='title')
-        
-        # FIX 1: Parse date and ensure DD-MM-YYYY format
-        report_date_str = patient_info_dict.get('date', 'N/A')
-        parsed_date = 'N/A'
-        
-        if report_date_str and report_date_str != 'N/A':
-            # Try multiple date formats
-            date_formats = ['%d-%m-%Y', '%m/%d/%Y', '%d/%m/%Y', '%Y-%m-%d', '%m-%d-%Y']
-            for fmt in date_formats:
-                try:
-                    dt = pd.to_datetime(report_date_str, format=fmt, errors='raise')
-                    parsed_date = dt.strftime('%d-%m-%Y')  # Always output in DD-MM-YYYY
-                    break
-                except:
-                    continue
-            
-            # If none of the formats work, try pandas' flexible parsing
-            if parsed_date == 'N/A':
-                try:
-                    dt = pd.to_datetime(report_date_str, errors='coerce')
-                    if pd.notna(dt):
-                        parsed_date = dt.strftime('%d-%m-%Y')
-                except:
-                    pass
-
-        # Extract lab name from patient info
-        lab_name = patient_info_dict.get('lab_name', 'N/A')
-
-        row = {
-            'Source_Filename': source_filename,
-            'Patient_ID': patient_info_dict.get('patient_id', 'N/A'),
-            'Patient_Name': patient_info_dict.get('name', 'N/A'),
-            'Age': patient_info_dict.get('age', 'N/A'),
-            'Gender': patient_info_dict.get('gender', 'N/A'),
-            'Test_Date': parsed_date,  # Now guaranteed to be DD-MM-YYYY
-            'Lab_Name': lab_name,
-            'Test_Category': standardize_value(test_result.get('category', 'N/A'), {}, default_case='title'),
-            'Original_Test_Name': raw_test_name,
-            'Test_Name': std_test_name,
-            'Result': test_result.get('result', ''),
-            'Unit': std_unit,
-            'Reference_Range': test_result.get('reference_range', ''),
-            'Status': std_status,
-            'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        all_rows.append(row)
-
-    if not all_rows:
-        return pd.DataFrame(), patient_info_dict
-
-    df = pd.DataFrame(all_rows)
-    df['Result_Numeric'] = pd.to_numeric(df['Result'], errors='coerce')
-    # Convert Test_Date to datetime for sorting (handle DD-MM-YYYY format)
-    df['Test_Date_dt'] = pd.to_datetime(df['Test_Date'], format='%d-%m-%Y', errors='coerce')
-    df = df.sort_values(by=['Test_Date_dt', 'Test_Category', 'Test_Name']).reset_index(drop=True)
-    
-    return df, patient_info_dict
-
-    df = pd.DataFrame(all_rows)
-    df['Result_Numeric'] = pd.to_numeric(df['Result'], errors='coerce')
-    # Convert Test_Date to datetime for sorting (handle DD-MM-YYYY format)
-    df['Test_Date_dt'] = pd.to_datetime(df['Test_Date'], format='%d-%m-%Y', errors='coerce')
-    df = df.sort_values(by=['Test_Date_dt', 'Test_Category', 'Test_Name']).reset_index(drop=True)
-    
-    return df, patient_info_dict
-
-def normalize_name(name):
-    """Normalize a name for comparison by removing titles, extra spaces, and standardizing case."""
-    if not name or name == 'N/A':
-        return ''
-    
-    # Convert to title case first and strip
-    name = name.strip()
-    
-    # Remove common titles and prefixes (case insensitive)
-    titles = ['mr', 'mrs', 'ms', 'dr', 'prof', 'self', 'mr.', 'mrs.', 'ms.', 'dr.', 'prof.']
-    name_lower = name.lower()
-    for title in titles:
-        name_lower = re.sub(rf'\b{title}\b\.?\s*', '', name_lower)
-    
-    # Split into words and remove any empty strings
-    words = [word for word in name_lower.split() if word]
-    
-    # Convert to title case and join
-    normalized = ' '.join(word.title() for word in words)
-    
-    return normalized
-
-def are_names_matching(name1, name2):
-    """Check if two names match or are variations of the same name."""
-    name1 = normalize_name(name1)
-    name2 = normalize_name(name2)
-    
-    if not name1 or not name2:
-        return True  # Consider empty/N/A names as matching to handle missing data
-        
-    name1_parts = set(name1.split())
-    name2_parts = set(name2.split())
-    
-    # If one name is completely contained within another, consider it a match
-    if name1_parts.issubset(name2_parts) or name2_parts.issubset(name1_parts):
-        return True
-        
-    # Calculate name parts that match
-    matching_parts = name1_parts.intersection(name2_parts)
-    total_unique_parts = name1_parts.union(name2_parts)
-    
-    # If we have at least 2 matching parts (like first and last name)
-    # and they make up at least 60% of the total unique parts
-    if len(matching_parts) >= 2 and len(matching_parts) / len(total_unique_parts) >= 0.6:
-        return True
-    
-    return False
 
 def create_consolidated_info_with_smart_selection(patient_info_list):
     """Create consolidated patient info with smart selection for name and age."""
@@ -486,13 +216,218 @@ def create_consolidated_info_with_smart_selection(patient_info_list):
         'lab_name': final_lab_name
     }
 
+def extract_text_from_pdf(file_content):
+    try:
+        pdf_file = io.BytesIO(file_content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page_num, page in enumerate(pdf_reader.pages):
+            page_text = page.extract_text()
+            if page_text:
+                text += f"\n--- Page {page_num+1} ---\n{page_text}"
+        if not text.strip():
+            st.warning("Warning: No text extracted from PDF. PDF might be image-based or empty.")
+        return text
+    except Exception as e:
+        st.error(f"Error reading PDF: {str(e)}")
+        return None
+
+def init_gemini_models(api_key_for_gemini):
+    global gemini_model_extraction, gemini_model_chat
+    try:
+        if not api_key_for_gemini:
+            st.error("Gemini API Key is missing. Cannot initialize models.")
+            return False
+        
+        genai.configure(api_key=api_key_for_gemini)
+        
+        gemini_model_extraction = genai.GenerativeModel('gemini-2.5-flash')
+        gemini_model_chat = genai.GenerativeModel('gemini-2.5-flash')
+        
+        st.success("Successfully connected to Gemini API")
+        return True
+    except Exception as e:
+        st.error(f"Error configuring Gemini: {e}. Please ensure your API key is correct and valid.")
+        gemini_model_extraction = None
+        gemini_model_chat = None
+        return False
+
+def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
+    global gemini_model_extraction
+    if not gemini_model_extraction and not init_gemini_models(api_key_for_gemini):
+        st.error("Gemini extraction model not initialized. API key might be missing or invalid.")
+        return None
+
+    if not text_content or not text_content.strip():
+        st.warning("No text provided to analyze.")
+        return None
+
+    prompt = f"""
+    Analyze this medical test report. Extract all patient information and test results.
+    The patient's full name is critical. Prioritize complete and formal names (e.g., "Nisschay Khandelwal" over "SelfNisschay Khandelwal" or "N Khandelwal"). Avoid prefixes like "Self" if a clearer name is available.
+    Also extract Patient ID, Age (e.g., "35 years", "35 Y", "35"), and Gender (e.g., "Male", "Female", "M", "F").
+    The report date or collection date is also critical. Ensure date is in DD-MM-YYYY format if possible. If multiple dates are present (collection, report), prefer collection date.
+    IMPORTANT: Extract the main laboratory/hospital name that conducted the tests. Look for prominent facility names like "Neuberg", "Apollo Hospital", "Quest Diagnostics", "Dr. Lal PathLabs", etc.
+    - This is usually prominently displayed at the top of the report as the main facility name
+    - Ignore billing locations, collection centers, or subsidiary names in smaller text
+    - Look for the main brand/facility name that appears in large text or as a header
+    - If you see names like "Neuberg Abha", "Apollo Hospitals", "Max Healthcare" etc., prefer these over technical/billing names
+    - Avoid names that look like billing addresses or subsidiary locations
+
+    For each test parameter, extract:
+    - Test Name (e.g., "Haemoglobin", "Total Leucocyte Count")
+    - Result (numerical value or finding like "Detected", "Not Detected", "Positive", "Negative")
+    - Unit of measurement (e.g., "g/dL", "cells/µL")
+    - Reference Range (e.g., "13.0 - 17.0", "< 5.0", "Negative")
+    - Status (interpret as "Low", "Normal", "High", "Critical", "Positive", "Negative", or "N/A" if not applicable or clearly stated. If not stated, use "N/A")
+    - Category (e.g., "Haematology", "Liver Function Test", "Kidney Function Test", "Lipid Profile", "Thyroid Profile", "Urinalysis". Infer if not explicitly stated.)
+
+    Return the data in this exact JSON format:
+    {{
+        "patient_info": {{
+            "name": "Full Patient Name",
+            "age": "Age",
+            "gender": "Gender",
+            "patient_id": "Patient ID or Registration No.",
+            "date": "Test Date or Report Date (DD-MM-YYYY)",
+            "lab_name": "Laboratory or Medical Center Name"
+        }},
+        "test_results": [
+            {{
+                "test_name": "Name of the test",
+                "result": "Numerical value or finding",
+                "unit": "Unit of measurement",
+                "reference_range": "Normal reference range",
+                "status": "Low/Normal/High/Critical/Positive/Negative/N/A",
+                "category": "Test category"
+            }}
+        ],
+        "abnormal_findings_summary_from_report": [
+            "List any general abnormal findings or summary remarks directly stated in the report, if present."
+        ]
+    }}
+
+    Medical Report Text:
+    ---
+    {text_content}
+    ---
+    """
+    try:
+        response = gemini_model_extraction.generate_content(prompt)
+        response_text = response.text
+        
+        match_json_block = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+        if match_json_block:
+            json_str = match_json_block.group(1)
+        else:
+            start_index = response_text.find('{')
+            end_index = response_text.rfind('}')
+            if start_index != -1 and end_index > start_index:
+                json_str = response_text[start_index : end_index+1]
+            else:
+                st.error("Could not find a clear JSON block in Gemini API response.")
+                st.text_area("Gemini API Response (text):", response_text, height=150)
+                return None
+        
+        return json.loads(json_str)
+    except json.JSONDecodeError as json_e:
+        st.error(f"Error decoding JSON from Gemini response: {json_e}")
+        st.text_area("Problematic JSON string:", json_str, height=150)
+        st.text_area("Full Gemini Response (text):", response_text, height=150)
+        return None
+    except Exception as e:
+        st.error(f"Error analyzing report with Gemini: {str(e)}")
+        if "API key not valid" in str(e) or "PERMISSION_DENIED" in str(e):
+            st.error("Please ensure your Gemini API key is correct and has the necessary permissions.")
+        return None
+
+def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF"):
+    if not ai_results_json or 'test_results' not in ai_results_json:
+        return pd.DataFrame(), {}
+
+    patient_info_dict = ai_results_json.get('patient_info', {})
+    report_date_str = patient_info_dict.get('date', 'N/A')
+    parsed_date = 'N/A'
+    if report_date_str and report_date_str != 'N/A':
+        try:
+            dt = pd.to_datetime(report_date_str, errors='coerce')
+            if pd.notna(dt):
+                parsed_date = dt.strftime('%d-%m-%Y')
+        except:
+            pass
+    patient_info_dict['date'] = parsed_date
+
+    all_rows = []
+    for test_result in ai_results_json.get('test_results', []):
+        row = {
+            'Source_Filename': source_filename,
+            'Patient_ID': patient_info_dict.get('patient_id', 'N/A'),
+            'Patient_Name': patient_info_dict.get('name', 'N/A'),
+            'Age': patient_info_dict.get('age', 'N/A'),
+            'Gender': patient_info_dict.get('gender', 'N/A'),
+            'Test_Date': parsed_date,
+            'Lab_Name': patient_info_dict.get('lab_name', 'N/A'),
+            'Test_Category': standardize_value(test_result.get('category', 'N/A'), {}, default_case='title'),
+            'Original_Test_Name': test_result.get('test_name', 'UnknownTest'),
+            'Test_Name': standardize_value(test_result.get('test_name', 'UnknownTest'), TEST_NAME_MAPPING, default_case='title'),
+            'Result': test_result.get('result', ''),
+            'Unit': standardize_value(test_result.get('unit', ''), UNIT_MAPPING, default_case='original'),
+            'Reference_Range': test_result.get('reference_range', ''),
+            'Status': standardize_value(test_result.get('status', ''), STATUS_MAPPING, default_case='title'),
+            'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        all_rows.append(row)
+
+    if not all_rows:
+        return pd.DataFrame(), patient_info_dict
+
+    df = pd.DataFrame(all_rows)
+    df['Result_Numeric'] = pd.to_numeric(df['Result'], errors='coerce')
+    df['Test_Date_dt'] = pd.to_datetime(df['Test_Date'], format='%d-%m-%Y', errors='coerce')
+    df = df.sort_values(by=['Test_Date_dt', 'Test_Category', 'Test_Name']).reset_index(drop=True)
+    
+    return df, patient_info_dict
+
+def normalize_name(name):
+    if not name or name == 'N/A':
+        return ''
+    name = name.strip()
+    titles = ['mr', 'mrs', 'ms', 'dr', 'prof', 'self', 'mr.', 'mrs.', 'ms.', 'dr.', 'prof.']
+    name_lower = name.lower()
+    for title in titles:
+        name_lower = re.sub(rf'\b{title}\b\.?\s*', '', name_lower)
+    words = [word for word in name_lower.split() if word]
+    return ' '.join(word.title() for word in words)
+
+def are_names_matching(name1, name2):
+    name1 = normalize_name(name1)
+    name2 = normalize_name(name2)
+    if not name1 or not name2:
+        return True
+    name1_parts = set(name1.split())
+    name2_parts = set(name2.split())
+    if name1_parts.issubset(name2_parts) or name2_parts.issubset(name1_parts):
+        return True
+    matching_parts = name1_parts.intersection(name2_parts)
+    total_unique_parts = name1_parts.union(name2_parts)
+    if len(matching_parts) >= 2 and len(matching_parts) / len(total_unique_parts) >= 0.6:
+        return True
+    return False
+
+def get_most_common_or_latest(items, is_date=False):
+    if not items:
+        return "N/A"
+    if is_date:
+        parsed_dates = [pd.to_datetime(d, format='%d-%m-%Y', errors='coerce') for d in items]
+        valid_parsed_dates = [d for d in parsed_dates if pd.notna(d)]
+        return max(valid_parsed_dates).strftime('%d-%m-%Y') if valid_parsed_dates else "N/A"
+    return Counter(items).most_common(1)[0][0]
+
 def consolidate_patient_info(patient_info_list):
     if not patient_info_list:
         return {}
 
-    # First, check for name mismatches and return them if found
     names = [pi.get('name') for pi in patient_info_list if pi.get('name') and pi.get('name') not in ['N/A', '']]
-    
     if len(names) >= 2:
         for i in range(len(names)):
             for j in range(i + 1, len(names)):
@@ -503,71 +438,55 @@ def consolidate_patient_info(patient_info_list):
                         'conflicting_names': [names[i], names[j]]
                     }
 
-    ages = [pi.get('age') for pi in patient_info_list if pi.get('age') and pi.get('age') not in ['N/A', '']]
-    genders = [pi.get('gender') for pi in patient_info_list if pi.get('gender') and pi.get('gender') not in ['N/A', '']]
-    patient_ids = [pi.get('patient_id') for pi in patient_info_list if pi.get('patient_id') and pi.get('patient_id') not in ['N/A', '']]
-    dates = [pi.get('date') for pi in patient_info_list if pi.get('date') and pi.get('date') not in ['N/A', '']]
-    lab_names = [pi.get('lab_name') for pi in patient_info_list if pi.get('lab_name') and pi.get('lab_name') not in ['N/A', '']]
-
-    # Normalize all names first
-    normalized_names = [normalize_name(name) for name in names]
-    normalized_names = [name for name in normalized_names if name]  # Remove empty strings
-    
     final_name = "N/A"
-    if normalized_names:
-        # Count occurrences of normalized names
-        name_counts = Counter(normalized_names)
-        most_common_names = name_counts.most_common()
-        if most_common_names:
-            # Use the most common normalized name, prefer longer names if there's a tie
-            max_count = most_common_names[0][1]
-            most_frequent_names = [name for name, count in most_common_names if count == max_count]
-            final_name = max(most_frequent_names, key=len)# Prefer longer names among the most common ones
-            max_len = 0
-            best_name_candidate = ""
-            for name, count in most_common_names:
-                if count == most_common_names[0][1]: # Only consider names with the highest frequency
-                    if len(name) > max_len:
-                        max_len = len(name)
-                        best_name_candidate = name
-            final_name = best_name_candidate if best_name_candidate else most_common_names[0][0]
+    if names:
+        normalized_names = [normalize_name(name) for name in names if name]
+        if normalized_names:
+            name_counts = Counter(normalized_names)
+            max_count = max(name_counts.values())
+            most_frequent_names = [name for name, count in name_counts.items() if count == max_count]
+            final_name = max(most_frequent_names, key=len) if most_frequent_names else normalized_names[0]
 
-    # Consolidate other info: most frequent valid value
-    final_age = Counter(ages).most_common(1)[0][0] if ages else "N/A"
-    final_gender = Counter(genders).most_common(1)[0][0] if genders else "N/A"
-    final_patient_id = Counter(patient_ids).most_common(1)[0][0] if patient_ids else "N/A"
-    final_lab_name = Counter(lab_names).most_common(1)[0][0] if lab_names else "N/A"
-    
-    # For date, might prefer the latest or earliest, or just the most common
-    # For now, most common valid date. If dates are datetime objects, this needs adjustment.
-    parsed_dates = [pd.to_datetime(d, errors='coerce') for d in dates]
-    valid_parsed_dates = [d for d in parsed_dates if pd.notna(d)]
-    final_date = max(valid_parsed_dates).strftime('%d-%m-%Y') if valid_parsed_dates else "N/A"
-    
+    final_age = "N/A"
+    ages = [pi.get('age') for pi in patient_info_list if pi.get('age') and pi.get('age') not in ['N/A', '']]
+    if ages:
+        date_age_pairs = []
+        for pi in patient_info_list:
+            pi_date_str = pi.get('date')
+            pi_age = pi.get('age')
+            if pi_date_str and pi_date_str not in ['N/A', ''] and pi_age and pi_age not in ['N/A', '']:
+                try:
+                    parsed_date = pd.to_datetime(pi_date_str, format='%d-%m-%Y', errors='coerce')
+                    if pd.notna(parsed_date):
+                        date_age_pairs.append((parsed_date, pi_age))
+                except:
+                    continue
+        if date_age_pairs:
+            date_age_pairs.sort(key=lambda x: x[0], reverse=True)
+            final_age = date_age_pairs[0][1]
+        else:
+            final_age = Counter(ages).most_common(1)[0][0]
+
     return {
         'name': final_name,
         'age': final_age,
-        'gender': final_gender,
-        'patient_id': final_patient_id,
-        'date': final_date, # This represents the most common/latest date from patient_info blocks, not necessarily all test dates
-        'lab_name': final_lab_name
+        'gender': get_most_common_or_latest([pi.get('gender') for pi in patient_info_list if pi.get('gender') and pi.get('gender') not in ['N/A', '']]),
+        'patient_id': get_most_common_or_latest([pi.get('patient_id') for pi in patient_info_list if pi.get('patient_id') and pi.get('patient_id') not in ['N/A', '']]),
+        'date': get_most_common_or_latest([pi.get('date') for pi in patient_info_list if pi.get('date') and pi.get('date') not in ['N/A', '']], is_date=True),
+        'lab_name': get_most_common_or_latest([pi.get('lab_name') for pi in patient_info_list if pi.get('lab_name') and pi.get('lab_name') not in ['N/A', '']])
     }
 
 def get_chatbot_response(report_df_for_prompt, user_question, chat_history_for_prompt, api_key_for_gemini):
     global gemini_model_chat
     if not gemini_model_chat and not init_gemini_models(api_key_for_gemini):
         return "Chatbot model not initialized. API key might be missing or invalid."
-
     if report_df_for_prompt.empty:
         return "No report data available to answer questions. Please analyze a report first."
-
-    # Convert relevant parts of DataFrame to string for the prompt
-    # To manage context window size, we might need to be selective or summarize
-    df_string = report_df_for_prompt[['Test_Date', 'Test_Category', 'Test_Name', 'Result', 'Unit', 'Reference_Range', 'Status']].to_string(index=False, max_rows=50) # Limit rows in prompt
     
-    # Format chat history for the prompt
+    df_string = report_df_for_prompt[['Test_Date', 'Test_Category', 'Test_Name', 'Result', 'Unit', 'Reference_Range', 'Status']].to_string(index=False, max_rows=50)
+    
     history_context = ""
-    for entry in chat_history_for_prompt[-5:]: # Use last 5 interactions for context
+    for entry in chat_history_for_prompt[-5:]:
         history_context += f"{entry['role'].capitalize()}: {entry['content']}\n"
 
     prompt = f"""You are a medical report assistant, so try to be precise.
@@ -582,7 +501,7 @@ Important guidelines:
 - For abnormal values, include the reference range in brackets
 - If answering about overall health, categorize findings as: Normal, Borderline, or Concerning
 - If the question is about a specific test, focus on that test's results and context
-- Explain medical jargon in simple terms please 
+- Explain medical jargon in simple terms please
 - If the question is about trends, summarize changes over time for relevant tests
 
 Chat History:
@@ -604,35 +523,31 @@ Assistant Response (please use bullet points):
 
 def parse_reference_range(ref_range_str):
     if not isinstance(ref_range_str, str) or ref_range_str.lower() == 'n/a' or not ref_range_str.strip():
-        return None, None, None # low, high, type (range, less_than, greater_than)
+        return None, None, None
     
     ref_range_str = ref_range_str.strip()
     
-    # Try to match a numerical range (e.g., "10.0 - 20.0", "10-20")
     match_range = re.search(r'([\d.]+)\s*-\s*([\d.]+)', ref_range_str)
     if match_range:
         try: return float(match_range.group(1)), float(match_range.group(2)), "range"
         except ValueError: pass
 
-    # Try to match less than (e.g., "< 5.0", "Less than 5")
     match_less_than = re.search(r'(?:<|Less than|upto)\s*([\d.]+)', ref_range_str, re.IGNORECASE)
     if match_less_than:
         try: return None, float(match_less_than.group(1)), "less_than"
         except ValueError: pass
 
-    # Try to match greater than (e.g., "> 10.0", "Greater than 10")
     match_greater_than = re.search(r'(?:>|Greater than|above)\s*([\d.]+)', ref_range_str, re.IGNORECASE)
     if match_greater_than:
         try: return float(match_greater_than.group(1)), None, "greater_than"
         except ValueError: pass
     
-    # For qualitative ranges like "Negative", "Non Reactive"
     if ref_range_str.lower() in ["negative", "non reactive", "not detected"]:
         return None, None, "qualitative_normal"
     if ref_range_str.lower() in ["positive", "reactive", "detected"]:
         return None, None, "qualitative_abnormal"
         
-    return None, None, None # Default if no pattern matches
+    return None, None, None
 
 def generate_test_plot(df_report, selected_test_name, selected_date=None):
     test_data_for_plot = df_report[df_report['Test_Name'] == selected_test_name]
@@ -644,19 +559,15 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
         st.warning(f"No data found for test: {selected_test_name}" + (f" on {selected_date}" if selected_date and selected_date != "All Dates" else ""))
         return None
 
-    # If multiple entries for the same test (time series plot)
     if "All Dates" == selected_date and len(test_data_for_plot['Test_Date_dt'].unique()) > 1:
-        # Create a time series plot
         fig = go.Figure()
         test_data_for_plot = test_data_for_plot.sort_values('Test_Date_dt')
         
-        # Check if Result_Numeric can be plotted
         if pd.to_numeric(test_data_for_plot['Result'], errors='coerce').notna().all():
-            # FIX 3: Format dates for display on x-axis
             test_data_for_plot['Date_Display'] = test_data_for_plot['Test_Date_dt'].dt.strftime('%d-%m-%Y')
             
             fig.add_trace(go.Scatter(
-                x=test_data_for_plot['Date_Display'],  # Use formatted dates
+                x=test_data_for_plot['Date_Display'],
                 y=test_data_for_plot['Result_Numeric'],
                 mode='lines+markers',
                 name='Result Trend',
@@ -664,60 +575,28 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
                 marker=dict(size=8)
             ))
             
-            # FIX 2: Dynamic reference range calculation
             latest_entry = test_data_for_plot.iloc[-1]
             low_ref, high_ref, ref_type = parse_reference_range(latest_entry['Reference_Range'])
             
-            # Get data range for dynamic scaling
             data_min = test_data_for_plot['Result_Numeric'].min()
             data_max = test_data_for_plot['Result_Numeric'].max()
             data_range = data_max - data_min
             
             if ref_type == "range" and low_ref is not None and high_ref is not None:
-                # Add reference range lines
-                fig.add_hline(y=high_ref, 
-                             line_dash="dash", 
-                             line_color="red", 
-                             annotation_text="Upper Reference",
-                             annotation_position="bottom right")
-                fig.add_hline(y=low_ref, 
-                             line_dash="dash", 
-                             line_color="green", 
-                             annotation_text="Lower Reference",
-                             annotation_position="top right")
-                
-                # Add reference range shading
-                fig.add_hrect(y0=low_ref, y1=high_ref, 
-                             fillcolor="green", opacity=0.1,
-                             annotation_text="Normal Range", 
-                             annotation_position="top left")
-                
-                # Dynamic y-axis range
+                fig.add_hline(y=high_ref, line_dash="dash", line_color="red", annotation_text="Upper Reference", annotation_position="bottom right")
+                fig.add_hline(y=low_ref, line_dash="dash", line_color="green", annotation_text="Lower Reference", annotation_position="top right")
+                fig.add_hrect(y0=low_ref, y1=high_ref, fillcolor="green", opacity=0.1, annotation_text="Normal Range", annotation_position="top left")
                 y_min = min(data_min, low_ref) - abs(data_range * 0.1 if data_range > 0 else low_ref * 0.1)
                 y_max = max(data_max, high_ref) + abs(data_range * 0.1 if data_range > 0 else high_ref * 0.1)
-                
             elif ref_type == "less_than" and high_ref is not None:
-                fig.add_hline(y=high_ref, 
-                             line_dash="dash", 
-                             line_color="red", 
-                             annotation_text=f"< {high_ref}",
-                             annotation_position="bottom right")
-                
+                fig.add_hline(y=high_ref, line_dash="dash", line_color="red", annotation_text=f"< {high_ref}", annotation_position="bottom right")
                 y_min = min(data_min, 0) - abs(data_range * 0.1 if data_range > 0 else data_min * 0.1)
                 y_max = max(data_max, high_ref) + abs(data_range * 0.1 if data_range > 0 else high_ref * 0.1)
-                
             elif ref_type == "greater_than" and low_ref is not None:
-                fig.add_hline(y=low_ref, 
-                             line_dash="dash", 
-                             line_color="green", 
-                             annotation_text=f"> {low_ref}",
-                             annotation_position="top right")
-                
+                fig.add_hline(y=low_ref, line_dash="dash", line_color="green", annotation_text=f"> {low_ref}", annotation_position="top right")
                 y_min = min(data_min, low_ref) - abs(data_range * 0.1 if data_range > 0 else low_ref * 0.1)
                 y_max = max(data_max, data_max * 1.2) + abs(data_range * 0.1 if data_range > 0 else data_max * 0.1)
-                
             else:
-                # No reference range - just use data range with padding
                 padding = abs(data_range * 0.15 if data_range > 0 else data_max * 0.15)
                 y_min = data_min - padding
                 y_max = data_max + padding
@@ -727,13 +606,12 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
                 title_text=f"{selected_test_name} Trend ({unit})",
                 xaxis_title="Date",
                 yaxis_title=f"Result ({unit})",
-                yaxis=dict(range=[y_min, y_max]),  # Dynamic y-axis range
+                yaxis=dict(range=[y_min, y_max]),
                 height=400,
-                margin=dict(l=20, r=20, t=50, b=80),  # More bottom margin for rotated dates
+                margin=dict(l=20, r=20, t=50, b=80),
                 showlegend=True,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 autosize=True,
-                # FIX 3: Rotate x-axis labels for better date visibility
                 xaxis=dict(tickangle=45, tickfont=dict(size=10))
             )
             return fig
@@ -741,7 +619,6 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
             st.info(f"Cannot plot trend for '{selected_test_name}' as some results are non-numeric.")
             return None
 
-    # Single point plot (latest or selected date) - Enhanced bullet chart
     test_entry = test_data_for_plot.sort_values('Test_Date_dt', ascending=False).iloc[0]
     result_val_numeric = test_entry['Result_Numeric']
     result_val_str = test_entry['Result']
@@ -757,48 +634,37 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
     
     low_ref, high_ref, ref_type = parse_reference_range(ref_range_str)
     
-    # FIX 2: Dynamic range calculation for single point plots
     if ref_type == "range" and low_ref is not None and high_ref is not None:
-        # Calculate dynamic range based on reference range and actual value
         ref_range_span = high_ref - low_ref
         axis_min = min(low_ref - ref_range_span * 0.2, result_val_numeric - ref_range_span * 0.2)
         axis_max = max(high_ref + ref_range_span * 0.2, result_val_numeric + ref_range_span * 0.2)
-        
         steps = [
             {'range': [axis_min, low_ref], 'color': 'lightcoral'},
             {'range': [low_ref, high_ref], 'color': 'lightgreen'},
             {'range': [high_ref, axis_max], 'color': 'lightcoral'}
         ]
-        
     elif ref_type == "less_than" and high_ref is not None:
         axis_min = 0
         axis_max = max(high_ref * 1.5, result_val_numeric * 1.2)
-        
         steps = [
             {'range': [axis_min, high_ref], 'color': 'lightgreen'},
             {'range': [high_ref, axis_max], 'color': 'lightcoral'}
         ]
-        
     elif ref_type == "greater_than" and low_ref is not None:
         axis_min = min(low_ref * 0.5, result_val_numeric * 0.8)
         axis_max = max(low_ref * 1.5, result_val_numeric * 1.2)
-        
         steps = [
             {'range': [axis_min, low_ref], 'color': 'lightcoral'},
             {'range': [low_ref, axis_max], 'color': 'lightgreen'}
         ]
-        
     else:
-        # No reference range - create range around the value
         value_range = abs(result_val_numeric * 0.5) if result_val_numeric != 0 else 10
         axis_min = result_val_numeric - value_range
         axis_max = result_val_numeric + value_range
-        
         steps = [
             {'range': [axis_min, axis_max], 'color': 'lightblue'}
         ]
 
-    # Create enhanced gauge chart
     fig.add_trace(go.Indicator(
         mode="number+gauge",
         value=result_val_numeric,
@@ -829,108 +695,45 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
     )
     return fig
 
-
-
 def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, patient_info):
-    """Create enhanced Excel file with properly scaled trend charts and DD-MM-YYYY dates
-    
-    Improvements made:
-    1. Fixed X-axis to show proper dates instead of test values
-    2. Ensured reference ranges are consistent and properly displayed
-    3. Added smooth line connections to prevent disconnected trend lines
-    4. Sorted data by date to ensure proper chronological trend display
-    5. Improved chart formatting and readability
-    6. Dynamic Y-axis scaling appropriate for each test's value range
-    7. Dedicated chart data areas to ensure proper data mapping
-    """
-    
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-        # Write the main data starting from row 4 to leave space for date and lab rows
         organized_df.to_excel(writer, index=False, sheet_name='Medical Data with Trends', startrow=3)
         
         workbook = writer.book
         worksheet = writer.sheets['Medical Data with Trends']
         
-        # Add title
-        title_format = workbook.add_format({
-            'bold': True,
-            'font_size': 16,
-            'align': 'center',
-            'bg_color': '#4472C4',
-            'font_color': 'white'
-        })
-        worksheet.merge_range('A1:' + chr(65 + len(organized_df.columns) - 1) + '1', 
-                            'Medical Test Results - Organized by Date with Trends', title_format)
+        title_format = workbook.add_format({'bold': True, 'font_size': 16, 'align': 'center', 'bg_color': '#4472C4', 'font_color': 'white'})
+        worksheet.merge_range('A1:' + chr(65 + len(organized_df.columns) - 1) + '1', 'Medical Test Results - Organized by Date with Trends', title_format)
         
-        # Add separate date and lab rows
-        date_format = workbook.add_format({
-            'bold': True,
-            'bg_color': '#E7E6E6',
-            'border': 1,
-            'align': 'center',
-            'font_color': '#2E5C8F'
-        })
+        date_format = workbook.add_format({'bold': True, 'bg_color': '#E7E6E6', 'border': 1, 'align': 'center', 'font_color': '#2E5C8F'})
+        lab_format = workbook.add_format({'bold': True, 'bg_color': '#F0F8FF', 'border': 1, 'align': 'center', 'font_color': '#1E7B3E', 'italic': True})
         
-        lab_format = workbook.add_format({
-            'bold': True,
-            'bg_color': '#F0F8FF',
-            'border': 1,
-            'align': 'center',
-            'font_color': '#1E7B3E',
-            'italic': True
-        })
-        
-        # Write "Date" and "Lab" labels
         worksheet.write(1, 0, '📅 Date', date_format)
         worksheet.write(2, 0, '🏥 Lab', lab_format)
-        worksheet.write(1, 1, '', date_format)  # Empty cell for Test_Name column
-        worksheet.write(2, 1, '', lab_format)   # Empty cell for Test_Name column
+        worksheet.write(1, 1, '', date_format)
+        worksheet.write(2, 1, '', lab_format)
         
-        # Fill date and lab rows for all date-lab columns
         for i, date_lab_col in enumerate(date_lab_cols_sorted):
-            col_idx = i + 2  # +2 because first two columns are Test_Category and Test_Name
+            col_idx = i + 2
             parts = date_lab_col.split('_', 1)
             date_part = parts[0] if len(parts) > 0 else 'N/A'
             lab_part = parts[1] if len(parts) > 1 else 'N/A'
-            
             worksheet.write(1, col_idx, date_part, date_format)
             worksheet.write(2, col_idx, lab_part, lab_format)
         
-        # Format headers (now at row 4, index 3)
-        header_format = workbook.add_format({
-            'bold': True,
-            'bg_color': '#D9E2F3',
-            'border': 1,
-            'align': 'center',
-            'valign': 'vcenter'
-        })
-        
-        # Apply header formatting to row 4 (index 3)
+        header_format = workbook.add_format({'bold': True, 'bg_color': '#D9E2F3', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
         for col_num, value in enumerate(organized_df.columns.values):
             worksheet.write(3, col_num, value, header_format)
         
-        # Format data cells (starting from row 5, index 4)
-        data_format = workbook.add_format({
-            'border': 1,
-            'align': 'center',
-            'valign': 'vcenter'
-        })
+        data_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
+        numeric_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
         
-        numeric_format = workbook.add_format({
-            'border': 1,
-            'align': 'center',
-            'valign': 'vcenter',
-            'num_format': '0.00'
-        })
-        
-        # Apply data formatting starting from row 5
         for row_num in range(len(organized_df)):
             for col_num in range(len(organized_df.columns)):
                 value = organized_df.iloc[row_num, col_num]
-                
                 if col_num < 2:
-                    worksheet.write(row_num + 4, col_num, value, data_format)  # +4 because data starts at row 5
+                    worksheet.write(row_num + 4, col_num, value, data_format)
                 else:
                     try:
                         if pd.notna(value) and str(value).strip() != '':
@@ -941,45 +744,33 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                     except (ValueError, TypeError):
                         worksheet.write(row_num + 4, col_num, str(value) if pd.notna(value) else '', data_format)
         
-        # Set row heights for charts - adjusted for new row structure
-        worksheet.set_row(1, 25)  # Date row
-        worksheet.set_row(2, 25)  # Lab row
-        worksheet.set_row(3, 35)  # Header row
+        worksheet.set_row(1, 25)
+        worksheet.set_row(2, 25)
+        worksheet.set_row(3, 35)
         for row_num in range(len(organized_df)):
-            worksheet.set_row(row_num + 4, 225)  # Data rows with charts
+            worksheet.set_row(row_num + 4, 225)
         
-        # Add trend charts with dynamic scaling - adjusted for new row positions
         chart_col = len(organized_df.columns)
-        
-        # Add headers for chart columns
-        worksheet.write(1, chart_col, "", date_format)  # Empty for date row
-        worksheet.write(2, chart_col, "", lab_format)   # Empty for lab row
-        worksheet.write(3, chart_col, "Trends Chart", header_format)  # Chart header
+        worksheet.write(1, chart_col, "", date_format)
+        worksheet.write(2, chart_col, "", lab_format)
+        worksheet.write(3, chart_col, "Trends Chart", header_format)
         
         for row_num in range(len(organized_df)):
             try:
-                test_category = organized_df.iloc[row_num, 0]
                 test_name = organized_df.iloc[row_num, 1]
-                
-                # Get numeric values and dates for this row, sorted by date
                 row_data = []
-                
                 for col_idx, col_name in enumerate(date_lab_cols_sorted):
-                    # Add bounds checking to prevent index out of bounds error
                     if col_idx + 2 < len(organized_df.columns):
                         value = organized_df.iloc[row_num, col_idx + 2]
                     else:
                         value = None
-                    
                     if col_idx + 2 < len(ref_range_df.columns):
                         ref_range = ref_range_df.iloc[row_num, col_idx + 2]
                     else:
                         ref_range = None
-                    
                     if pd.notna(value) and str(value).strip() != '':
                         try:
                             float_val = float(value)
-                            # Extract and format date properly (DD-MM-YYYY)
                             date_part = col_name.split('_')[0]
                             try:
                                 parsed_date = pd.to_datetime(date_part, format='%d-%m-%Y')
@@ -987,39 +778,25 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                                 date_obj = parsed_date
                             except:
                                 formatted_date = date_part
-                                date_obj = pd.to_datetime('1900-01-01')  # Fallback for sorting
-                            
-                            row_data.append({
-                                'value': float_val,
-                                'date_label': formatted_date,
-                                'date_obj': date_obj,
-                                'ref_range': ref_range,
-                                'col_idx': col_idx
-                            })
+                                date_obj = pd.to_datetime('1900-01-01')
+                            row_data.append({'value': float_val, 'date_label': formatted_date, 'date_obj': date_obj, 'ref_range': ref_range, 'col_idx': col_idx})
                         except (ValueError, TypeError):
                             continue
                 
-                # Sort by date to ensure proper trend line connections
                 row_data.sort(key=lambda x: x['date_obj'])
                 
                 row_values = [item['value'] for item in row_data]
                 date_labels = [item['date_label'] for item in row_data]
                 ref_ranges = [item['ref_range'] for item in row_data]
-                sorted_col_indices = [item['col_idx'] for item in row_data]
                 
-                # Create chart only if we have at least 2 numeric values for a proper trend
                 if len(row_values) >= 2:
                     chart = workbook.add_chart({'type': 'line'})
                     
-                    # Create a proper chart with correct data ranges
-                    chart_data_start_row = len(organized_df) + 50  # Well below main data
-                    
-                    # Write sorted data with proper formatting
+                    chart_data_start_row = len(organized_df) + 50
                     for i, (date_label, value) in enumerate(zip(date_labels, row_values)):
                         worksheet.write(chart_data_start_row + i, 0, date_label)
                         worksheet.write(chart_data_start_row + i, 1, value)
                     
-                    # Add the main data series
                     chart.add_series({
                         'name': f'{test_name}',
                         'categories': [worksheet.name, chart_data_start_row, 0, chart_data_start_row + len(row_values) - 1, 0],
@@ -1028,7 +805,6 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                         'marker': {'type': 'circle', 'size': 10, 'border': {'color': '#4472C4', 'width': 2}, 'fill': {'color': '#4472C4'}},
                     })
                     
-                    # Calculate Y-axis range
                     data_min = min(row_values)
                     data_max = max(row_values)
                     data_range = data_max - data_min if data_max != data_min else abs(data_max * 0.2)
@@ -1044,7 +820,6 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                         y_min = data_min * 0.9
                         y_max = data_max * 1.1
                     
-                    # Add reference ranges if available
                     if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
                         valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
                         if valid_ref_ranges:
@@ -1053,90 +828,33 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                             
                             if ref_type == "range" and low_ref is not None and high_ref is not None:
                                 ref_data_start_row = len(organized_df) + 100
-                                
                                 for i, date_label in enumerate(date_labels):
                                     worksheet.write(ref_data_start_row + i, 0, date_label)
                                     worksheet.write(ref_data_start_row + i, 1, high_ref)
                                     worksheet.write(ref_data_start_row + i, 2, low_ref)
                                 
-                                chart.add_series({
-                                    'name': 'Upper Reference',
-                                    'categories': [worksheet.name, ref_data_start_row, 0, ref_data_start_row + len(date_labels) - 1, 0],
-                                    'values': [worksheet.name, ref_data_start_row, 1, ref_data_start_row + len(date_labels) - 1, 1],
-                                    'line': {'color': '#ff6b6b', 'width': 2, 'dash_type': 'dash', 'smooth': True},
-                                    'marker': {'type': 'none'}
-                                })
-                                
-                                chart.add_series({
-                                    'name': 'Lower Reference',
-                                    'categories': [worksheet.name, ref_data_start_row, 0, ref_data_start_row + len(date_labels) - 1, 0],
-                                    'values': [worksheet.name, ref_data_start_row, 2, ref_data_start_row + len(date_labels) - 1, 2],
-                                    'line': {'color': '#4ecdc4', 'width': 2, 'dash_type': 'dash', 'smooth': True},
-                                    'marker': {'type': 'none'}
-                                })
+                                chart.add_series({'name': 'Upper Reference', 'categories': [worksheet.name, ref_data_start_row, 0, ref_data_start_row + len(date_labels) - 1, 0], 'values': [worksheet.name, ref_data_start_row, 1, ref_data_start_row + len(date_labels) - 1, 1], 'line': {'color': '#ff6b6b', 'width': 2, 'dash_type': 'dash', 'smooth': True}, 'marker': {'type': 'none'}})
+                                chart.add_series({'name': 'Lower Reference', 'categories': [worksheet.name, ref_data_start_row, 0, ref_data_start_row + len(date_labels) - 1, 0], 'values': [worksheet.name, ref_data_start_row, 2, ref_data_start_row + len(date_labels) - 1, 2], 'line': {'color': '#4ecdc4', 'width': 2, 'dash_type': 'dash', 'smooth': True}, 'marker': {'type': 'none'}})
                                 
                                 y_min = min(y_min, low_ref)
                                 y_max = max(y_max, high_ref)
                     
-                    # Configure chart
-                    chart.set_title({
-                        'name': f'{test_name} Trend Over Time',
-                        'name_font': {'size': 14, 'bold': True}
-                    })
-                    
-                    chart.set_x_axis({
-                        'name': 'Date (DD-MM-YYYY)',
-                        'name_font': {'size': 12, 'bold': True},
-                        'num_font': {'size': 9, 'rotation': 45},
-                        'label_position': 'low',
-                        'major_tick_mark': 'outside',
-                        'minor_tick_mark': 'none',
-                        'major_gridlines': {'visible': False}
-                    })
-                    
-                    chart.set_y_axis({
-                        'name': 'Value',
-                        'name_font': {'size': 12, 'bold': True},
-                        'num_font': {'size': 10},
-                        'min': y_min,
-                        'max': y_max,
-                        'major_tick_mark': 'outside',
-                        'minor_tick_mark': 'none',
-                        'major_gridlines': {'visible': True, 'line': {'color': '#E0E0E0', 'width': 1}}
-                    })
-                    
-                    chart.set_legend({
-                        'position': 'bottom',
-                        'font': {'size': 9}
-                    })
-                    
-                    chart.set_plotarea({
-                        'border': {'color': '#E0E0E0', 'width': 1},
-                        'fill': {'color': '#FFFFFF'}
-                    })
-                    
+                    chart.set_title({'name': f'{test_name} Trend Over Time', 'name_font': {'size': 14, 'bold': True}})
+                    chart.set_x_axis({'name': 'Date (DD-MM-YYYY)', 'name_font': {'size': 12, 'bold': True}, 'num_font': {'size': 9, 'rotation': 45}, 'label_position': 'low', 'major_tick_mark': 'outside', 'minor_tick_mark': 'none', 'major_gridlines': {'visible': False}})
+                    chart.set_y_axis({'name': 'Value', 'name_font': {'size': 12, 'bold': True}, 'num_font': {'size': 10}, 'min': y_min, 'max': y_max, 'major_tick_mark': 'outside', 'minor_tick_mark': 'none', 'major_gridlines': {'visible': True, 'line': {'color': '#E0E0E0', 'width': 1}}})
+                    chart.set_legend({'position': 'bottom', 'font': {'size': 9}})
+                    chart.set_plotarea({'border': {'color': '#E0E0E0', 'width': 1}, 'fill': {'color': '#FFFFFF'}})
                     chart.set_size({'width': 550, 'height': 220})
                     
-                    # Insert chart
-                    worksheet.insert_chart(row_num + 4, chart_col, chart, {
-                        'x_offset': 5,
-                        'y_offset': 5
-                    })
+                    worksheet.insert_chart(row_num + 4, chart_col, chart, {'x_offset': 5, 'y_offset': 5})
                     
-                    # Add data table
                     data_table_col = chart_col + 1
                     if row_num == 0:
                         worksheet.write(1, data_table_col, "", date_format)
                         worksheet.write(2, data_table_col, "", lab_format)
                         worksheet.write(3, data_table_col, "Data & Reference Range", header_format)
                     
-                    table_format = workbook.add_format({
-                        'border': 1,
-                        'align': 'center',
-                        'valign': 'top',
-                        'font_size': 9,
-                        'text_wrap': True
-                    })
+                    table_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'top', 'font_size': 9, 'text_wrap': True})
                     
                     data_table_content = f"Test: {test_name}\n"
                     data_table_content += "Values: " + ", ".join([f"{date_labels[i]}: {row_values[i]}" for i in range(len(row_values))]) + "\n"
@@ -1177,26 +895,18 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                     worksheet.write(3, chart_col + 1, "Data & Reference Range", header_format)
                 worksheet.write(row_num + 4, chart_col + 1, "Chart generation failed", data_format)
         
-        # Adjust column widths
-        worksheet.set_column('A:A', 20)  # Test Category
-        worksheet.set_column('B:B', 25)  # Test Name
+        worksheet.set_column('A:A', 20)
+        worksheet.set_column('B:B', 25)
         for i, col in enumerate(date_lab_cols_sorted):
-            worksheet.set_column(i + 2, i + 2, 15)  # Date-lab columns
-        worksheet.set_column(chart_col, chart_col, 70)  # Trends column
-        worksheet.set_column(chart_col + 1, chart_col + 1, 30)  # Data table column
+            worksheet.set_column(i + 2, i + 2, 15)
+        worksheet.set_column(chart_col, chart_col, 70)
+        worksheet.set_column(chart_col + 1, chart_col + 1, 30)
         
-        # Add autofilter - adjusted for new structure
         worksheet.autofilter(3, 0, len(organized_df) + 3, len(organized_df.columns) - 1)
+        worksheet.freeze_panes(4, 2)
         
-        # Freeze panes - adjusted for new structure
-        worksheet.freeze_panes(4, 2)  # Freeze at row 5 (after headers) and column C
-
-        
-        # Add summary sheet
         summary_sheet = workbook.add_worksheet('Summary')
-        
         summary_sheet.merge_range('A1:D1', 'Medical Report Summary', title_format)
-        
         info_format = workbook.add_format({'bold': True, 'bg_color': '#E7E6E6'})
         summary_sheet.write('A3', 'Patient Information:', info_format)
         summary_sheet.write('A4', f"Name: {patient_info.get('name', 'N/A')}")
@@ -1204,7 +914,6 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
         summary_sheet.write('A6', f"Gender: {patient_info.get('gender', 'N/A')}")
         summary_sheet.write('A7', f"Patient ID: {patient_info.get('patient_id', 'N/A')}")
         summary_sheet.write('A8', f"Primary Lab: {patient_info.get('lab_name', 'N/A')}")
-        
         summary_sheet.write('A10', 'Report Statistics:', info_format)
         summary_sheet.write('A11', f"Total Test Categories: {organized_df['Test_Category'].nunique()}")
         summary_sheet.write('A12', f"Total Tests: {len(organized_df)}")
@@ -1214,46 +923,40 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
             last_date = date_lab_cols_sorted[-1].split('_')[0]
             summary_sheet.write('A14', f"Date Range: {first_date} to {last_date}")
         summary_sheet.write('A15', f"Generated on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
-        
-        # Test categories breakdown
         summary_sheet.write('A17', 'Test Categories:', info_format)
         categories = organized_df['Test_Category'].value_counts()
         for i, (category, count) in enumerate(categories.items()):
             summary_sheet.write(f'A{18+i}', f"• {category}: {count} tests")
-        
-        # Lab breakdown
         summary_sheet.write('A' + str(18 + len(categories) + 2), 'Labs Used:', info_format)
         unique_labs = set()
         for col in date_lab_cols_sorted:
             if '_' in col:
                 lab_part = col.split('_', 1)[1]
                 unique_labs.add(lab_part)
-        
         for i, lab in enumerate(sorted(unique_labs)):
             summary_sheet.write(f'A{18 + len(categories) + 3 + i}', f"• {lab}")
 
     return output_excel.getvalue()
 
-
 # --- Streamlit App UI ---
 st.set_page_config(page_title="Medical Report Analyzer", layout="wide")
 
 # Load custom CSS
-with open('style.css') as f:
-    st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+# with open('style.css') as f:
+#     st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
 
 st.title("⚕️ Medical Report Analyzer & Health Insights")
 st.markdown("Upload your medical PDF reports to get structured data, a health summary, and visualizations.")
 
-# --- Gemini API Key from secrets.toml ---
-api_key = st.secrets["GEMINI_API_KEY"]
-if not init_gemini_models(api_key):
+# --- Gemini API Key ---
+api_key = st.secrets.get("GEMINI_API_KEY")
+if not api_key or not init_gemini_models(api_key):
     st.error("🚨 Unable to initialize Gemini models. Please check the server configuration.")
 
 # --- Initialize session state ---
 if 'analysis_done' not in st.session_state:
     st.session_state.analysis_done = False
-if 'report_df' not in st.session_state: # Combined DataFrame from all PDFs
+if 'report_df' not in st.session_state:
     st.session_state.report_df = pd.DataFrame()
 if 'consolidated_patient_info' not in st.session_state:
     st.session_state.consolidated_patient_info = {}
@@ -1262,36 +965,22 @@ if 'chat_history' not in st.session_state:
 if 'raw_texts' not in st.session_state:
     st.session_state.raw_texts = []
 
-# --- New Feature: Upload Mode Selection ---
+# --- UI for Upload ---
 upload_mode = st.radio(
     "Select what you want to do:",
-    [
-        "Upload new medical reports",
-        "Add new medical reports to an existing Excel/CSV file"
-    ],
+    ["Upload new medical reports", "Add new medical reports to an existing Excel/CSV file"],
     index=0,
     key="upload_mode_selector"
 )
 
-# Only show the Excel/CSV uploader if the user selects the second option
+uploaded_excel_file_object = None
 if upload_mode == "Add new medical reports to an existing Excel/CSV file":
     uploaded_excel_file_object = st.file_uploader(
-        "Upload your previously downloaded Excel or CSV file (from this website)",
+        "Upload your previously downloaded Excel or CSV file",
         type=["csv", "xlsx"],
-        accept_multiple_files=False,
         key="excel_uploader"
     )
-    if uploaded_excel_file_object is not None:
-        st.session_state.uploaded_excel_data = uploaded_excel_file_object.getvalue()
-        st.session_state.uploaded_excel_name = uploaded_excel_file_object.name
-        st.session_state.uploaded_excel_type = uploaded_excel_file_object.type
-else:
-    # Remove any previously stored excel data if switching back to PDF-only mode
-    st.session_state.pop('uploaded_excel_data', None)
-    st.session_state.pop('uploaded_excel_name', None)
-    st.session_state.pop('uploaded_excel_type', None)
 
-# --- File Uploader for PDFs ---
 uploaded_files = st.file_uploader(
     "📄 Upload Medical Report PDFs (multiple allowed)", 
     type="pdf", 
@@ -1299,28 +988,23 @@ uploaded_files = st.file_uploader(
     key="pdf_uploader"
 )
 
-# Trigger analysis button
-
-
 if st.button("🔬 Analyze Reports", key="analyze_btn"):
     st.session_state.analysis_done = False
-    st.session_state.report_df = pd.DataFrame() # Reset report_df at the start
+    st.session_state.report_df = pd.DataFrame()
     st.session_state.consolidated_patient_info = {}
-    st.session_state.chat_history = [] # Reset chat on new analysis
+    st.session_state.chat_history = []
     st.session_state.raw_texts = []
-    st.session_state.proceed_anyway = False  # Reset proceed_anyway flag
 
-    all_dfs = [] # DataFrames from new PDFs (raw format)
-    all_patient_infos_from_pdfs = [] # Patient info dicts from new PDFs
+    all_dfs = []
+    all_patient_infos_from_pdfs = []
 
     with st.spinner("Processing reports and analyzing with AI... This may take a moment."):
-        # --- Process New PDFs ---
         if uploaded_files:
-            for i, uploaded_file in enumerate(uploaded_files):
+            for uploaded_file in uploaded_files:
                 st.write(f"--- Processing: {uploaded_file.name} ---")
                 file_content = uploaded_file.read()
                 report_text = extract_text_from_pdf(file_content)
-                st.session_state.raw_texts.append({"name": uploaded_file.name, "text": report_text[:2000] if report_text else "No text extracted"}) # Store snippet
+                st.session_state.raw_texts.append({"name": uploaded_file.name, "text": report_text[:2000] if report_text else "No text extracted"})
                 if report_text:
                     gemini_analysis_json = analyze_medical_report_with_gemini(report_text, api_key)
                     if gemini_analysis_json:
@@ -1337,158 +1021,90 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
 
         new_data_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-        # --- Handle Existing Excel/CSV Merge ---
         combined_raw_df = pd.DataFrame()
-
-        # Check if the upload mode is 'Add to existing' AND if the excel data is in session state
-        if st.session_state.get('upload_mode_selector') == "Add new medical reports to an existing Excel/CSV file" and 'uploaded_excel_data' in st.session_state:
+        if upload_mode == "Add new medical reports to an existing Excel/CSV file" and uploaded_excel_file_object:
             try:
-                st.write(f"--- Processing existing file from session state: {st.session_state.uploaded_excel_name} ---")
-                # Read from the stored data in session state
-                if st.session_state.uploaded_excel_name.endswith('.csv'):
-                    existing_pivoted_df = pd.read_csv(io.BytesIO(st.session_state.uploaded_excel_data), index_col='Test_Name')
+                st.write(f"--- Processing existing file: {uploaded_excel_file_object.name} ---")
+                if uploaded_excel_file_object.name.endswith('.csv'):
+                    existing_pivoted_df = pd.read_csv(uploaded_excel_file_object, index_col='Test_Name')
                 else:
-                    existing_pivoted_df = pd.read_excel(io.BytesIO(st.session_state.uploaded_excel_data), index_col='Test_Name')
+                    existing_pivoted_df = pd.read_excel(uploaded_excel_file_object, index_col='Test_Name')
 
-                # Unpivot the existing data
                 existing_raw_df = existing_pivoted_df.stack().reset_index(name='Result')
-                # The column name for dates after stack is usually 'level_1' if index_col was 'Test_Name'
                 existing_raw_df.rename(columns={'level_1': 'Test_Date'}, inplace=True)
-
-                # Standardize Test_Name from the existing data using the same mapping as for PDFs
-                existing_raw_df['Test_Name'] = existing_raw_df['Test_Name'].apply(
-                    lambda x: standardize_value(x, TEST_NAME_MAPPING, default_case='title')
-                )
-
-                # Ensure Test_Date is in DD-MM-YYYY format for consistency before merging
+                existing_raw_df['Test_Name'] = existing_raw_df['Test_Name'].apply(lambda x: standardize_value(x, TEST_NAME_MAPPING, default_case='title'))
                 existing_raw_df['Test_Date'] = pd.to_datetime(existing_raw_df['Test_Date'], errors='coerce').dt.strftime('%d-%m-%Y')
 
-                # Add missing columns with default values to match the structure of new_data_df
-                # Define the full set of expected columns in the raw DataFrame
-                expected_columns = [
-                    'Source_Filename', 'Patient_ID', 'Patient_Name', 'Age', 'Gender',
-                    'Test_Date', 'Lab_Name', 'Test_Category', 'Original_Test_Name', 'Test_Name',
-                    'Result', 'Unit', 'Reference_Range', 'Status', 'Processed_Date',
-                    'Result_Numeric', 'Test_Date_dt'
-                ]
-
-                # Add columns that exist in expected_columns but not in existing_raw_df
+                expected_columns = ['Source_Filename', 'Patient_ID', 'Patient_Name', 'Age', 'Gender', 'Test_Date', 'Lab_Name', 'Test_Category', 'Original_Test_Name', 'Test_Name', 'Result', 'Unit', 'Reference_Range', 'Status', 'Processed_Date', 'Result_Numeric', 'Test_Date_dt']
                 for col in expected_columns:
                     if col not in existing_raw_df.columns:
-                        existing_raw_df[col] = 'N/A' # Default value
-
-                # Fill specific columns with more meaningful defaults where possible
-                existing_raw_df['Source_Filename'] = st.session_state.uploaded_excel_name # Use stored name
+                        existing_raw_df[col] = 'N/A'
+                
+                existing_raw_df['Source_Filename'] = uploaded_excel_file_object.name
                 existing_raw_df['Processed_Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                # For existing data, Original_Test_Name might be the same as the standardized one after the above step
                 existing_raw_df['Original_Test_Name'] = existing_raw_df['Test_Name']
-
-                # Convert data types for consistency (Result_Numeric and Test_Date_dt)
                 existing_raw_df['Result_Numeric'] = pd.to_numeric(existing_raw_df['Result'], errors='coerce')
                 existing_raw_df['Test_Date_dt'] = pd.to_datetime(existing_raw_df['Test_Date'], errors='coerce')
-
-                # Reindex to ensure correct column order
                 existing_raw_df = existing_raw_df.reindex(columns=expected_columns)
 
-                # Check if existing_raw_df is empty after processing
                 if existing_raw_df.empty:
-                    st.warning(f"⚠️ No data could be extracted or unpivoted from the existing file: {st.session_state.uploaded_excel_name}.")
-                    combined_raw_df = new_data_df # Fallback to only new data
+                    st.warning(f"⚠️ No data could be extracted from the existing file: {uploaded_excel_file_object.name}.")
+                    combined_raw_df = new_data_df
                 else:
-                    combined_raw_df = existing_raw_df
-                    if not new_data_df.empty:
-                        # Concatenate existing raw data with new raw data from PDFs
-                        combined_raw_df = pd.concat([combined_raw_df, new_data_df], ignore_index=True)
-
-                    st.success(f"✅ Processed existing file from session state: {st.session_state.uploaded_excel_name}")
+                    combined_raw_df = pd.concat([existing_raw_df, new_data_df], ignore_index=True)
+                    st.success(f"✅ Processed existing file: {uploaded_excel_file_object.name}")
 
             except Exception as e:
-                st.error(f"Error reading or processing existing Excel/CSV file from session state: {str(e)}")
-                st.error(f"Details: {e}") # Print exception details
-                # If existing file processing fails, fall back to just new data
+                st.error(f"Error reading or processing existing Excel/CSV file: {str(e)}")
                 combined_raw_df = new_data_df
         else:
-            # If not adding to existing, or if no excel data in session state, just use the new data from PDFs
             combined_raw_df = new_data_df
 
-        # --- Handle Name Conflicts with Automatic Resolution ---
-        # Check for name compatibility first
         consolidated_info = consolidate_patient_info(all_patient_infos_from_pdfs)
-        
-        # If there's a name mismatch, automatically use smart selection instead of blocking
         if 'error' in consolidated_info and consolidated_info['error'] == 'name_mismatch':
             st.warning("⚠️ Different patient names detected in reports!")
             st.write("Found these different names:", ", ".join(consolidated_info['names']))
             st.info("🔄 Automatically resolving name conflicts using smart selection...")
-            
-            # Automatically use smart selection to resolve the conflict
             consolidated_info = create_consolidated_info_with_smart_selection(all_patient_infos_from_pdfs)
             st.success(f"✅ Resolved name conflict. Using: **{consolidated_info.get('name', 'N/A')}**")
 
-        # --- Always Process Data (No Blocking) ---
         st.session_state.report_df = combined_raw_df
-
         if not st.session_state.report_df.empty:
             st.session_state.consolidated_patient_info = consolidated_info
             st.session_state.analysis_done = True
             st.balloons()
         else:
             st.warning("No data could be extracted or merged from the provided files.")
-            st.session_state.analysis_done = False # Reset analysis_done if no data
+            st.session_state.analysis_done = False
 
-
-
-
-# --- Utility: Combine duplicate test names and assign most common category ---
 def combine_duplicate_tests(df):
-    # Normalize test names (already done via standardize_value, but just in case)
     df = df.copy()
-    # Group by Test_Name, Test_Category, Test_Date to count occurrences
-    group = df.groupby(['Test_Name', 'Test_Category', 'Test_Date']).size().reset_index(name='count')
-    # For each Test_Name, get the category with the most test_dates (count unique dates)
-    test_cat_counts = (
-        df.groupby(['Test_Name', 'Test_Category'])['Test_Date']
-        .nunique()
-        .reset_index()
-        .rename(columns={'Test_Date': 'date_count'})
-    )
-    # For ties, use the category with the most total rows in the CSV
-    test_cat_total = (
-        df.groupby(['Test_Name', 'Test_Category']).size().reset_index(name='row_count')
-    )
-    # Merge counts
+    test_cat_counts = df.groupby(['Test_Name', 'Test_Category'])['Test_Date'].nunique().reset_index().rename(columns={'Test_Date': 'date_count'})
+    test_cat_total = df.groupby(['Test_Name', 'Test_Category']).size().reset_index(name='row_count')
     merged = pd.merge(test_cat_counts, test_cat_total, on=['Test_Name', 'Test_Category'])
-    # For each Test_Name, pick the best Test_Category
+    
     def pick_category(subdf):
-        # First try to pick by most dates
         max_dates = subdf['date_count'].max()
         date_winners = subdf[subdf['date_count'] == max_dates]
         if len(date_winners) == 1:
             return date_winners.iloc[0]['Test_Category']
-        # If tie in dates, use most rows
         max_rows = date_winners['row_count'].max()
         row_winners = date_winners[date_winners['row_count'] == max_rows]
-        # Return first category alphabetically if still tied
         return row_winners.iloc[0]['Test_Category']
+
     best_cats = merged.groupby('Test_Name').apply(pick_category).reset_index()
     best_cats.columns = ['Test_Name', 'Best_Test_Category']
-    # Map best category back to df
     df = pd.merge(df, best_cats, on='Test_Name', how='left')
     df['Test_Category'] = df['Best_Test_Category']
     df = df.drop(columns=['Best_Test_Category'])
-    # Drop duplicate Test_Name/Test_Date rows, keep first (since category is now unified)
     df = df.sort_values(['Test_Name', 'Test_Date', 'Test_Category']).drop_duplicates(['Test_Name', 'Test_Date'])
     df = df.reset_index(drop=True)
     return df
 
-# --- Main content area: Display after analysis ---
 if st.session_state.analysis_done and not st.session_state.report_df.empty:
-    # Unify similar test names before combining duplicates
     st.session_state.report_df = unify_test_names(st.session_state.report_df)
-    # Combine duplicate test names and unify categories before display/organizing
     st.session_state.report_df = combine_duplicate_tests(st.session_state.report_df)
     
-    # --- Patient Information Display ---
     st.header("👤 Patient Information")
     p_info = st.session_state.consolidated_patient_info
     if p_info:
@@ -1500,654 +1116,174 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
         st.info("No patient information available.")
     st.divider()
 
-    # --- Chatbot Interface ---
     st.header("💬 Health Report Assistant")
-
-    # Create a link-like icon in the header
-    st.markdown('<div style="text-align: right; margin-top: -50px; color: #4a4a4a;">🔗</div>', unsafe_allow_html=True)
-
-    # Chat input at the top
     user_query = st.chat_input("How can I help you today?")
 
-    # Create a container for the chat interface with dark theme
-    chat_container = st.container()
-
-    # Example questions with improved styling - show only if no chat history
     if not st.session_state.chat_history:
         st.markdown("##### 💡 Try asking:")
-        
-        # Define the example questions in a 2x2 grid
-        example_questions = [
-            "show a general overview of my report",
-            "Explain my blood test results",
-            "Any concerning findings?",
-            "Show my test trends over time"
-        ]
-        
+        example_questions = ["show a general overview of my report", "Explain my blood test results", "Any concerning findings?", "Show my test trends over time"]
         col1, col2 = st.columns(2)
         cols = [col1, col2, col1, col2]
-        
-        # Display questions in a grid with improved styling
         for i, question in enumerate(example_questions):
-            if cols[i].button(
-                question,
-                key=f"example_q_{i}",
-                use_container_width=True,
-            ):
+            if cols[i].button(question, key=f"example_q_{i}", use_container_width=True):
                 user_query = question
 
-    # Handle user query
     if user_query:
         st.session_state.chat_history.append({"role": "user", "content": user_query})
-        
-        # Process the query and get response
         with st.spinner("Thinking..."):
-            assistant_response = get_chatbot_response(
-                st.session_state.report_df,
-                user_query,
-                st.session_state.chat_history[:-1],
-                api_key
-            )
+            assistant_response = get_chatbot_response(st.session_state.report_df, user_query, st.session_state.chat_history[:-1], api_key)
             st.session_state.chat_history.append({"role": "assistant", "content": assistant_response})
 
-    # Display chat history in a Q&A format
     for i in range(0, len(st.session_state.chat_history), 2):
         if i + 1 < len(st.session_state.chat_history):
-            # Question
             with st.chat_message("user"):
                 st.write(st.session_state.chat_history[i]["content"])
-            # Answer
             with st.chat_message("assistant", avatar="🤖"):
                 st.write(st.session_state.chat_history[i + 1]["content"])
-
     st.divider()
 
-    # --- Visualizations Section ---
     st.header("📈 Test Result Visualizations", divider='rainbow')
-    
-    # Create containers for better organization
     viz_container = st.container()
     with viz_container:
         col1, col2 = st.columns([1, 2])
-        
         with col1:
             df_for_viz = st.session_state.report_df.copy()
             df_for_viz = df_for_viz[~df_for_viz['Test_Name'].isin(['N/A', 'UnknownTest', 'Unknown Test']) & df_for_viz['Test_Name'].notna()]
-
-            # Ensure all Test_Category values are strings and handle NaN/None
             df_for_viz['Test_Category'] = df_for_viz['Test_Category'].fillna('Other').astype(str)
 
             if not df_for_viz.empty:
-                # Get all unique body parts from all categories
                 all_body_parts = set()
                 for category in df_for_viz['Test_Category'].unique():
-                    body_parts = TEST_CATEGORY_TO_BODY_PARTS.get(category, ["General"])
-                    all_body_parts.update(body_parts)
+                    all_body_parts.update(TEST_CATEGORY_TO_BODY_PARTS.get(category, ["General"]))
                 
-                # Create the body part to emoji mapping for display
-                body_part_options = ["-- All Systems --"] + [
-                    f"{BODY_PARTS_TO_EMOJI.get(bp, '📊')} {bp}" 
-                    for bp in sorted(all_body_parts)
-                ]
-
-                selected_body_part_display = st.selectbox(
-                    "Filter by Body System:",
-                    options=body_part_options,
-                    key="body_part_selector"
-                )
-
-                # Extract the actual body part name
+                body_part_options = ["-- All Systems --"] + [f"{BODY_PARTS_TO_EMOJI.get(bp, '📊')} {bp}" for bp in sorted(all_body_parts)]
+                selected_body_part_display = st.selectbox("Filter by Body System:", options=body_part_options, key="body_part_selector")
                 selected_body_part = selected_body_part_display.split(" ", 1)[1] if selected_body_part_display != "-- All Systems --" else None
 
-                # Filter categories based on selected body part
                 if selected_body_part and selected_body_part != "General":
-                    relevant_categories = [
-                        cat for cat in df_for_viz['Test_Category'].unique()
-                        if selected_body_part in TEST_CATEGORY_TO_BODY_PARTS.get(cat, ["General"])
-                    ]
+                    relevant_categories = [cat for cat in df_for_viz['Test_Category'].unique() if selected_body_part in TEST_CATEGORY_TO_BODY_PARTS.get(cat, ["General"])]
                     df_for_viz = df_for_viz[df_for_viz['Test_Category'].isin(relevant_categories)]
 
-                # Create a mapping of categories to body parts for display
-                category_body_parts = {}
-                for category in df_for_viz['Test_Category'].unique():
-                    body_parts = TEST_CATEGORY_TO_BODY_PARTS.get(category, ["General"])
-                    emojis = [BODY_PARTS_TO_EMOJI.get(bp, "📊") for bp in body_parts]
-                    category_body_parts[category] = f"{' '.join(emojis)} {category}"
-
-        # 1. Dropdown for Body System/Category with emojis
-        available_categories = sorted(df_for_viz['Test_Category'].unique().tolist())
-        if not available_categories:
-            st.info("No test categories found for visualization.")
-        else:
-            category_options = ["-- All Categories --"] + [
-                category_body_parts.get(cat, f"📊 {cat}") 
-                for cat in available_categories
-            ]
-            
-            selected_category_display = st.selectbox(
-                "Select Body System to Analyze:", 
-                options=category_options,
-                key="category_selector"
-            )
-            
-            # Extract actual category name from display name
-            selected_category = "-- All Categories --" if selected_category_display == "-- All Categories --" else next(
-                cat for cat in available_categories 
-                if category_body_parts.get(cat, f"📊 {cat}") == selected_category_display
-            )
-
-            # 2. Dropdown for Test Name (filtered by category)
-            if selected_category and selected_category != "-- All Categories --":
-                tests_in_category = sorted(df_for_viz[df_for_viz['Test_Category'] == selected_category]['Test_Name'].unique().tolist())
-            else: # All categories selected
-                tests_in_category = sorted(df_for_viz['Test_Name'].unique().tolist())
-            
-            if not tests_in_category:
-                st.info(f"No tests found for category: {selected_category}")
-            else:
-                selected_test = st.selectbox(
-                    "Select a specific test to visualize:", 
-                    options=["-- Select a test --"] + tests_in_category, 
-                    key="test_selector_viz"
-                )
+                category_body_parts = {category: f"{' '.join([BODY_PARTS_TO_EMOJI.get(bp, '📊') for bp in TEST_CATEGORY_TO_BODY_PARTS.get(category, ['General'])])} {category}" for category in df_for_viz['Test_Category'].unique()}
                 
-                # 3. Dropdown for Test Date (if multiple dates exist for the selected test)
-                if selected_test and selected_test != "-- Select a test --":
-                    test_specific_data = df_for_viz[df_for_viz['Test_Name'] == selected_test]
-                    available_dates = sorted(test_specific_data['Test_Date'].unique().tolist(), reverse=True)
-                    
-                    selected_plot_date = "All Dates" # Default
-                    if len(available_dates) > 1:
-                        selected_plot_date = st.selectbox(
-                            "Select Report Date for Plot (or 'All Dates' for trend):",
-                            options=["All Dates"] + available_dates,
-                            key="date_selector_viz"
-                        )
-                    elif len(available_dates) == 1:
-                        selected_plot_date = available_dates[0]
-
-                    plot = generate_test_plot(df_for_viz, selected_test, selected_plot_date)
-                    if plot:
-                        st.plotly_chart(plot, use_container_width=True)
-                    elif selected_test != "-- Select a test --": # If plot is None but a test was selected
-                        st.info(f"Could not generate plot for {selected_test}. This might be due to non-numeric results or missing reference ranges for the selected date(s).")
-
-                elif selected_test == "-- Select a test --":
-                    st.info("Please select a specific test from the dropdown to see its visualization.")
+                available_categories = sorted(df_for_viz['Test_Category'].unique().tolist())
+                if not available_categories:
+                    st.info("No test categories found for visualization.")
                 else:
-                    st.info("No plottable test results found in the report(s) to visualize.")
-            
-                st.divider()
+                    category_options = ["-- All Categories --"] + [category_body_parts.get(cat, f"📊 {cat}") for cat in available_categories]
+                    selected_category_display = st.selectbox("Select Body System to Analyze:", options=category_options, key="category_selector")
+                    selected_category = "-- All Categories --" if selected_category_display == "-- All Categories --" else next(cat for cat in available_categories if category_body_parts.get(cat, f"📊 {cat}") == selected_category_display)
 
-    # --- Organised Data Section with Enhanced Excel Export ---
-    
+                    tests_in_category = sorted(df_for_viz[df_for_viz['Test_Category'] == selected_category]['Test_Name'].unique().tolist()) if selected_category and selected_category != "-- All Categories --" else sorted(df_for_viz['Test_Name'].unique().tolist())
+                    
+                    if not tests_in_category:
+                        st.info(f"No tests found for category: {selected_category}")
+                    else:
+                        selected_test = st.selectbox("Select a specific test to visualize:", options=["-- Select a test --"] + tests_in_category, key="test_selector_viz")
+                        
+                        if selected_test and selected_test != "-- Select a test --":
+                            test_specific_data = df_for_viz[df_for_viz['Test_Name'] == selected_test]
+                            available_dates = sorted(test_specific_data['Test_Date'].unique().tolist(), reverse=True)
+                            
+                            selected_plot_date = "All Dates"
+                            if len(available_dates) > 1:
+                                selected_plot_date = st.selectbox("Select Report Date for Plot (or 'All Dates' for trend):", options=["All Dates"] + available_dates, key="date_selector_viz")
+                            elif len(available_dates) == 1:
+                                selected_plot_date = available_dates[0]
+
+                            plot = generate_test_plot(df_for_viz, selected_test, selected_plot_date)
+                            if plot:
+                                st.plotly_chart(plot, use_container_width=True)
+                            elif selected_test != "-- Select a test --":
+                                st.info(f"Could not generate plot for {selected_test}. This might be due to non-numeric results or missing reference ranges for the selected date(s).")
+                        elif selected_test == "-- Select a test --":
+                            st.info("Please select a specific test from the dropdown to see its visualization.")
+                        else:
+                            st.info("No plottable test results found in the report(s) to visualize.")
+            
+            st.divider()
+
     st.header("📊 Organised Data by Date")
     if not st.session_state.report_df.empty:
         try:
-            # Create date-lab combination columns first
             df_with_date_lab = st.session_state.report_df.copy()
-            
-            # Clean lab names to extract location/facility name instead of billing location
             def clean_lab_name(lab_name):
                 if pd.isna(lab_name) or lab_name == 'N/A':
                     return 'N/A'
-                
-                # Remove common billing-related terms and extract facility name
                 lab_name = str(lab_name).strip()
-                
-                # Remove billing-related prefixes/suffixes
-                billing_terms = [
-                    'bill', 'billing', 'invoice', 'receipt', 'payment',
-                    'charges', 'collection center', 'collection centre'
-                ]
-                
-                # Split by common separators and clean each part
+                billing_terms = ['bill', 'billing', 'invoice', 'receipt', 'payment', 'charges', 'collection center', 'collection centre']
                 parts = []
                 for separator in ['-', '|', ',', '(', ')']:
                     if separator in lab_name:
                         parts = lab_name.split(separator)
                         break
-                
                 if not parts:
                     parts = [lab_name]
-                
-                # Find the best part (usually the facility name)
-                cleaned_parts = []
-                for part in parts:
-                    part = part.strip()
-                    # Skip if part contains billing terms
-                    if any(term in part.lower() for term in billing_terms):
-                        continue
-                    # Skip if part is too short or contains only numbers
-                    if len(part) > 2 and not part.isdigit():
-                        cleaned_parts.append(part)
-                
-                # Return the longest meaningful part or the original if nothing found
-                if cleaned_parts:
-                    return max(cleaned_parts, key=len)
-                else:
-                    return lab_name
+                cleaned_parts = [part.strip() for part in parts if not any(term in part.lower() for term in billing_terms) and len(part.strip()) > 2 and not part.strip().isdigit()]
+                return max(cleaned_parts, key=len) if cleaned_parts else lab_name
             
-            # Apply lab name cleaning
             df_with_date_lab['Lab_Name_Clean'] = df_with_date_lab['Lab_Name'].apply(clean_lab_name)
-            
-            # Create a combined date-lab column for pivot
             df_with_date_lab['Date_Lab'] = df_with_date_lab['Test_Date'] + '_' + df_with_date_lab['Lab_Name_Clean']
             
-            # Create pivot table with Test_Category as primary index, then Test_Name
-            organized_df = df_with_date_lab.pivot_table(
-                index=['Test_Category', 'Test_Name'],
-                columns='Date_Lab',
-                values='Result',
-                aggfunc='first'
-            )
-            organized_df = organized_df.reset_index()
+            organized_df = df_with_date_lab.pivot_table(index=['Test_Category', 'Test_Name'], columns='Date_Lab', values='Result', aggfunc='first').reset_index()
+            ref_range_df = df_with_date_lab.pivot_table(index=['Test_Category', 'Test_Name'], columns='Date_Lab', values='Reference_Range', aggfunc='first').reset_index()
             
-            # Also create reference range pivot for chart generation
-            ref_range_df = df_with_date_lab.pivot_table(
-                index=['Test_Category', 'Test_Name'],
-                columns='Date_Lab',
-                values='Reference_Range',
-                aggfunc='first'
-            )
-            ref_range_df = ref_range_df.reset_index()
-            
-            # Reorder columns: Test_Category, Test_Name, then all date-lab combinations (sorted chronologically)
             date_lab_cols = [col for col in organized_df.columns if col not in ['Test_Category', 'Test_Name']]
+            date_lab_cols_sorted = sorted(date_lab_cols, key=lambda col_name: pd.to_datetime(col_name.split('_')[0], format='%d-%m-%Y', errors='coerce'))
             
-            # Sort date-lab columns chronologically by extracting date part
-            def extract_date_for_sort(col_name):
-                try:
-                    date_part = col_name.split('_')[0]  # Extract date part before underscore
-                    return pd.to_datetime(date_part, format='%d-%m-%Y', errors='coerce')
-                except:
-                    return pd.to_datetime('1900-01-01')  # Fallback date for sorting
-            
-            date_lab_cols_sorted = sorted(date_lab_cols, key=extract_date_for_sort)
-            
-            # Ensure all columns exist in both DataFrames
             required_cols = ['Test_Category', 'Test_Name'] + date_lab_cols_sorted
-            missing_cols_org = [col for col in required_cols if col not in organized_df.columns]
-            missing_cols_ref = [col for col in required_cols if col not in ref_range_df.columns]
-            
-            if missing_cols_org:
-                st.error(f"Missing columns in organized_df: {missing_cols_org}")
-                
-            if missing_cols_ref:
-                st.error(f"Missing columns in ref_range_df: {missing_cols_ref}")
-                
-            
             organized_df = organized_df[required_cols]
             ref_range_df = ref_range_df[required_cols]
             
-            # Sort by Test_Category, then Test_Name
             organized_df = organized_df.sort_values(['Test_Category', 'Test_Name']).reset_index(drop=True)
             ref_range_df = ref_range_df.sort_values(['Test_Category', 'Test_Name']).reset_index(drop=True)
             
-            # Check if DataFrames are empty
-            if organized_df.empty:
-                st.error("No data available to organize. Please check your uploaded reports.")
-            
-            
-            if ref_range_df.empty:
-                st.error("No reference range data available. Please check your uploaded reports.")
+            if organized_df.empty or ref_range_df.empty or len(organized_df) != len(ref_range_df) or not organized_df.columns.equals(ref_range_df.columns):
+                st.error("Data structure mismatch or no data available to organize.")
+            else:
+                display_df = organized_df.copy()
+                date_row = {'Test_Category': '📅 Date', 'Test_Name': ''}
+                lab_row = {'Test_Category': '🏥 Lab', 'Test_Name': ''}
+                for date_lab_col in date_lab_cols_sorted:
+                    parts = date_lab_col.split('_', 1)
+                    date_row[date_lab_col] = parts[0] if len(parts) > 0 else 'N/A'
+                    lab_row[date_lab_col] = parts[1] if len(parts) > 1 else 'N/A'
                 
-            
-            # Ensure both DataFrames have the same structure
-            if len(organized_df) != len(ref_range_df):
-                st.error(f"Data structure mismatch: organized_df has {len(organized_df)} rows, ref_range_df has {len(ref_range_df)} rows")
-                    
-            # Ensure both DataFrames have the same columns
-            if not organized_df.columns.equals(ref_range_df.columns):
-                st.error("Data structure mismatch: organized_df and ref_range_df have different columns")
-            
-            
-            # Create a display version with dates and lab names shown separately
-            display_df = organized_df.copy()
-            
-            # Create header rows for better display
-            date_row = {'Test_Category': '📅 Date', 'Test_Name': ''}
-            lab_row = {'Test_Category': '🏥 Lab', 'Test_Name': ''}
-            
-            for date_lab_col in date_lab_cols_sorted:
-                parts = date_lab_col.split('_', 1)  # Split only on first underscore
-                date_part = parts[0] if len(parts) > 0 else 'N/A'
-                lab_part = parts[1] if len(parts) > 1 else 'N/A'
+                header_rows_df = pd.DataFrame([date_row, lab_row])
+                display_df = pd.concat([header_rows_df, display_df], ignore_index=True)
                 
-                date_row[date_lab_col] = date_part
-                lab_row[date_lab_col] = lab_part
-            
-            # Insert the header rows at the beginning
-            header_rows_df = pd.DataFrame([date_row, lab_row])
-            display_df = pd.concat([header_rows_df, display_df], ignore_index=True)
-            
-            # Display the organized data in Streamlit
-            st.write("Your medical test results organised by test category, test name, and date with corresponding lab names.")
-            
-            # Style the dataframe to highlight the header rows
-            def highlight_header_rows(row):
-                if row.name == 0:  # First row (date row)
-                    return ['background-color: #E7E6E6; font-weight: bold; color: #2E5C8F'] * len(row)
-                elif row.name == 1:  # Second row (lab row)
-                    return ['background-color: #F0F8FF; font-weight: bold; color: #1E7B3E; font-style: italic'] * len(row)
-                return [''] * len(row)
-            
-            styled_df = display_df.style.apply(highlight_header_rows, axis=1)
-            st.dataframe(styled_df, use_container_width=True)
+                st.write("Your medical test results organised by test category, test name, and date with corresponding lab names.")
+                
+                def highlight_header_rows(row):
+                    if row.name == 0:
+                        return ['background-color: #E7E6E6; font-weight: bold; color: #2E5C8F'] * len(row)
+                    elif row.name == 1:
+                        return ['background-color: #F0F8FF; font-weight: bold; color: #1E7B3E; font-style: italic'] * len(row)
+                    return [''] * len(row)
+                
+                styled_df = display_df.style.apply(highlight_header_rows, axis=1)
+                st.dataframe(styled_df, use_container_width=True)
 
-            # Get patient name for filename
-            p_info = st.session_state.consolidated_patient_info
-            patient_name_for_file = "".join(c if c.isalnum() else "_" for c in p_info.get('name', 'medical_data'))
+                patient_name_for_file = "".join(c if c.isalnum() else "_" for c in p_info.get('name', 'medical_data'))
+                excel_data = create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, p_info)
 
-            # Create enhanced Excel file with trend charts
-            output_excel = io.BytesIO()
-            with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-                # Write the main data (use original organized_df, not display_df)
-                organized_df.to_excel(writer, index=False, sheet_name='Medical Data with Trends', startrow=1)
-                
-                workbook = writer.book
-                worksheet = writer.sheets['Medical Data with Trends']
-                
-                # Add title
-                title_format = workbook.add_format({
-                    'bold': True,
-                    'font_size': 16,
-                    'align': 'center',
-                    'bg_color': '#4472C4',
-                    'font_color': 'white'
-                })
-                worksheet.merge_range('A1:' + chr(65 + len(organized_df.columns) - 1) + '1', 
-                                    'Medical Test Results - Organized by Date with Trends', title_format)
-                
-                # Format headers
-                header_format = workbook.add_format({
-                    'bold': True,
-                    'bg_color': '#D9E2F3',
-                    'border': 1,
-                    'align': 'center',
-                    'valign': 'vcenter'
-                })
-                
-                # Apply header formatting
-                for col_num, value in enumerate(organized_df.columns.values):
-                    worksheet.write(1, col_num, value, header_format)
-                
-                # Format data cells
-                data_format = workbook.add_format({
-                    'border': 1,
-                    'align': 'center',
-                    'valign': 'vcenter'
-                })
-                
-                numeric_format = workbook.add_format({
-                    'border': 1,
-                    'align': 'center',
-                    'valign': 'vcenter',
-                    'num_format': '0.00'
-                })
-                
-                # Apply data formatting and convert numeric values
-                for row_num in range(len(organized_df)):
-                    for col_num in range(len(organized_df.columns)):
-                        value = organized_df.iloc[row_num, col_num]
-                        
-                        # Skip Test_Category and Test_Name columns for numeric conversion
-                        if col_num < 2:
-                            worksheet.write(row_num + 2, col_num, value, data_format)
-                        else:
-                            # Try to convert to float for date columns
-                            try:
-                                if pd.notna(value) and str(value).strip() != '':
-                                    float_val = float(value)
-                                    worksheet.write(row_num + 2, col_num, float_val, numeric_format)
-                                else:
-                                    worksheet.write(row_num + 2, col_num, value if pd.notna(value) else '', data_format)
-                            except (ValueError, TypeError):
-                                # Keep as string if not numeric
-                                worksheet.write(row_num + 2, col_num, str(value) if pd.notna(value) else '', data_format)
-                
-                # Set row heights for better chart visibility - INCREASED FOR LARGER CHARTS
-                worksheet.set_row(1, 35)
-                
-                # Much larger row heights to accommodate bigger charts (300 pixels = about 225 points)
-                for row_num in range(len(organized_df)):
-                    worksheet.set_row(row_num + 2, 225)  # Even larger row height for bigger charts
-                
-                # Add trend charts for each test that has numeric data
-                chart_col = len(organized_df.columns)  # Column after the last data column
-                chart_row_start = 2  # Start after headers
-                
-                # Add "Trends Chart" header
-                worksheet.write(1, chart_col, "Trends Chart", header_format)
-                
-                for row_num in range(len(organized_df)):
-                    test_category = organized_df.iloc[row_num, 0]
-                    test_name = organized_df.iloc[row_num, 1]
-                    
-                    # Get numeric values for this row (excluding Test_Category and Test_Name)
-                    row_values = []
-                    date_labels = []
-                    ref_ranges = []
-                    
-                    for col_idx, col_name in enumerate(date_lab_cols_sorted):
-                        value = organized_df.iloc[row_num, col_idx + 2]  # +2 to skip Test_Category and Test_Name
-                        ref_range = ref_range_df.iloc[row_num, col_idx + 2]  # Get corresponding reference range
-                        
-                        if pd.notna(value) and str(value).strip() != '':
-                            try:
-                                float_val = float(value)
-                                row_values.append(float_val)
-                                date_labels.append(col_name.split('_')[0])  # Extract date part for label
-                                ref_ranges.append(ref_range)
-                            except (ValueError, TypeError):
-                                continue
-                    
-                    # Create chart only if we have at least 1 numeric value
-                    if len(row_values) >= 1:
-                        # Create a line chart
-                        chart = workbook.add_chart({'type': 'line'})
-                        
-                        # Calculate correct column ranges for the chart data
-                        first_data_col = 2  # Column C (0-indexed: A=0, B=1, C=2)
-                        last_data_col = len(date_lab_cols_sorted) + 1  # Last column with data
-                        
-                        # Add the data series with thicker line and bigger markers
-                        chart.add_series({
-                            'name': f'{test_name}',
-                            'categories': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
-                            'values': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
-                            'line': {'color': '#4472C4', 'width': 4},  # Even thicker line
-                            'marker': {'type': 'circle', 'size': 10, 'border': {'color': '#4472C4', 'width': 2}, 'fill': {'color': '#4472C4'}},  # Even bigger markers
-                        })
-                        
-                        # Add reference range bands if available
-                        if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
-                            # Use the most common reference range for the chart
-                            valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
-                            if valid_ref_ranges:
-                                ref_range_str = max(set(valid_ref_ranges), key=valid_ref_ranges.count)  # Most common
-                                
-                                # Parse reference range
-                                low_ref, high_ref, ref_type = parse_reference_range(ref_range_str)
-                                
-                                if ref_type == "range" and low_ref is not None and high_ref is not None:
-                                    # Create temporary data for reference lines by writing to unused rows
-                                    temp_row_upper = len(organized_df) + 10  # Use rows well below the data
-                                    temp_row_lower = len(organized_df) + 11
-                                    
-                                    # Write reference values to temporary rows
-                                    for col_idx in range(first_data_col, last_data_col + 1):
-                                        worksheet.write(temp_row_upper, col_idx, high_ref)
-                                        worksheet.write(temp_row_lower, col_idx, low_ref)
-                                    
-                                    # Add reference range as horizontal lines
-                                    chart.add_series({
-                                        'name': 'Upper Reference',
-                                        'categories': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
-                                        'values': [worksheet.name, temp_row_upper, first_data_col, temp_row_upper, last_data_col],
-                                        'line': {'color': '#ff6b6b', 'width': 2, 'dash_type': 'dash'},
-                                        'marker': {'type': 'none'}
-                                    })
-                                    
-                                    chart.add_series({
-                                        'name': 'Lower Reference',
-                                        'categories': [worksheet.name, row_num + 2, first_data_col, row_num + 2, last_data_col],
-                                        'values': [worksheet.name, temp_row_lower, first_data_col, temp_row_lower, last_data_col],
-                                        'line': {'color': '#4ecdc4', 'width': 2, 'dash_type': 'dash'},
-                                        'marker': {'type': 'none'}
-                                    })
-                        
-                        # Configure chart with larger size and better formatting
-                        chart.set_title({
-                            'name': f'{test_name} Trend',
-                            'name_font': {'size': 14, 'bold': True}  # Even bigger title font
-                        })
-                        
-                        chart.set_x_axis({
-                            'name': 'Date',
-                            'name_font': {'size': 12, 'bold': True},  # Bigger axis label font
-                            'num_font': {'size': 10, 'rotation': 45}  # Bigger axis values font
-                        })
-                        
-                        chart.set_y_axis({
-                            'name': 'Value',
-                            'name_font': {'size': 12, 'bold': True},  # Bigger axis label font
-                            'num_font': {'size': 10}  # Bigger axis values font
-                        })
-                        
-                        # Show legend for reference ranges
-                        chart.set_legend({
-                            'position': 'bottom',
-                            'font': {'size': 9}
-                        })
-                        
-                        # MUCH LARGER chart size
-                        chart.set_size({'width': 550, 'height': 220})  # Significantly larger chart
-                        
-                        # Insert chart in the trends column with proper positioning
-                        worksheet.insert_chart(row_num + 2, chart_col, chart, {
-                            'x_offset': 5,
-                            'y_offset': 5
-                        })
-                        
-                        # ADD DATA TABLE BELOW THE CHART
-                        # Position for data table (below the chart in the same cell area)
-                        data_table_start_row = row_num + 2
-                        data_table_col = chart_col + 1  # Next column after chart
-                        
-                        # Add "Data Table" header
-                        if row_num == 0:  # Add header only once
-                            worksheet.write(1, data_table_col, "Data & Reference Range", header_format)
-                        
-                        # Create data table format
-                        table_format = workbook.add_format({
-                            'border': 1,
-                            'align': 'center',
-                            'valign': 'top',
-                            'font_size': 9,
-                            'text_wrap': True
-                        })
-                        
-                        # Create data table content
-                        data_table_content = f"Test: {test_name}\n"
-                        data_table_content += "Values: " + ", ".join([f"{date_labels[i]}: {row_values[i]}" for i in range(len(row_values))]) + "\n"
-                        
-                        # Add reference range info
-                        if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
-                            valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
-                            if valid_ref_ranges:
-                                ref_range_str = max(set(valid_ref_ranges), key=valid_ref_ranges.count)
-                                data_table_content += f"Ref Range: {ref_range_str}"
-                        else:
-                            data_table_content += "Ref Range: Not available"
-                        
-                        worksheet.write(data_table_start_row, data_table_col, data_table_content, table_format)
-                        
-                    else:
-                        # If no numeric trend available, write "No trend data"
-                        worksheet.write(row_num + 2, chart_col, "No numeric trend data", data_format)
-                        if row_num == 0:
-                            worksheet.write(1, chart_col + 1, "Data & Reference Range", header_format)
-                        worksheet.write(row_num + 2, chart_col + 1, "No data available", data_format)
-                
-                # Adjust column widths
-                worksheet.set_column('A:A', 20)  # Test Category
-                worksheet.set_column('B:B', 25)  # Test Name
-                for i, col in enumerate(date_lab_cols_sorted):
-                    worksheet.set_column(i + 2, i + 2, 15)  # Date-lab columns
-                worksheet.set_column(chart_col, chart_col, 70)  # Much wider trends column for larger charts
-                worksheet.set_column(chart_col + 1, chart_col + 1, 30)  # Data table column
-                
-                # Add autofilter
-                worksheet.autofilter(1, 0, len(organized_df) + 1, len(organized_df.columns) - 1)
-                
-                # Freeze panes for better navigation
-                worksheet.freeze_panes(2, 2)
-                
-                # Add summary sheet
-                summary_sheet = workbook.add_worksheet('Summary')
-                
-                # Summary title
-                summary_sheet.merge_range('A1:D1', 'Medical Report Summary', title_format)
-                
-                # Patient info
-                info_format = workbook.add_format({'bold': True, 'bg_color': '#E7E6E6'})
-                summary_sheet.write('A3', 'Patient Information:', info_format)
-                summary_sheet.write('A4', f"Name: {p_info.get('name', 'N/A')}")
-                summary_sheet.write('A5', f"Age: {p_info.get('age', 'N/A')}")
-                summary_sheet.write('A6', f"Gender: {p_info.get('gender', 'N/A')}")
-                summary_sheet.write('A7', f"Patient ID: {p_info.get('patient_id', 'N/A')}")
-                summary_sheet.write('A8', f"Primary Lab: {p_info.get('lab_name', 'N/A')}")
-                
-                # Report statistics
-                summary_sheet.write('A10', 'Report Statistics:', info_format)
-                summary_sheet.write('A11', f"Total Test Categories: {organized_df['Test_Category'].nunique()}")
-                summary_sheet.write('A12', f"Total Tests: {len(organized_df)}")
-                summary_sheet.write('A13', f"Total Date-Lab Combinations: {len(date_lab_cols_sorted)}")
-                if date_lab_cols_sorted:
-                    first_date = date_lab_cols_sorted[0].split('_')[0]
-                    last_date = date_lab_cols_sorted[-1].split('_')[0]
-                    summary_sheet.write('A14', f"Date Range: {first_date} to {last_date}")
-                summary_sheet.write('A15', f"Generated on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
-                
-                # Test categories breakdown
-                summary_sheet.write('A17', 'Test Categories:', info_format)
-                categories = organized_df['Test_Category'].value_counts()
-                for i, (category, count) in enumerate(categories.items()):
-                    summary_sheet.write(f'A{18+i}', f"• {category}: {count} tests")
-                
-                # Lab breakdown with cleaned names
-                summary_sheet.write('A' + str(18 + len(categories) + 2), 'Labs Used:', info_format)
-                unique_labs = set()
-                for col in date_lab_cols_sorted:
-                    if '_' in col:
-                        lab_part = col.split('_', 1)[1]
-                        unique_labs.add(lab_part)
-                
-                for i, lab in enumerate(sorted(unique_labs)):
-                    summary_sheet.write(f'A{18 + len(categories) + 3 + i}', f"• {lab}")
-
-            excel_data = output_excel.getvalue()
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button(
-                    label="📥 Download Enhanced Excel with Lab Names & Trend Charts",
-                    data=excel_data,
-                    file_name=f"medical_reports_with_labs_trends_{patient_name_for_file}.xlsx",
-                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                )
-            
-            with col2:
-                st.info("📊 **Excel Features:**\n- Organized data by category & test\n- Clean lab facility names (no billing info)\n- Reference ranges in trend charts\n- Data table below each chart\n- Embedded trend line charts with reference bands\n- Summary sheet with patient & lab info\n- Auto-filtering and frozen panes")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        label="📥 Download Enhanced Excel with Lab Names & Trend Charts",
+                        data=excel_data,
+                        file_name=f"medical_reports_with_labs_trends_{patient_name_for_file}.xlsx",
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    )
+                with col2:
+                    st.info("📊 **Excel Features:**\n- Organized data by category & test\n- Clean lab facility names\n- Reference ranges in trend charts\n- Data table below each chart\n- Embedded trend line charts\n- Summary sheet with patient & lab info\n- Auto-filtering and frozen panes")
                 
         except Exception as e:
             st.error(f"Error generating organised data: {str(e)}")
-            st.info("Could not create the organised data table. This might happen if t  here are duplicate test entries for the same date.")
+            st.info("Could not create the organised data table. This might happen if there are duplicate test entries for the same date.")
     else:
         st.info("No data available to organise. Please analyze reports first.")
 
-    # --- Extracted Data Section (Moved to Bottom and Collapsible) ---
     st.header("🗂️ Extracted Report Data Details")
     with st.expander("View/Hide Raw Extracted Data Table", expanded=False):
         st.dataframe(st.session_state.report_df.drop(columns=['Result_Numeric', 'Test_Date_dt'], errors='ignore'))
@@ -2170,4 +1306,4 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
             st.info("No raw text snippets available. Analyze reports first.")
 
 elif st.session_state.analysis_done and st.session_state.report_df.empty:
-    st.warning("Analysis was run, but no data was extracted or processed from any PDF. Cannot show details. Please check the PDF content and API key.")
+    st.warning("Analysis was run, but no data was extracted or processed. Please check the PDF content and API key.")
