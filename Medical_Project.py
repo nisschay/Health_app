@@ -719,6 +719,7 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
     return fig
 
 # Replace the existing function in your Medical_Project.py file with this enhanced version
+# Replace the existing function in your Medical_Project.py file with this enhanced version
 def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, patient_info):
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
@@ -932,8 +933,12 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                         'marker': {'type': 'circle', 'size': 6, 'border': {'color': '#4472C4'}, 'fill': {'color': '#4472C4'}},
                     })
                     
-                    # Get reference range for this test
+                    # Get reference range for this test and parse it
                     ref_range = ''
+                    low_ref = None
+                    high_ref = None
+                    ref_type = None
+                    
                     try:
                         for col_idx, col_name in enumerate(date_lab_cols_sorted):
                             if col_idx + 2 < len(ref_range_df.columns):
@@ -944,13 +949,134 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                     except:
                         pass
                     
-                    # Configure chart
+                    # Parse reference range to extract numeric values
+                    if ref_range:
+                        import re
+                        # Try to parse range like "13.0 - 17.0" or "13.0-17.0"
+                        match_range = re.search(r'([\d.]+)\s*-\s*([\d.]+)', ref_range)
+                        if match_range:
+                            try:
+                                low_ref = float(match_range.group(1))
+                                high_ref = float(match_range.group(2))
+                                ref_type = "range"
+                            except ValueError:
+                                pass
+                        else:
+                            # Try to parse "< 5.0" or "Less than 5.0"
+                            match_less_than = re.search(r'(?:<|Less than|upto)\s*([\d.]+)', ref_range, re.IGNORECASE)
+                            if match_less_than:
+                                try:
+                                    high_ref = float(match_less_than.group(1))
+                                    ref_type = "less_than"
+                                except ValueError:
+                                    pass
+                            else:
+                                # Try to parse "> 5.0" or "Greater than 5.0"
+                                match_greater_than = re.search(r'(?:>|Greater than|above)\s*([\d.]+)', ref_range, re.IGNORECASE)
+                                if match_greater_than:
+                                    try:
+                                        low_ref = float(match_greater_than.group(1))
+                                        ref_type = "greater_than"
+                                    except ValueError:
+                                        pass
+                    
+                    # Add reference range lines if we have valid numeric ranges
+                    if ref_type == "range" and low_ref is not None and high_ref is not None:
+                        # Create data for reference lines (same dates, constant values)
+                        ref_low_row = data_start_row + 2
+                        ref_high_row = data_start_row + 3
+                        
+                        # Write reference line labels
+                        chart_worksheet.write(ref_low_row, chart_start_col, 'Lower Limit', 
+                                            workbook.add_format({'bold': True, 'font_color': '#228B22'}))
+                        chart_worksheet.write(ref_high_row, chart_start_col, 'Upper Limit', 
+                                            workbook.add_format({'bold': True, 'font_color': '#DC143C'}))
+                        
+                        # Write reference values for each date
+                        for i in range(len(dates_for_charts)):
+                            chart_worksheet.write_number(ref_low_row, chart_start_col + 1 + i, low_ref)
+                            chart_worksheet.write_number(ref_high_row, chart_start_col + 1 + i, high_ref)
+                        
+                        # Add lower reference line series
+                        chart.add_series({
+                            'name': f'Lower Limit ({low_ref})',
+                            'categories': ['Test Trend Charts', data_start_row, chart_start_col + 1, 
+                                         data_start_row, chart_start_col + len(dates_for_charts)],
+                            'values': ['Test Trend Charts', ref_low_row, chart_start_col + 1, 
+                                     ref_low_row, chart_start_col + len(dates_for_charts)],
+                            'line': {'color': '#228B22', 'width': 2, 'dash_type': 'dash'},
+                            'marker': {'type': 'none'},
+                        })
+                        
+                        # Add upper reference line series
+                        chart.add_series({
+                            'name': f'Upper Limit ({high_ref})',
+                            'categories': ['Test Trend Charts', data_start_row, chart_start_col + 1, 
+                                         data_start_row, chart_start_col + len(dates_for_charts)],
+                            'values': ['Test Trend Charts', ref_high_row, chart_start_col + 1, 
+                                     ref_high_row, chart_start_col + len(dates_for_charts)],
+                            'line': {'color': '#DC143C', 'width': 2, 'dash_type': 'dash'},
+                            'marker': {'type': 'none'},
+                        })
+                        
+                    elif ref_type == "less_than" and high_ref is not None:
+                        # Add only upper limit line
+                        ref_high_row = data_start_row + 2
+                        
+                        chart_worksheet.write(ref_high_row, chart_start_col, f'Upper Limit (<{high_ref})', 
+                                            workbook.add_format({'bold': True, 'font_color': '#DC143C'}))
+                        
+                        for i in range(len(dates_for_charts)):
+                            chart_worksheet.write_number(ref_high_row, chart_start_col + 1 + i, high_ref)
+                        
+                        chart.add_series({
+                            'name': f'Upper Limit (<{high_ref})',
+                            'categories': ['Test Trend Charts', data_start_row, chart_start_col + 1, 
+                                         data_start_row, chart_start_col + len(dates_for_charts)],
+                            'values': ['Test Trend Charts', ref_high_row, chart_start_col + 1, 
+                                     ref_high_row, chart_start_col + len(dates_for_charts)],
+                            'line': {'color': '#DC143C', 'width': 2, 'dash_type': 'dash'},
+                            'marker': {'type': 'none'},
+                        })
+                        
+                    elif ref_type == "greater_than" and low_ref is not None:
+                        # Add only lower limit line
+                        ref_low_row = data_start_row + 2
+                        
+                        chart_worksheet.write(ref_low_row, chart_start_col, f'Lower Limit (>{low_ref})', 
+                                            workbook.add_format({'bold': True, 'font_color': '#228B22'}))
+                        
+                        for i in range(len(dates_for_charts)):
+                            chart_worksheet.write_number(ref_low_row, chart_start_col + 1 + i, low_ref)
+                        
+                        chart.add_series({
+                            'name': f'Lower Limit (>{low_ref})',
+                            'categories': ['Test Trend Charts', data_start_row, chart_start_col + 1, 
+                                         data_start_row, chart_start_col + len(dates_for_charts)],
+                            'values': ['Test Trend Charts', ref_low_row, chart_start_col + 1, 
+                                     ref_low_row, chart_start_col + len(dates_for_charts)],
+                            'line': {'color': '#228B22', 'width': 2, 'dash_type': 'dash'},
+                            'marker': {'type': 'none'},
+                        })
+                    
+                    # Adjust Y-axis range to include reference ranges
                     min_val = min(valid_data_points)
                     max_val = max(valid_data_points)
-                    value_range = max_val - min_val if max_val != min_val else max_val * 0.1
-                    y_min = min_val - (value_range * 0.1) if value_range > 0 else min_val * 0.9
-                    y_max = max_val + (value_range * 0.1) if value_range > 0 else max_val * 1.1
                     
+                    # Include reference range values in axis calculation
+                    all_values = valid_data_points[:]
+                    if low_ref is not None:
+                        all_values.append(low_ref)
+                    if high_ref is not None:
+                        all_values.append(high_ref)
+                    
+                    final_min = min(all_values)
+                    final_max = max(all_values)
+                    value_range = final_max - final_min if final_max != final_min else final_max * 0.1
+                    y_min = final_min - (value_range * 0.15) if value_range > 0 else final_min * 0.85
+                    y_max = final_max + (value_range * 0.15) if value_range > 0 else final_max * 1.15
+                    
+                    # Configure chart
                     chart.set_title({
                         'name': f'{test_name}\n({category})',
                         'name_font': {'size': 11, 'bold': True}
@@ -966,7 +1092,16 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                         'min': y_min,
                         'max': y_max
                     })
-                    chart.set_legend({'none': True})
+                    
+                    # Show legend if we have reference ranges
+                    if ref_type in ["range", "less_than", "greater_than"]:
+                        chart.set_legend({
+                            'position': 'bottom',
+                            'font': {'size': 8}
+                        })
+                    else:
+                        chart.set_legend({'none': True})
+                        
                     chart.set_size({'width': chart_width, 'height': chart_height})
                     chart.set_style(10)  # Use a clean style
                     
