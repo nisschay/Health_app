@@ -607,8 +607,8 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
                 xaxis_title="Date",
                 yaxis_title=f"Result ({unit})",
                 yaxis=dict(range=[y_min, y_max]),
-                height=400,
-                margin=dict(l=20, r=20, t=50, b=80),
+                height=500,  # FIX 2: Increased height from 400 to 500
+                margin=dict(l=20, r=20, t=60, b=80),  # FIX 2: Better margins
                 showlegend=True,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 autosize=True,
@@ -689,8 +689,8 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
     ))
     
     fig.update_layout(
-        height=200,
-        margin=dict(l=10, r=10, t=40, b=10),
+        height=300,  # FIX 2: Increased height from 200 to 300
+        margin=dict(l=10, r=10, t=50, b=10),  # FIX 2: Better margins
         autosize=True
     )
     return fig
@@ -1145,7 +1145,8 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
     st.header("📈 Test Result Visualizations", divider='rainbow')
     viz_container = st.container()
     with viz_container:
-        col1, col2 = st.columns([1, 2])
+        # FIX 2: Change column proportions and layout for better chart display
+        col1, col2 = st.columns([1, 3])  # Changed from [1, 2] to [1, 3] for better proportion
         with col1:
             df_for_viz = st.session_state.report_df.copy()
             df_for_viz = df_for_viz[~df_for_viz['Test_Name'].isin(['N/A', 'UnknownTest', 'Unknown Test']) & df_for_viz['Test_Name'].notna()]
@@ -1191,19 +1192,36 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                             elif len(available_dates) == 1:
                                 selected_plot_date = available_dates[0]
 
-                            plot = generate_test_plot(df_for_viz, selected_test, selected_plot_date)
-                            if plot:
-                                st.plotly_chart(plot, use_container_width=True)
-                            elif selected_test != "-- Select a test --":
-                                st.info(f"Could not generate plot for {selected_test}. This might be due to non-numeric results or missing reference ranges for the selected date(s).")
-                        elif selected_test == "-- Select a test --":
-                            st.info("Please select a specific test from the dropdown to see its visualization.")
-                        else:
-                            st.info("No plottable test results found in the report(s) to visualize.")
-            
-            st.divider()
+        # FIX 2: Move chart display to the wider column and use full container width
+        with col2:
+            if 'selected_test' in locals() and selected_test and selected_test != "-- Select a test --":
+                plot = generate_test_plot(df_for_viz, selected_test, selected_plot_date)
+                if plot:
+                    # FIX 2: Ensure chart uses full container width and has better height
+                    st.plotly_chart(plot, use_container_width=True, config={'displayModeBar': True})
+                else:
+                    st.info(f"Could not generate plot for {selected_test}. This might be due to non-numeric results or missing reference ranges for the selected date(s).")
+            elif 'selected_test' in locals() and selected_test == "-- Select a test --":
+                # FIX 2: Add a centered placeholder message
+                st.markdown("""
+                    <div style='text-align: center; padding: 50px; color: #666;'>
+                        <h3>📊 Chart Area</h3>
+                        <p>Please select a specific test from the dropdown on the left to see its visualization.</p>
+                    </div>
+                """, unsafe_allow_html=True)
+            else:
+                # FIX 2: Add centered message when no data available
+                st.markdown("""
+                    <div style='text-align: center; padding: 50px; color: #666;'>
+                        <h3>📊 Chart Area</h3>
+                        <p>No plottable test results found in the report(s) to visualize.</p>
+                    </div>
+                """, unsafe_allow_html=True)
+
+        st.divider()
 
     st.header("📊 Organised Data by Date")
+    
     if not st.session_state.report_df.empty:
         try:
             df_with_date_lab = st.session_state.report_df.copy()
@@ -1267,6 +1285,9 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                 patient_name_for_file = "".join(c if c.isalnum() else "_" for c in p_info.get('name', 'medical_data'))
                 excel_data = create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, p_info)
 
+                # FIX 1: Create CSV export for the organized data instead of raw data
+                organized_csv = display_df.to_csv(index=False).encode('utf-8')
+
                 col1, col2 = st.columns(2)
                 with col1:
                     st.download_button(
@@ -1276,7 +1297,15 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                     )
                 with col2:
-                    st.info("📊 **Excel Features:**\n- Organized data by category & test\n- Clean lab facility names\n- Reference ranges in trend charts\n- Data table below each chart\n- Embedded trend line charts\n- Summary sheet with patient & lab info\n- Auto-filtering and frozen panes")
+                    
+                    st.download_button(
+                        label="📥 Download Organized Data as CSV",
+                        data=organized_csv,
+                        file_name=f"organized_medical_data_{patient_name_for_file}.csv",
+                        mime='text/csv',
+                    )
+                
+                st.info("📊 **Excel Features:**\n- Organized data by category & test\n- Clean lab facility names\n- Reference ranges in trend charts\n- Data table below each chart\n- Embedded trend line charts\n- Summary sheet with patient & lab info\n- Auto-filtering and frozen panes")
                 
         except Exception as e:
             st.error(f"Error generating organised data: {str(e)}")
