@@ -698,22 +698,30 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
 def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, patient_info):
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-        organized_df.to_excel(writer, index=False, sheet_name='Medical Data with Trends', startrow=3)
+        # Write the data without headers first, starting from row 4 (index 3)
+        organized_df.to_excel(writer, index=False, sheet_name='Medical Data with Trends', startrow=3, header=False)
         
         workbook = writer.book
         worksheet = writer.sheets['Medical Data with Trends']
         
+        # Title format
         title_format = workbook.add_format({'bold': True, 'font_size': 16, 'align': 'center', 'bg_color': '#4472C4', 'font_color': 'white'})
-        worksheet.merge_range('A1:' + chr(65 + len(organized_df.columns) - 1) + '1', 'Medical Test Results - Organized by Date with Trends', title_format)
+        worksheet.merge_range('A1:' + chr(65 + len(organized_df.columns) - 1) + '1', 'Medical Test Results - Organized by Date', title_format)
         
+        # Header formats
         date_format = workbook.add_format({'bold': True, 'bg_color': '#E7E6E6', 'border': 1, 'align': 'center', 'font_color': '#2E5C8F'})
         lab_format = workbook.add_format({'bold': True, 'bg_color': '#F0F8FF', 'border': 1, 'align': 'center', 'font_color': '#1E7B3E', 'italic': True})
+        empty_format = workbook.add_format({'border': 1, 'bg_color': '#FFFFFF'})
         
+        # Write date row (row 2)
         worksheet.write(1, 0, '📅 Date', date_format)
-        worksheet.write(2, 0, '🏥 Lab', lab_format)
         worksheet.write(1, 1, '', date_format)
+        
+        # Write lab row (row 3)
+        worksheet.write(2, 0, '🏥 Lab', lab_format)
         worksheet.write(2, 1, '', lab_format)
         
+        # Fill in date and lab information for data columns
         for i, date_lab_col in enumerate(date_lab_cols_sorted):
             col_idx = i + 2
             parts = date_lab_col.split('_', 1)
@@ -722,217 +730,131 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
             worksheet.write(1, col_idx, date_part, date_format)
             worksheet.write(2, col_idx, lab_part, lab_format)
         
-        header_format = workbook.add_format({'bold': True, 'bg_color': '#D9E2F3', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-        for col_num, value in enumerate(organized_df.columns.values):
-            worksheet.write(3, col_num, value, header_format)
+        # Add reference ranges column
+        ref_col_idx = len(organized_df.columns)
+        worksheet.write(1, ref_col_idx, '', empty_format)  # Empty instead of date
+        worksheet.write(2, ref_col_idx, '', empty_format)  # Empty instead of lab
         
+        # Write custom column headers (row 4) - clean headers without the date_lab combinations
+        header_format = workbook.add_format({'bold': True, 'bg_color': '#D9E2F3', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+        
+        # Write the first two column headers manually
+        worksheet.write(3, 0, 'Test_Category', header_format)
+        worksheet.write(3, 1, 'Test_Name', header_format)
+        
+        # Write empty headers for the data columns (instead of the date_lab combinations)
+        for i, date_lab_col in enumerate(date_lab_cols_sorted):
+            col_idx = i + 2
+            worksheet.write(3, col_idx, '', header_format)  # Empty header instead of date_lab combination
+        
+        # Add "Reference Ranges" header
+        worksheet.write(3, ref_col_idx, "Reference Ranges", header_format)
+        
+        # Data formatting
         data_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
         numeric_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
+        ref_format = workbook.add_format({'border': 1, 'align': 'left', 'valign': 'vcenter', 'text_wrap': True})
         
+        # Write data manually with proper formatting
         for row_num in range(len(organized_df)):
             for col_num in range(len(organized_df.columns)):
                 value = organized_df.iloc[row_num, col_num]
-                if col_num < 2:
+                if col_num < 2:  # Category and Test Name columns
                     worksheet.write(row_num + 4, col_num, value, data_format)
-                else:
+                else:  # Data columns
                     try:
                         if pd.notna(value) and str(value).strip() != '':
+                            # Try to convert to float for proper numeric storage
                             float_val = float(value)
-                            worksheet.write(row_num + 4, col_num, float_val, numeric_format)
+                            worksheet.write_number(row_num + 4, col_num, float_val, numeric_format)
                         else:
                             worksheet.write(row_num + 4, col_num, value if pd.notna(value) else '', data_format)
                     except (ValueError, TypeError):
+                        # If conversion fails, write as text
                         worksheet.write(row_num + 4, col_num, str(value) if pd.notna(value) else '', data_format)
         
+        # Write reference ranges for each row
+        for row_num in range(len(organized_df)):
+            # Add reference ranges from ref_range_df
+            try:
+                # Get all non-null reference ranges for this test across all dates
+                ref_values = []
+                for col_idx, col_name in enumerate(date_lab_cols_sorted):
+                    if col_idx + 2 < len(ref_range_df.columns):
+                        ref_value = ref_range_df.iloc[row_num, col_idx + 2]
+                        if pd.notna(ref_value) and str(ref_value).strip() != '' and str(ref_value) != 'N/A':
+                            ref_values.append(str(ref_value))
+                
+                # Use the most common reference range or the first valid one
+                if ref_values:
+                    from collections import Counter
+                    most_common_ref = Counter(ref_values).most_common(1)[0][0]
+                    worksheet.write(row_num + 4, ref_col_idx, most_common_ref, ref_format)
+                else:
+                    worksheet.write(row_num + 4, ref_col_idx, '', ref_format)
+                    
+            except Exception as e:
+                worksheet.write(row_num + 4, ref_col_idx, '', ref_format)
+        
+        # Set row heights
         worksheet.set_row(1, 25)
         worksheet.set_row(2, 25)
         worksheet.set_row(3, 35)
         for row_num in range(len(organized_df)):
-            worksheet.set_row(row_num + 4, 225)
+            worksheet.set_row(row_num + 4, 25)  # Normal row height instead of 225
         
-        chart_col = len(organized_df.columns)
-        worksheet.write(1, chart_col, "", date_format)
-        worksheet.write(2, chart_col, "", lab_format)
-        worksheet.write(3, chart_col, "Trends Chart", header_format)
-        
-        for row_num in range(len(organized_df)):
-            try:
-                test_name = organized_df.iloc[row_num, 1]
-                row_data = []
-                for col_idx, col_name in enumerate(date_lab_cols_sorted):
-                    if col_idx + 2 < len(organized_df.columns):
-                        value = organized_df.iloc[row_num, col_idx + 2]
-                    else:
-                        value = None
-                    if col_idx + 2 < len(ref_range_df.columns):
-                        ref_range = ref_range_df.iloc[row_num, col_idx + 2]
-                    else:
-                        ref_range = None
-                    if pd.notna(value) and str(value).strip() != '':
-                        try:
-                            float_val = float(value)
-                            date_part = col_name.split('_')[0]
-                            try:
-                                parsed_date = pd.to_datetime(date_part, format='%d-%m-%Y')
-                                formatted_date = parsed_date.strftime('%d-%m-%Y')
-                                date_obj = parsed_date
-                            except:
-                                formatted_date = date_part
-                                date_obj = pd.to_datetime('1900-01-01')
-                            row_data.append({'value': float_val, 'date_label': formatted_date, 'date_obj': date_obj, 'ref_range': ref_range, 'col_idx': col_idx})
-                        except (ValueError, TypeError):
-                            continue
-                
-                row_data.sort(key=lambda x: x['date_obj'])
-                
-                row_values = [item['value'] for item in row_data]
-                date_labels = [item['date_label'] for item in row_data]
-                ref_ranges = [item['ref_range'] for item in row_data]
-                
-                if len(row_values) >= 2:
-                    chart = workbook.add_chart({'type': 'line'})
-                    
-                    chart_data_start_row = len(organized_df) + 50
-                    for i, (date_label, value) in enumerate(zip(date_labels, row_values)):
-                        worksheet.write(chart_data_start_row + i, 0, date_label)
-                        worksheet.write(chart_data_start_row + i, 1, value)
-                    
-                    chart.add_series({
-                        'name': f'{test_name}',
-                        'categories': [worksheet.name, chart_data_start_row, 0, chart_data_start_row + len(row_values) - 1, 0],
-                        'values': [worksheet.name, chart_data_start_row, 1, chart_data_start_row + len(row_values) - 1, 1],
-                        'line': {'color': '#4472C4', 'width': 4, 'smooth': True},
-                        'marker': {'type': 'circle', 'size': 10, 'border': {'color': '#4472C4', 'width': 2}, 'fill': {'color': '#4472C4'}},
-                    })
-                    
-                    data_min = min(row_values)
-                    data_max = max(row_values)
-                    data_range = data_max - data_min if data_max != data_min else abs(data_max * 0.2)
-                    
-                    y_min = data_min
-                    y_max = data_max
-                    
-                    if data_range > 0:
-                        padding = data_range * 0.2
-                        y_min = data_min - padding
-                        y_max = data_max + padding
-                    else:
-                        y_min = data_min * 0.9
-                        y_max = data_max * 1.1
-                    
-                    if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
-                        valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
-                        if valid_ref_ranges:
-                            ref_range_str = max(set(valid_ref_ranges), key=valid_ref_ranges.count)
-                            low_ref, high_ref, ref_type = parse_reference_range(ref_range_str)
-                            
-                            if ref_type == "range" and low_ref is not None and high_ref is not None:
-                                ref_data_start_row = len(organized_df) + 100
-                                for i, date_label in enumerate(date_labels):
-                                    worksheet.write(ref_data_start_row + i, 0, date_label)
-                                    worksheet.write(ref_data_start_row + i, 1, high_ref)
-                                    worksheet.write(ref_data_start_row + i, 2, low_ref)
-                                
-                                chart.add_series({'name': 'Upper Reference', 'categories': [worksheet.name, ref_data_start_row, 0, ref_data_start_row + len(date_labels) - 1, 0], 'values': [worksheet.name, ref_data_start_row, 1, ref_data_start_row + len(date_labels) - 1, 1], 'line': {'color': '#ff6b6b', 'width': 2, 'dash_type': 'dash', 'smooth': True}, 'marker': {'type': 'none'}})
-                                chart.add_series({'name': 'Lower Reference', 'categories': [worksheet.name, ref_data_start_row, 0, ref_data_start_row + len(date_labels) - 1, 0], 'values': [worksheet.name, ref_data_start_row, 2, ref_data_start_row + len(date_labels) - 1, 2], 'line': {'color': '#4ecdc4', 'width': 2, 'dash_type': 'dash', 'smooth': True}, 'marker': {'type': 'none'}})
-                                
-                                y_min = min(y_min, low_ref)
-                                y_max = max(y_max, high_ref)
-                    
-                    chart.set_title({'name': f'{test_name} Trend Over Time', 'name_font': {'size': 14, 'bold': True}})
-                    chart.set_x_axis({'name': 'Date (DD-MM-YYYY)', 'name_font': {'size': 12, 'bold': True}, 'num_font': {'size': 9, 'rotation': 45}, 'label_position': 'low', 'major_tick_mark': 'outside', 'minor_tick_mark': 'none', 'major_gridlines': {'visible': False}})
-                    chart.set_y_axis({'name': 'Value', 'name_font': {'size': 12, 'bold': True}, 'num_font': {'size': 10}, 'min': y_min, 'max': y_max, 'major_tick_mark': 'outside', 'minor_tick_mark': 'none', 'major_gridlines': {'visible': True, 'line': {'color': '#E0E0E0', 'width': 1}}})
-                    chart.set_legend({'position': 'bottom', 'font': {'size': 9}})
-                    chart.set_plotarea({'border': {'color': '#E0E0E0', 'width': 1}, 'fill': {'color': '#FFFFFF'}})
-                    chart.set_size({'width': 550, 'height': 220})
-                    
-                    worksheet.insert_chart(row_num + 4, chart_col, chart, {'x_offset': 5, 'y_offset': 5})
-                    
-                    data_table_col = chart_col + 1
-                    if row_num == 0:
-                        worksheet.write(1, data_table_col, "", date_format)
-                        worksheet.write(2, data_table_col, "", lab_format)
-                        worksheet.write(3, data_table_col, "Data & Reference Range", header_format)
-                    
-                    table_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'top', 'font_size': 9, 'text_wrap': True})
-                    
-                    data_table_content = f"Test: {test_name}\n"
-                    data_table_content += "Values: " + ", ".join([f"{date_labels[i]}: {row_values[i]}" for i in range(len(row_values))]) + "\n"
-                    
-                    if ref_ranges and any(pd.notna(rr) and str(rr).strip() != '' for rr in ref_ranges):
-                        valid_ref_ranges = [rr for rr in ref_ranges if pd.notna(rr) and str(rr).strip() != '']
-                        if valid_ref_ranges:
-                            ref_range_str = max(set(valid_ref_ranges), key=valid_ref_ranges.count)
-                            data_table_content += f"Ref Range: {ref_range_str}\n"
-                            low_ref, high_ref, ref_type = parse_reference_range(ref_range_str)
-                            if ref_type == "range" and low_ref is not None and high_ref is not None:
-                                data_table_content += f"Normal Range: {low_ref} - {high_ref}"
-                    else:
-                        data_table_content += "Ref Range: Not available"
-                    
-                    worksheet.write(row_num + 4, data_table_col, data_table_content, table_format)
-                    
-                elif len(row_values) == 1:
-                    worksheet.write(row_num + 4, chart_col, f"Single value: {row_values[0]}", data_format)
-                    if row_num == 0:
-                        worksheet.write(1, data_table_col, "", date_format)
-                        worksheet.write(2, data_table_col, "", lab_format)
-                        worksheet.write(3, chart_col + 1, "Data & Reference Range", header_format)
-                    worksheet.write(row_num + 4, chart_col + 1, f"Single value on {date_labels[0]}: {row_values[0]}", data_format)
-                else:
-                    worksheet.write(row_num + 4, chart_col, "No numeric trend data", data_format)
-                    if row_num == 0:
-                        worksheet.write(1, data_table_col, "", date_format)
-                        worksheet.write(2, data_table_col, "", lab_format)
-                        worksheet.write(3, chart_col + 1, "Data & Reference Range", header_format)
-                    worksheet.write(row_num + 4, chart_col + 1, "No data available", data_format)
-                    
-            except Exception as e:
-                worksheet.write(row_num + 4, chart_col, f"Error generating chart: {str(e)[:50]}", data_format)
-                if row_num == 0:
-                    worksheet.write(1, data_table_col, "", date_format)
-                    worksheet.write(2, data_table_col, "", lab_format)
-                    worksheet.write(3, chart_col + 1, "Data & Reference Range", header_format)
-                worksheet.write(row_num + 4, chart_col + 1, "Chart generation failed", data_format)
-        
-        worksheet.set_column('A:A', 20)
-        worksheet.set_column('B:B', 25)
+        # Set column widths
+        worksheet.set_column('A:A', 20)  # Test Category
+        worksheet.set_column('B:B', 25)  # Test Name
         for i, col in enumerate(date_lab_cols_sorted):
-            worksheet.set_column(i + 2, i + 2, 15)
-        worksheet.set_column(chart_col, chart_col, 70)
-        worksheet.set_column(chart_col + 1, chart_col + 1, 30)
+            worksheet.set_column(i + 2, i + 2, 12)  # Data columns
+        worksheet.set_column(ref_col_idx, ref_col_idx, 20)  # Reference ranges column
         
-        worksheet.autofilter(3, 0, len(organized_df) + 3, len(organized_df.columns) - 1)
+        # Add autofilter and freeze panes
+        worksheet.autofilter(3, 0, len(organized_df) + 3, len(organized_df.columns))
         worksheet.freeze_panes(4, 2)
         
+        # Create summary sheet
         summary_sheet = workbook.add_worksheet('Summary')
         summary_sheet.merge_range('A1:D1', 'Medical Report Summary', title_format)
+        
         info_format = workbook.add_format({'bold': True, 'bg_color': '#E7E6E6'})
+        
+        # Patient information
         summary_sheet.write('A3', 'Patient Information:', info_format)
         summary_sheet.write('A4', f"Name: {patient_info.get('name', 'N/A')}")
         summary_sheet.write('A5', f"Age: {patient_info.get('age', 'N/A')}")
         summary_sheet.write('A6', f"Gender: {patient_info.get('gender', 'N/A')}")
         summary_sheet.write('A7', f"Patient ID: {patient_info.get('patient_id', 'N/A')}")
         summary_sheet.write('A8', f"Primary Lab: {patient_info.get('lab_name', 'N/A')}")
+        
+        # Report statistics
         summary_sheet.write('A10', 'Report Statistics:', info_format)
         summary_sheet.write('A11', f"Total Test Categories: {organized_df['Test_Category'].nunique()}")
         summary_sheet.write('A12', f"Total Tests: {len(organized_df)}")
         summary_sheet.write('A13', f"Total Date-Lab Combinations: {len(date_lab_cols_sorted)}")
+        
         if date_lab_cols_sorted:
             first_date = date_lab_cols_sorted[0].split('_')[0]
             last_date = date_lab_cols_sorted[-1].split('_')[0]
             summary_sheet.write('A14', f"Date Range: {first_date} to {last_date}")
+        
         summary_sheet.write('A15', f"Generated on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
+        
+        # Test categories
         summary_sheet.write('A17', 'Test Categories:', info_format)
         categories = organized_df['Test_Category'].value_counts()
         for i, (category, count) in enumerate(categories.items()):
             summary_sheet.write(f'A{18+i}', f"• {category}: {count} tests")
+        
+        # Labs used
         summary_sheet.write('A' + str(18 + len(categories) + 2), 'Labs Used:', info_format)
         unique_labs = set()
         for col in date_lab_cols_sorted:
             if '_' in col:
                 lab_part = col.split('_', 1)[1]
                 unique_labs.add(lab_part)
+        
         for i, lab in enumerate(sorted(unique_labs)):
             summary_sheet.write(f'A{18 + len(categories) + 3 + i}', f"• {lab}")
 
