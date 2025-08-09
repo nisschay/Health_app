@@ -124,6 +124,36 @@ gemini_model_extraction = None
 gemini_model_chat = None
 
 # --- Helper Functions ---
+def parse_date_dd_mm_yyyy(date_str):
+    """Parse date string ensuring DD/MM/YYYY format"""
+    if not date_str or date_str in ['N/A', '']:
+        return None
+    
+    try:
+        # First try to parse as DD/MM/YYYY
+        return pd.to_datetime(date_str, format='%d/%m/%Y', errors='raise')
+    except:
+        try:
+            # Try DD-MM-YYYY
+            return pd.to_datetime(date_str, format='%d-%m-%Y', errors='raise')
+        except:
+            try:
+                # Try DD.MM.YYYY
+                return pd.to_datetime(date_str, format='%d.%m.%Y', errors='raise')
+            except:
+                try:
+                    # If all else fails, try to parse and assume it's in DD/MM/YYYY format
+                    # Force dayfirst=True to ensure DD/MM/YYYY interpretation
+                    return pd.to_datetime(date_str, dayfirst=True, errors='raise')
+                except:
+                    return None
+
+def format_date_dd_mm_yyyy(date_obj):
+    """Format datetime object to DD-MM-YYYY string"""
+    if pd.isna(date_obj) or date_obj is None:
+        return 'N/A'
+    return date_obj.strftime('%d-%m-%Y')
+
 def standardize_value(value, mapping_dict, default_case='title'):
     if not isinstance(value, str):
         return value
@@ -182,12 +212,9 @@ def create_consolidated_info_with_smart_selection(patient_info_list):
             pi_date = pi.get('date')
             pi_age = pi.get('age')
             if pi_date and pi_date not in ['N/A', ''] and pi_age and pi_age not in ['N/A', '']:
-                try:
-                    parsed_date = pd.to_datetime(pi_date, format='%d-%m-%Y', errors='coerce')
-                    if pd.notna(parsed_date):
-                        date_info_pairs.append((parsed_date, pi_age))
-                except:
-                    continue
+                parsed_date = parse_date_dd_mm_yyyy(pi_date)
+                if parsed_date is not None:
+                    date_info_pairs.append((parsed_date, pi_age))
         
         if date_info_pairs:
             # Sort by date and get the age from the most recent date
@@ -203,9 +230,9 @@ def create_consolidated_info_with_smart_selection(patient_info_list):
     final_lab_name = Counter(lab_names).most_common(1)[0][0] if lab_names else "N/A"
     
     # For date, use the most recent one
-    parsed_dates = [pd.to_datetime(d, format='%d-%m-%Y', errors='coerce') for d in dates]
-    valid_parsed_dates = [d for d in parsed_dates if pd.notna(d)]
-    final_date = max(valid_parsed_dates).strftime('%d-%m-%Y') if valid_parsed_dates else "N/A"
+    parsed_dates = [parse_date_dd_mm_yyyy(d) for d in dates]
+    valid_parsed_dates = [d for d in parsed_dates if d is not None]
+    final_date = format_date_dd_mm_yyyy(max(valid_parsed_dates)) if valid_parsed_dates else "N/A"
     
     return {
         'name': final_name,
@@ -266,7 +293,7 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     Analyze this medical test report. Extract all patient information and test results.
     The patient's full name is critical. Prioritize complete and formal names (e.g., "Nisschay Khandelwal" over "SelfNisschay Khandelwal" or "N Khandelwal"). Avoid prefixes like "Self" if a clearer name is available.
     Also extract Patient ID, Age (e.g., "35 years", "35 Y", "35"), and Gender (e.g., "Male", "Female", "M", "F").
-    The report date or collection date is also critical. Ensure date is in DD-MM-YYYY format if possible. If multiple dates are present (collection, report), prefer collection date.
+    The report date or collection date is also critical. IMPORTANT: Ensure date is in DD-MM-YYYY format (day first, then month, then year). If you see a date like "15/03/2024" or "15-03-2024", this should be interpreted as 15th March 2024, not 3rd month 15th day. If multiple dates are present (collection, report), prefer collection date.
     IMPORTANT: Extract the main laboratory/hospital name that conducted the tests. Look for prominent facility names like "Neuberg", "Apollo Hospital", "Quest Diagnostics", "Dr. Lal PathLabs", etc.
     - This is usually prominently displayed at the top of the report as the main facility name
     - Ignore billing locations, collection centers, or subsidiary names in smaller text
@@ -349,12 +376,9 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
     report_date_str = patient_info_dict.get('date', 'N/A')
     parsed_date = 'N/A'
     if report_date_str and report_date_str != 'N/A':
-        try:
-            dt = pd.to_datetime(report_date_str, errors='coerce')
-            if pd.notna(dt):
-                parsed_date = dt.strftime('%d-%m-%Y')
-        except:
-            pass
+        dt = parse_date_dd_mm_yyyy(report_date_str)
+        if dt is not None:
+            parsed_date = format_date_dd_mm_yyyy(dt)
     patient_info_dict['date'] = parsed_date
 
     all_rows = []
@@ -383,7 +407,8 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
 
     df = pd.DataFrame(all_rows)
     df['Result_Numeric'] = pd.to_numeric(df['Result'], errors='coerce')
-    df['Test_Date_dt'] = pd.to_datetime(df['Test_Date'], format='%d-%m-%Y', errors='coerce')
+    # Use the new date parsing function
+    df['Test_Date_dt'] = df['Test_Date'].apply(parse_date_dd_mm_yyyy)
     df = df.sort_values(by=['Test_Date_dt', 'Test_Category', 'Test_Name']).reset_index(drop=True)
     
     return df, patient_info_dict
@@ -418,9 +443,9 @@ def get_most_common_or_latest(items, is_date=False):
     if not items:
         return "N/A"
     if is_date:
-        parsed_dates = [pd.to_datetime(d, format='%d-%m-%Y', errors='coerce') for d in items]
-        valid_parsed_dates = [d for d in parsed_dates if pd.notna(d)]
-        return max(valid_parsed_dates).strftime('%d-%m-%Y') if valid_parsed_dates else "N/A"
+        parsed_dates = [parse_date_dd_mm_yyyy(d) for d in items]
+        valid_parsed_dates = [d for d in parsed_dates if d is not None]
+        return format_date_dd_mm_yyyy(max(valid_parsed_dates)) if valid_parsed_dates else "N/A"
     return Counter(items).most_common(1)[0][0]
 
 def consolidate_patient_info(patient_info_list):
@@ -455,12 +480,9 @@ def consolidate_patient_info(patient_info_list):
             pi_date_str = pi.get('date')
             pi_age = pi.get('age')
             if pi_date_str and pi_date_str not in ['N/A', ''] and pi_age and pi_age not in ['N/A', '']:
-                try:
-                    parsed_date = pd.to_datetime(pi_date_str, format='%d-%m-%Y', errors='coerce')
-                    if pd.notna(parsed_date):
-                        date_age_pairs.append((parsed_date, pi_age))
-                except:
-                    continue
+                parsed_date = parse_date_dd_mm_yyyy(pi_date_str)
+                if parsed_date is not None:
+                    date_age_pairs.append((parsed_date, pi_age))
         if date_age_pairs:
             date_age_pairs.sort(key=lambda x: x[0], reverse=True)
             final_age = date_age_pairs[0][1]
@@ -564,7 +586,8 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
         test_data_for_plot = test_data_for_plot.sort_values('Test_Date_dt')
         
         if pd.to_numeric(test_data_for_plot['Result'], errors='coerce').notna().all():
-            test_data_for_plot['Date_Display'] = test_data_for_plot['Test_Date_dt'].dt.strftime('%d-%m-%Y')
+            # Format dates for display using DD-MM-YYYY
+            test_data_for_plot['Date_Display'] = test_data_for_plot['Test_Date_dt'].apply(format_date_dd_mm_yyyy)
             
             fig.add_trace(go.Scatter(
                 x=test_data_for_plot['Date_Display'],
@@ -607,8 +630,8 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
                 xaxis_title="Date",
                 yaxis_title=f"Result ({unit})",
                 yaxis=dict(range=[y_min, y_max]),
-                height=500,  # FIX 2: Increased height from 400 to 500
-                margin=dict(l=20, r=20, t=60, b=80),  # FIX 2: Better margins
+                height=500,
+                margin=dict(l=20, r=20, t=60, b=80),
                 showlegend=True,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 autosize=True,
@@ -689,8 +712,8 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
     ))
     
     fig.update_layout(
-        height=300,  # FIX 2: Increased height from 200 to 300
-        margin=dict(l=10, r=10, t=50, b=10),  # FIX 2: Better margins
+        height=300,
+        margin=dict(l=10, r=10, t=50, b=10),
         autosize=True
     )
     return fig
@@ -801,7 +824,7 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
         worksheet.set_row(2, 25)
         worksheet.set_row(3, 35)
         for row_num in range(len(organized_df)):
-            worksheet.set_row(row_num + 4, 25)  # Normal row height instead of 225
+            worksheet.set_row(row_num + 4, 25)
         
         # Set column widths
         worksheet.set_column('A:A', 20)  # Test Category
@@ -859,6 +882,30 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
             summary_sheet.write(f'A{18 + len(categories) + 3 + i}', f"• {lab}")
 
     return output_excel.getvalue()
+
+def combine_duplicate_tests(df):
+    df = df.copy()
+    test_cat_counts = df.groupby(['Test_Name', 'Test_Category'])['Test_Date'].nunique().reset_index().rename(columns={'Test_Date': 'date_count'})
+    test_cat_total = df.groupby(['Test_Name', 'Test_Category']).size().reset_index(name='row_count')
+    merged = pd.merge(test_cat_counts, test_cat_total, on=['Test_Name', 'Test_Category'])
+    
+    def pick_category(subdf):
+        max_dates = subdf['date_count'].max()
+        date_winners = subdf[subdf['date_count'] == max_dates]
+        if len(date_winners) == 1:
+            return date_winners.iloc[0]['Test_Category']
+        max_rows = date_winners['row_count'].max()
+        row_winners = date_winners[date_winners['row_count'] == max_rows]
+        return row_winners.iloc[0]['Test_Category']
+
+    best_cats = merged.groupby('Test_Name').apply(pick_category).reset_index()
+    best_cats.columns = ['Test_Name', 'Best_Test_Category']
+    df = pd.merge(df, best_cats, on='Test_Name', how='left')
+    df['Test_Category'] = df['Best_Test_Category']
+    df = df.drop(columns=['Best_Test_Category'])
+    df = df.sort_values(['Test_Name', 'Test_Date', 'Test_Category']).drop_duplicates(['Test_Name', 'Test_Date'])
+    df = df.reset_index(drop=True)
+    return df
 
 # --- Streamlit App UI ---
 st.set_page_config(page_title="Medical Report Analyzer", layout="wide")
@@ -955,7 +1002,8 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
                 existing_raw_df = existing_pivoted_df.stack().reset_index(name='Result')
                 existing_raw_df.rename(columns={'level_1': 'Test_Date'}, inplace=True)
                 existing_raw_df['Test_Name'] = existing_raw_df['Test_Name'].apply(lambda x: standardize_value(x, TEST_NAME_MAPPING, default_case='title'))
-                existing_raw_df['Test_Date'] = pd.to_datetime(existing_raw_df['Test_Date'], errors='coerce').dt.strftime('%d-%m-%Y')
+                # Use the new date parsing function to handle DD/MM/YYYY format
+                existing_raw_df['Test_Date'] = existing_raw_df['Test_Date'].apply(lambda x: format_date_dd_mm_yyyy(parse_date_dd_mm_yyyy(str(x))) if parse_date_dd_mm_yyyy(str(x)) is not None else 'N/A')
 
                 expected_columns = ['Source_Filename', 'Patient_ID', 'Patient_Name', 'Age', 'Gender', 'Test_Date', 'Lab_Name', 'Test_Category', 'Original_Test_Name', 'Test_Name', 'Result', 'Unit', 'Reference_Range', 'Status', 'Processed_Date', 'Result_Numeric', 'Test_Date_dt']
                 for col in expected_columns:
@@ -966,7 +1014,7 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
                 existing_raw_df['Processed_Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 existing_raw_df['Original_Test_Name'] = existing_raw_df['Test_Name']
                 existing_raw_df['Result_Numeric'] = pd.to_numeric(existing_raw_df['Result'], errors='coerce')
-                existing_raw_df['Test_Date_dt'] = pd.to_datetime(existing_raw_df['Test_Date'], errors='coerce')
+                existing_raw_df['Test_Date_dt'] = existing_raw_df['Test_Date'].apply(parse_date_dd_mm_yyyy)
                 existing_raw_df = existing_raw_df.reindex(columns=expected_columns)
 
                 if existing_raw_df.empty:
@@ -998,30 +1046,6 @@ if st.button("🔬 Analyze Reports", key="analyze_btn"):
         else:
             st.warning("No data could be extracted or merged from the provided files.")
             st.session_state.analysis_done = False
-
-def combine_duplicate_tests(df):
-    df = df.copy()
-    test_cat_counts = df.groupby(['Test_Name', 'Test_Category'])['Test_Date'].nunique().reset_index().rename(columns={'Test_Date': 'date_count'})
-    test_cat_total = df.groupby(['Test_Name', 'Test_Category']).size().reset_index(name='row_count')
-    merged = pd.merge(test_cat_counts, test_cat_total, on=['Test_Name', 'Test_Category'])
-    
-    def pick_category(subdf):
-        max_dates = subdf['date_count'].max()
-        date_winners = subdf[subdf['date_count'] == max_dates]
-        if len(date_winners) == 1:
-            return date_winners.iloc[0]['Test_Category']
-        max_rows = date_winners['row_count'].max()
-        row_winners = date_winners[date_winners['row_count'] == max_rows]
-        return row_winners.iloc[0]['Test_Category']
-
-    best_cats = merged.groupby('Test_Name').apply(pick_category).reset_index()
-    best_cats.columns = ['Test_Name', 'Best_Test_Category']
-    df = pd.merge(df, best_cats, on='Test_Name', how='left')
-    df['Test_Category'] = df['Best_Test_Category']
-    df = df.drop(columns=['Best_Test_Category'])
-    df = df.sort_values(['Test_Name', 'Test_Date', 'Test_Category']).drop_duplicates(['Test_Name', 'Test_Date'])
-    df = df.reset_index(drop=True)
-    return df
 
 if st.session_state.analysis_done and not st.session_state.report_df.empty:
     st.session_state.report_df = unify_test_names(st.session_state.report_df)
@@ -1067,8 +1091,7 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
     st.header("📈 Test Result Visualizations", divider='rainbow')
     viz_container = st.container()
     with viz_container:
-        # FIX 2: Change column proportions and layout for better chart display
-        col1, col2 = st.columns([1, 3])  # Changed from [1, 2] to [1, 3] for better proportion
+        col1, col2 = st.columns([1, 3])
         with col1:
             df_for_viz = st.session_state.report_df.copy()
             df_for_viz = df_for_viz[~df_for_viz['Test_Name'].isin(['N/A', 'UnknownTest', 'Unknown Test']) & df_for_viz['Test_Name'].notna()]
@@ -1114,17 +1137,14 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                             elif len(available_dates) == 1:
                                 selected_plot_date = available_dates[0]
 
-        # FIX 2: Move chart display to the wider column and use full container width
         with col2:
             if 'selected_test' in locals() and selected_test and selected_test != "-- Select a test --":
                 plot = generate_test_plot(df_for_viz, selected_test, selected_plot_date)
                 if plot:
-                    # FIX 2: Ensure chart uses full container width and has better height
                     st.plotly_chart(plot, use_container_width=True, config={'displayModeBar': True})
                 else:
                     st.info(f"Could not generate plot for {selected_test}. This might be due to non-numeric results or missing reference ranges for the selected date(s).")
             elif 'selected_test' in locals() and selected_test == "-- Select a test --":
-                # FIX 2: Add a centered placeholder message
                 st.markdown("""
                     <div style='text-align: center; padding: 50px; color: #666;'>
                         <h3>📊 Chart Area</h3>
@@ -1132,7 +1152,6 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                     </div>
                 """, unsafe_allow_html=True)
             else:
-                # FIX 2: Add centered message when no data available
                 st.markdown("""
                     <div style='text-align: center; padding: 50px; color: #666;'>
                         <h3>📊 Chart Area</h3>
@@ -1169,7 +1188,8 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
             ref_range_df = df_with_date_lab.pivot_table(index=['Test_Category', 'Test_Name'], columns='Date_Lab', values='Reference_Range', aggfunc='first').reset_index()
             
             date_lab_cols = [col for col in organized_df.columns if col not in ['Test_Category', 'Test_Name']]
-            date_lab_cols_sorted = sorted(date_lab_cols, key=lambda col_name: pd.to_datetime(col_name.split('_')[0], format='%d-%m-%Y', errors='coerce'))
+            # Sort dates using the proper DD/MM/YYYY parsing
+            date_lab_cols_sorted = sorted(date_lab_cols, key=lambda col_name: parse_date_dd_mm_yyyy(col_name.split('_')[0]) or pd.Timestamp.min)
             
             required_cols = ['Test_Category', 'Test_Name'] + date_lab_cols_sorted
             organized_df = organized_df[required_cols]
@@ -1207,7 +1227,6 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                 patient_name_for_file = "".join(c if c.isalnum() else "_" for c in p_info.get('name', 'medical_data'))
                 excel_data = create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, p_info)
 
-                # FIX 1: Create CSV export for the organized data instead of raw data
                 organized_csv = display_df.to_csv(index=False).encode('utf-8')
 
                 col1, col2 = st.columns(2)
@@ -1219,7 +1238,6 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                     )
                 with col2:
-                    
                     st.download_button(
                         label="📥 Download Organized Data as CSV",
                         data=organized_csv,
