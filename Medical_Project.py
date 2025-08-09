@@ -719,7 +719,6 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
     return fig
 
 # Replace the existing function in your Medical_Project.py file with this enhanced version
-# Replace the existing function in your Medical_Project.py file with this enhanced version
 def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, patient_info):
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
@@ -914,21 +913,29 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                     chart_worksheet.write(data_start_row + 1, chart_start_col, test_name, 
                                         workbook.add_format({'bold': True, 'bg_color': '#D9E2F3'}))
                     
-                    # Write dates and values
-                    for i, (date, value) in enumerate(zip(dates_for_charts, test_data)):
-                        chart_worksheet.write(data_start_row, chart_start_col + 1 + i, date)
-                        if value is not None:
-                            chart_worksheet.write_number(data_start_row + 1, chart_start_col + 1 + i, value)
-                        else:
-                            chart_worksheet.write(data_start_row + 1, chart_start_col + 1 + i, '')
+                    # Write dates and values - only write actual data points (no empty cells)
+                    valid_dates = []
+                    valid_values = []
+                    date_col_positions = []
                     
-                    # Add data series to chart
+                    for i, (date, value) in enumerate(zip(dates_for_charts, test_data)):
+                        if value is not None:  # Only include dates with actual values
+                            valid_dates.append(date)
+                            valid_values.append(value)
+                            date_col_positions.append(chart_start_col + 1 + len(valid_dates) - 1)
+                    
+                    # Write only the valid dates and values (no gaps)
+                    for i, (date, value) in enumerate(zip(valid_dates, valid_values)):
+                        chart_worksheet.write(data_start_row, chart_start_col + 1 + i, date)
+                        chart_worksheet.write_number(data_start_row + 1, chart_start_col + 1 + i, value)
+                    
+                    # Add data series to chart - only for valid data points
                     chart.add_series({
                         'name': test_name,
                         'categories': ['Test Trend Charts', data_start_row, chart_start_col + 1, 
-                                     data_start_row, chart_start_col + len(dates_for_charts)],
+                                     data_start_row, chart_start_col + len(valid_dates)],
                         'values': ['Test Trend Charts', data_start_row + 1, chart_start_col + 1, 
-                                 data_start_row + 1, chart_start_col + len(dates_for_charts)],
+                                 data_start_row + 1, chart_start_col + len(valid_dates)],
                         'line': {'color': '#4472C4', 'width': 2},
                         'marker': {'type': 'circle', 'size': 6, 'border': {'color': '#4472C4'}, 'fill': {'color': '#4472C4'}},
                     })
@@ -982,7 +989,7 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                     
                     # Add reference range lines if we have valid numeric ranges
                     if ref_type == "range" and low_ref is not None and high_ref is not None:
-                        # Create data for reference lines (same dates, constant values)
+                        # Create data for reference lines (same valid dates, constant values)
                         ref_low_row = data_start_row + 2
                         ref_high_row = data_start_row + 3
                         
@@ -992,8 +999,8 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                         chart_worksheet.write(ref_high_row, chart_start_col, 'Upper Limit', 
                                             workbook.add_format({'bold': True, 'font_color': '#DC143C'}))
                         
-                        # Write reference values for each date
-                        for i in range(len(dates_for_charts)):
+                        # Write reference values ONLY for valid dates (same pattern as main data)
+                        for i in range(len(valid_dates)):
                             chart_worksheet.write_number(ref_low_row, chart_start_col + 1 + i, low_ref)
                             chart_worksheet.write_number(ref_high_row, chart_start_col + 1 + i, high_ref)
                         
@@ -1001,9 +1008,9 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                         chart.add_series({
                             'name': f'Lower Limit ({low_ref})',
                             'categories': ['Test Trend Charts', data_start_row, chart_start_col + 1, 
-                                         data_start_row, chart_start_col + len(dates_for_charts)],
+                                         data_start_row, chart_start_col + len(valid_dates)],
                             'values': ['Test Trend Charts', ref_low_row, chart_start_col + 1, 
-                                     ref_low_row, chart_start_col + len(dates_for_charts)],
+                                     ref_low_row, chart_start_col + len(valid_dates)],
                             'line': {'color': '#228B22', 'width': 2, 'dash_type': 'dash'},
                             'marker': {'type': 'none'},
                         })
@@ -1012,9 +1019,9 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                         chart.add_series({
                             'name': f'Upper Limit ({high_ref})',
                             'categories': ['Test Trend Charts', data_start_row, chart_start_col + 1, 
-                                         data_start_row, chart_start_col + len(dates_for_charts)],
+                                         data_start_row, chart_start_col + len(valid_dates)],
                             'values': ['Test Trend Charts', ref_high_row, chart_start_col + 1, 
-                                     ref_high_row, chart_start_col + len(dates_for_charts)],
+                                     ref_high_row, chart_start_col + len(valid_dates)],
                             'line': {'color': '#DC143C', 'width': 2, 'dash_type': 'dash'},
                             'marker': {'type': 'none'},
                         })
@@ -1026,15 +1033,16 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                         chart_worksheet.write(ref_high_row, chart_start_col, f'Upper Limit (<{high_ref})', 
                                             workbook.add_format({'bold': True, 'font_color': '#DC143C'}))
                         
-                        for i in range(len(dates_for_charts)):
+                        # Write reference values ONLY for valid dates
+                        for i in range(len(valid_dates)):
                             chart_worksheet.write_number(ref_high_row, chart_start_col + 1 + i, high_ref)
                         
                         chart.add_series({
                             'name': f'Upper Limit (<{high_ref})',
                             'categories': ['Test Trend Charts', data_start_row, chart_start_col + 1, 
-                                         data_start_row, chart_start_col + len(dates_for_charts)],
+                                         data_start_row, chart_start_col + len(valid_dates)],
                             'values': ['Test Trend Charts', ref_high_row, chart_start_col + 1, 
-                                     ref_high_row, chart_start_col + len(dates_for_charts)],
+                                     ref_high_row, chart_start_col + len(valid_dates)],
                             'line': {'color': '#DC143C', 'width': 2, 'dash_type': 'dash'},
                             'marker': {'type': 'none'},
                         })
@@ -1046,15 +1054,16 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                         chart_worksheet.write(ref_low_row, chart_start_col, f'Lower Limit (>{low_ref})', 
                                             workbook.add_format({'bold': True, 'font_color': '#228B22'}))
                         
-                        for i in range(len(dates_for_charts)):
+                        # Write reference values ONLY for valid dates
+                        for i in range(len(valid_dates)):
                             chart_worksheet.write_number(ref_low_row, chart_start_col + 1 + i, low_ref)
                         
                         chart.add_series({
                             'name': f'Lower Limit (>{low_ref})',
                             'categories': ['Test Trend Charts', data_start_row, chart_start_col + 1, 
-                                         data_start_row, chart_start_col + len(dates_for_charts)],
+                                         data_start_row, chart_start_col + len(valid_dates)],
                             'values': ['Test Trend Charts', ref_low_row, chart_start_col + 1, 
-                                     ref_low_row, chart_start_col + len(dates_for_charts)],
+                                     ref_low_row, chart_start_col + len(valid_dates)],
                             'line': {'color': '#228B22', 'width': 2, 'dash_type': 'dash'},
                             'marker': {'type': 'none'},
                         })
