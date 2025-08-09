@@ -718,6 +718,7 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
     )
     return fig
 
+# Replace the existing function in your Medical_Project.py file with this enhanced version
 def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, patient_info):
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
@@ -837,6 +838,156 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
         worksheet.autofilter(3, 0, len(organized_df) + 3, len(organized_df.columns))
         worksheet.freeze_panes(4, 2)
         
+        # =================== NEW CHARTS TAB ===================
+        # Create a new worksheet for individual test charts
+        chart_worksheet = workbook.add_worksheet('Test Trend Charts')
+        
+        # Add title to charts sheet
+        chart_worksheet.merge_range('A1:H1', 'Individual Test Trend Charts', title_format)
+        chart_worksheet.write('A2', f'Patient: {patient_info.get("name", "N/A")} | Age: {patient_info.get("age", "N/A")} | Gender: {patient_info.get("gender", "N/A")}', 
+                             workbook.add_format({'font_size': 12, 'italic': True}))
+        
+        # Prepare data for charts
+        chart_row = 4  # Starting row for charts
+        charts_per_row = 2  # Number of charts per row
+        chart_width = 480  # Width of each chart in pixels
+        chart_height = 300  # Height of each chart in pixels
+        chart_spacing_x = 8  # Column spacing between charts (in Excel columns)
+        chart_spacing_y = 20  # Row spacing between charts (in Excel rows)
+        
+        chart_count = 0
+        
+        # Extract dates for x-axis (parse them properly for sorting)
+        dates_for_charts = []
+        for date_lab_col in date_lab_cols_sorted:
+            date_part = date_lab_col.split('_')[0]
+            dates_for_charts.append(date_part)
+        
+        # Group tests by category for better organization
+        tests_by_category = {}
+        for idx, row in organized_df.iterrows():
+            category = row['Test_Category']
+            test_name = row['Test_Name']
+            if category not in tests_by_category:
+                tests_by_category[category] = []
+            tests_by_category[category].append((idx, test_name))
+        
+        # Create charts for each test that has numeric data
+        for category, tests in tests_by_category.items():
+            for test_idx, test_name in tests:
+                # Get the data for this test
+                test_data = []
+                has_numeric_data = False
+                
+                for col_idx, date_lab_col in enumerate(date_lab_cols_sorted):
+                    value = organized_df.iloc[test_idx, col_idx + 2]  # +2 to skip category and test name columns
+                    try:
+                        if pd.notna(value) and str(value).strip() != '':
+                            numeric_value = float(value)
+                            test_data.append(numeric_value)
+                            has_numeric_data = True
+                        else:
+                            test_data.append(None)
+                    except (ValueError, TypeError):
+                        test_data.append(None)
+                
+                # Only create chart if there's numeric data and more than one data point
+                valid_data_points = [x for x in test_data if x is not None]
+                if has_numeric_data and len(valid_data_points) > 1:
+                    # Calculate chart position
+                    row_position = chart_count // charts_per_row
+                    col_position = chart_count % charts_per_row
+                    
+                    chart_start_row = chart_row + (row_position * chart_spacing_y)
+                    chart_start_col = col_position * chart_spacing_x
+                    
+                    # Create a line chart
+                    chart = workbook.add_chart({'type': 'line'})
+                    
+                    # Create a temporary data table on the chart sheet for this specific test
+                    data_start_row = chart_start_row + 16  # Place data below the chart
+                    
+                    # Write dates header
+                    chart_worksheet.write(data_start_row, chart_start_col, 'Date', 
+                                        workbook.add_format({'bold': True, 'bg_color': '#D9E2F3'}))
+                    chart_worksheet.write(data_start_row + 1, chart_start_col, test_name, 
+                                        workbook.add_format({'bold': True, 'bg_color': '#D9E2F3'}))
+                    
+                    # Write dates and values
+                    for i, (date, value) in enumerate(zip(dates_for_charts, test_data)):
+                        chart_worksheet.write(data_start_row, chart_start_col + 1 + i, date)
+                        if value is not None:
+                            chart_worksheet.write_number(data_start_row + 1, chart_start_col + 1 + i, value)
+                        else:
+                            chart_worksheet.write(data_start_row + 1, chart_start_col + 1 + i, '')
+                    
+                    # Add data series to chart
+                    chart.add_series({
+                        'name': test_name,
+                        'categories': ['Test Trend Charts', data_start_row, chart_start_col + 1, 
+                                     data_start_row, chart_start_col + len(dates_for_charts)],
+                        'values': ['Test Trend Charts', data_start_row + 1, chart_start_col + 1, 
+                                 data_start_row + 1, chart_start_col + len(dates_for_charts)],
+                        'line': {'color': '#4472C4', 'width': 2},
+                        'marker': {'type': 'circle', 'size': 6, 'border': {'color': '#4472C4'}, 'fill': {'color': '#4472C4'}},
+                    })
+                    
+                    # Get reference range for this test
+                    ref_range = ''
+                    try:
+                        for col_idx, col_name in enumerate(date_lab_cols_sorted):
+                            if col_idx + 2 < len(ref_range_df.columns):
+                                ref_value = ref_range_df.iloc[test_idx, col_idx + 2]
+                                if pd.notna(ref_value) and str(ref_value).strip() != '' and str(ref_value) != 'N/A':
+                                    ref_range = str(ref_value)
+                                    break
+                    except:
+                        pass
+                    
+                    # Configure chart
+                    min_val = min(valid_data_points)
+                    max_val = max(valid_data_points)
+                    value_range = max_val - min_val if max_val != min_val else max_val * 0.1
+                    y_min = min_val - (value_range * 0.1) if value_range > 0 else min_val * 0.9
+                    y_max = max_val + (value_range * 0.1) if value_range > 0 else max_val * 1.1
+                    
+                    chart.set_title({
+                        'name': f'{test_name}\n({category})',
+                        'name_font': {'size': 11, 'bold': True}
+                    })
+                    chart.set_x_axis({
+                        'name': 'Test Date',
+                        'name_font': {'size': 10},
+                        'num_font': {'size': 9, 'rotation': 45}
+                    })
+                    chart.set_y_axis({
+                        'name': f'Value {ref_range}' if ref_range else 'Value',
+                        'name_font': {'size': 10},
+                        'min': y_min,
+                        'max': y_max
+                    })
+                    chart.set_legend({'none': True})
+                    chart.set_size({'width': chart_width, 'height': chart_height})
+                    chart.set_style(10)  # Use a clean style
+                    
+                    # Insert chart
+                    chart_worksheet.insert_chart(chart_start_row, chart_start_col, chart)
+                    
+                    chart_count += 1
+        
+        # Add summary information to charts sheet
+        if chart_count > 0:
+            summary_row = 2 + ((chart_count // charts_per_row + 1) * chart_spacing_y)
+            chart_worksheet.write(summary_row, 0, f'Total Charts Generated: {chart_count}', 
+                                workbook.add_format({'bold': True, 'font_size': 12}))
+            chart_worksheet.write(summary_row + 1, 0, 'Note: Only tests with multiple numeric values are charted', 
+                                workbook.add_format({'italic': True, 'font_color': '#666666'}))
+        else:
+            chart_worksheet.write(4, 0, 'No charts could be generated - insufficient numeric data points', 
+                                workbook.add_format({'font_color': 'red', 'bold': True}))
+        
+        # =================== END CHARTS TAB ===================
+        
         # Create summary sheet
         summary_sheet = workbook.add_worksheet('Summary')
         summary_sheet.merge_range('A1:D1', 'Medical Report Summary', title_format)
@@ -856,22 +1007,23 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
         summary_sheet.write('A11', f"Total Test Categories: {organized_df['Test_Category'].nunique()}")
         summary_sheet.write('A12', f"Total Tests: {len(organized_df)}")
         summary_sheet.write('A13', f"Total Date-Lab Combinations: {len(date_lab_cols_sorted)}")
+        summary_sheet.write('A14', f"Charts Generated: {chart_count}")
         
         if date_lab_cols_sorted:
             first_date = date_lab_cols_sorted[0].split('_')[0]
             last_date = date_lab_cols_sorted[-1].split('_')[0]
-            summary_sheet.write('A14', f"Date Range: {first_date} to {last_date}")
+            summary_sheet.write('A15', f"Date Range: {first_date} to {last_date}")
         
-        summary_sheet.write('A15', f"Generated on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
+        summary_sheet.write('A16', f"Generated on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
         
         # Test categories
-        summary_sheet.write('A17', 'Test Categories:', info_format)
+        summary_sheet.write('A18', 'Test Categories:', info_format)
         categories = organized_df['Test_Category'].value_counts()
         for i, (category, count) in enumerate(categories.items()):
-            summary_sheet.write(f'A{18+i}', f"• {category}: {count} tests")
+            summary_sheet.write(f'A{19+i}', f"• {category}: {count} tests")
         
         # Labs used
-        summary_sheet.write('A' + str(18 + len(categories) + 2), 'Labs Used:', info_format)
+        summary_sheet.write('A' + str(19 + len(categories) + 2), 'Labs Used:', info_format)
         unique_labs = set()
         for col in date_lab_cols_sorted:
             if '_' in col:
@@ -879,7 +1031,7 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                 unique_labs.add(lab_part)
         
         for i, lab in enumerate(sorted(unique_labs)):
-            summary_sheet.write(f'A{18 + len(categories) + 3 + i}', f"• {lab}")
+            summary_sheet.write(f'A{19 + len(categories) + 3 + i}', f"• {lab}")
 
     return output_excel.getvalue()
 
