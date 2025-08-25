@@ -16,29 +16,6 @@ import os
 from collections import Counter
 
 
-def parse_date_dd_mm_yyyy(date_str):
-    """Parse date string ensuring DD/MM/YYYY format"""
-    if not date_str or date_str in ['N/A', '']:
-        return None
-    
-    try:
-        # First try to parse as DD/MM/YYYY
-        return pd.to_datetime(date_str, format='%d/%m/%Y', errors='raise')
-    except:
-        try:
-            # Try DD-MM-YYYY
-            return pd.to_datetime(date_str, format='%d-%m-%Y', errors='raise')
-        except:
-            try:
-                # Try DD.MM.YYYY
-                return pd.to_datetime(date_str, format='%d.%m.%Y', errors='raise')
-            except:
-                try:
-                    # If all else fails, try to parse and assume it's in DD/MM/YYYY format
-                    # Force dayfirst=True to ensure DD/MM/YYYY interpretation
-                    return pd.to_datetime(date_str, dayfirst=True, errors='raise')
-                except:
-                    return None
 
 def format_date_dd_mm_yyyy(date_obj):
     """Format datetime object to DD-MM-YYYY string"""
@@ -56,77 +33,7 @@ def extract_patient_info_from_excel_filename(filename):
         return extracted_name
     return "N/A"
 
-def process_existing_excel_csv(uploaded_excel_file, new_patient_info_list):
-    """
-    Enhanced function to properly process existing Excel/CSV files and convert them
-    to the same format as PDF-extracted data
-    """
-    try:
-        filename = uploaded_excel_file.name
-        
-        # Read the file
-        if filename.endswith('.csv'):
-            df = pd.read_csv(uploaded_excel_file)
-        else:
-            # For Excel files, try to read from the main data sheet
-            try:
-                # Try to read from 'Medical Data with Trends' sheet first (our standard format)
-                df = pd.read_excel(uploaded_excel_file, sheet_name='Medical Data with Trends', skiprows=3)
-            except:
-                try:
-                    # If that fails, try the first sheet
-                    df = pd.read_excel(uploaded_excel_file, sheet_name=0)
-                except:
-                    # If that also fails, try without specifying sheet
-                    df = pd.read_excel(uploaded_excel_file)
-        
-        # Clean up the dataframe
-        df = df.dropna(how='all').reset_index(drop=True)
-        
-        # Check if this is already in normalized format (has columns like Test_Date, Result, etc.)
-        required_normalized_cols = ['Test_Name', 'Result', 'Test_Date']
-        if all(col in df.columns for col in required_normalized_cols):
-            print("File is already in normalized format, processing directly...")
-            return process_normalized_excel_data(df, filename, new_patient_info_list)
-        
-        # Check if this is in pivoted format (Test_Category, Test_Name as first columns, then date columns)
-        if 'Test_Category' in df.columns and 'Test_Name' in df.columns:
-            print("File is in pivoted format, converting to normalized format...")
-            return process_pivoted_excel_data(df, filename, new_patient_info_list)
-        
-        # If neither format is detected, try to auto-detect
-        print("Auto-detecting file format...")
-        return auto_detect_and_process(df, filename, new_patient_info_list)
-        
-    except Exception as e:
-        print(f"Error processing existing file: {str(e)}")
-        return pd.DataFrame(), {}
 
-def process_normalized_excel_data(df, filename, new_patient_info_list):
-    """Process Excel data that's already in normalized format"""
-    
-    # Ensure all required columns exist
-    expected_columns = [
-        'Source_Filename', 'Patient_ID', 'Patient_Name', 'Age', 'Gender', 
-        'Test_Date', 'Lab_Name', 'Test_Category', 'Original_Test_Name', 
-        'Test_Name', 'Result', 'Unit', 'Reference_Range', 'Status', 
-        'Processed_Date', 'Result_Numeric', 'Test_Date_dt'
-    ]
-    
-    for col in expected_columns:
-        if col not in df.columns:
-            df[col] = 'N/A'
-    
-    # Update computed columns
-    df['Source_Filename'] = filename
-    df['Processed_Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    df['Result_Numeric'] = pd.to_numeric(df['Result'], errors='coerce')
-    df['Test_Date_dt'] = df['Test_Date'].apply(parse_date_dd_mm_yyyy)
-    
-    # Extract patient info from the existing data
-    existing_patient_info = extract_patient_info_from_normalized_data(df)
-    
-    return df[expected_columns], existing_patient_info
 
 def standardize_value(value, mapping_dict, default_case='title'):
     if not isinstance(value, str):
@@ -253,108 +160,6 @@ def init_gemini_models(api_key_for_gemini):
         gemini_model_chat = None
         return False
 
-def process_pivoted_excel_data(df, filename, new_patient_info_list):
-    """Process Excel data that's in pivoted format (organized by date)"""
-    
-    # Remove header rows if they exist (Date and Lab rows)
-    if len(df) > 0 and ('📅' in str(df.iloc[0, 0]) or 'Date' in str(df.iloc[0, 0])):
-        df = df.iloc[2:].reset_index(drop=True)  # Skip first 2 rows (date and lab headers)
-    
-    # Identify date-lab columns (everything except Test_Category and Test_Name)
-    non_date_cols = ['Test_Category', 'Test_Name']
-    date_lab_cols = [col for col in df.columns if col not in non_date_cols and not col.startswith('Unnamed')]
-    
-    if not date_lab_cols:
-        print("No date columns found in pivoted data")
-        return pd.DataFrame(), {}
-    
-    # Convert from pivoted to normalized format
-    normalized_rows = []
-    
-    for idx, row in df.iterrows():
-        test_category = row.get('Test_Category', 'N/A')
-        test_name = row.get('Test_Name', 'N/A')
-        
-        # Skip if test name is not valid
-        if pd.isna(test_name) or test_name in ['N/A', '', 'Test_Name']:
-            continue
-        
-        for date_lab_col in date_lab_cols:
-            result_value = row.get(date_lab_col, '')
-            
-            # Skip empty results
-            if pd.isna(result_value) or result_value in ['', 'N/A']:
-                continue
-            
-            # Parse date and lab from column name
-            if '_' in str(date_lab_col):
-                parts = str(date_lab_col).split('_', 1)
-                test_date = parts[0] if len(parts) > 0 else 'N/A'
-                lab_name = parts[1] if len(parts) > 1 else 'N/A'
-            else:
-                # If no underscore, assume it's just a date
-                test_date = str(date_lab_col)
-                lab_name = 'N/A'
-            
-            # Normalize the date format
-            parsed_date = parse_date_dd_mm_yyyy(test_date)
-            formatted_date = format_date_dd_mm_yyyy(parsed_date) if parsed_date else test_date
-            
-            # Determine patient info - use from new PDFs if available, otherwise extract from filename
-            patient_name = 'N/A'
-            patient_age = 'N/A'
-            patient_gender = 'N/A'
-            patient_id = 'N/A'
-            
-            if new_patient_info_list:
-                # Use the most recent patient info from new PDFs
-                latest_info = new_patient_info_list[-1]  # Assuming the last one is most recent
-                patient_name = latest_info.get('name', extract_patient_info_from_excel_filename(filename))
-                patient_age = latest_info.get('age', 'N/A')
-                patient_gender = latest_info.get('gender', 'N/A')
-                patient_id = latest_info.get('patient_id', 'N/A')
-            else:
-                patient_name = extract_patient_info_from_excel_filename(filename)
-            
-            normalized_row = {
-                'Source_Filename': filename,
-                'Patient_ID': patient_id,
-                'Patient_Name': patient_name,
-                'Age': patient_age,
-                'Gender': patient_gender,
-                'Test_Date': formatted_date,
-                'Lab_Name': lab_name,
-                'Test_Category': test_category,
-                'Original_Test_Name': test_name,
-                'Test_Name': test_name,  # Will be standardized later
-                'Result': str(result_value),
-                'Unit': 'N/A',  # Not available in pivoted format
-                'Reference_Range': 'N/A',  # Not available in pivoted format
-                'Status': 'N/A',  # Not available in pivoted format
-                'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'Result_Numeric': pd.to_numeric(result_value, errors='coerce'),
-                'Test_Date_dt': parsed_date
-            }
-            
-            normalized_rows.append(normalized_row)
-    
-    if not normalized_rows:
-        print("No valid data found in pivoted format")
-        return pd.DataFrame(), {}
-    
-    normalized_df = pd.DataFrame(normalized_rows)
-    
-    # Extract patient info
-    existing_patient_info = {
-        'name': patient_name,
-        'age': patient_age,
-        'gender': patient_gender,
-        'patient_id': patient_id,
-        'date': formatted_date,  # Use the most recent date
-        'lab_name': lab_name
-    }
-    
-    return normalized_df, existing_patient_info
 
 def extract_patient_info_from_normalized_data(df):
     """Extract patient info from normalized dataframe"""
@@ -589,27 +394,6 @@ def normalize_name(name):
         name_lower = re.sub(rf'\b{title}\b\.?\s*', '', name_lower)
     words = [word for word in name_lower.split() if word]
     return ' '.join(word.title() for word in words)
-
-def enhanced_data_combination_workflow(uploaded_excel_file, new_pdf_data_list, new_patient_info_list):
-    """
-    Main workflow to combine existing Excel/CSV with new PDF data
-    """
-    
-    # Process existing Excel/CSV file
-    existing_df, existing_patient_info = process_existing_excel_csv(uploaded_excel_file, new_patient_info_list)
-    
-    # Combine with new PDF data
-    if new_pdf_data_list:
-        new_data_df = pd.concat(new_pdf_data_list, ignore_index=True)
-        combined_df = pd.concat([existing_df, new_data_df], ignore_index=True) if not existing_df.empty else new_data_df
-    else:
-        combined_df = existing_df
-    
-    # Smart consolidation of patient info
-    final_patient_info = smart_consolidate_patient_info(existing_patient_info, new_patient_info_list)
-    
-    return combined_df, final_patient_info
-
 
 def are_names_matching(name1, name2):
     name1 = normalize_name(name1)
@@ -1591,4 +1375,459 @@ def handle_patient_info_conflicts(existing_info, new_info_list):
         # No conflicts, proceed with normal consolidation
         return smart_consolidate_patient_info(existing_info, new_info_list)
 
+def enhanced_data_combination_workflow(uploaded_excel_file, new_pdf_data_list, new_patient_info_list):
+    """
+    FIXED: Main workflow to combine existing Excel/CSV with new PDF data
+    """
+    print("=== Starting Data Combination Workflow ===")
+    
+    # Process existing Excel/CSV file
+    print(f"Processing existing file: {uploaded_excel_file.name}")
+    existing_df, existing_patient_info = process_existing_excel_csv(uploaded_excel_file, new_patient_info_list)
+    
+    print(f"Existing data shape: {existing_df.shape}")
+    print(f"Existing data columns: {list(existing_df.columns) if not existing_df.empty else 'Empty DataFrame'}")
+    
+    # Process new PDF data
+    combined_df = pd.DataFrame()
+    
+    if not existing_df.empty:
+        print("Adding existing data to combined dataset...")
+        combined_df = existing_df.copy()
+        print(f"Combined data after adding existing: {combined_df.shape}")
+    
+    # Add new PDF data if available
+    if new_pdf_data_list:
+        print(f"Processing {len(new_pdf_data_list)} new PDF datasets...")
+        new_data_df = pd.concat(new_pdf_data_list, ignore_index=True)
+        print(f"New PDF data shape: {new_data_df.shape}")
+        
+        if not combined_df.empty:
+            print("Combining existing + new data...")
+            # Ensure both dataframes have the same columns
+            all_columns = list(set(combined_df.columns.tolist() + new_data_df.columns.tolist()))
+            
+            # Add missing columns to both dataframes
+            for col in all_columns:
+                if col not in combined_df.columns:
+                    combined_df[col] = 'N/A'
+                if col not in new_data_df.columns:
+                    new_data_df[col] = 'N/A'
+            
+            # Reorder columns to match
+            combined_df = combined_df[all_columns]
+            new_data_df = new_data_df[all_columns]
+            
+            # Combine the data
+            combined_df = pd.concat([combined_df, new_data_df], ignore_index=True)
+            print(f"Final combined data shape: {combined_df.shape}")
+        else:
+            print("No existing data, using only new PDF data...")
+            combined_df = new_data_df
+    else:
+        print("No new PDF data to add...")
+    
+    # Smart consolidation of patient info
+    final_patient_info = smart_consolidate_patient_info(existing_patient_info, new_patient_info_list)
+    
+    print(f"=== Final Results ===")
+    print(f"Combined data shape: {combined_df.shape}")
+    print(f"Patient info: {final_patient_info}")
+    
+    return combined_df, final_patient_info
+
+def process_existing_excel_csv(uploaded_excel_file, new_patient_info_list):
+    """
+    FIXED: Enhanced function to properly process existing Excel/CSV files and convert them
+    to the same format as PDF-extracted data
+    """
+    try:
+        filename = uploaded_excel_file.name
+        print(f"Processing file: {filename}")
+        
+        # Read the file
+        if filename.endswith('.csv'):
+            df = pd.read_csv(uploaded_excel_file)
+            print(f"Read CSV file with shape: {df.shape}")
+        else:
+            # For Excel files, try to read from the main data sheet
+            try:
+                # Try to read from 'Medical Data with Trends' sheet first (our standard format)
+                df = pd.read_excel(uploaded_excel_file, sheet_name='Medical Data with Trends', skiprows=3)
+                print("Read from 'Medical Data with Trends' sheet")
+            except:
+                try:
+                    # If that fails, try the first sheet
+                    df = pd.read_excel(uploaded_excel_file, sheet_name=0)
+                    print("Read from first sheet")
+                except:
+                    # If that also fails, try without specifying sheet
+                    df = pd.read_excel(uploaded_excel_file)
+                    print("Read using default method")
+        
+        print(f"Initial dataframe shape: {df.shape}")
+        print(f"Initial columns: {list(df.columns)}")
+        
+        # Clean up the dataframe
+        df = df.dropna(how='all').reset_index(drop=True)
+        print(f"After cleaning shape: {df.shape}")
+        
+        # Check if this is already in normalized format (has columns like Test_Date, Result, etc.)
+        required_normalized_cols = ['Test_Name', 'Result', 'Test_Date']
+        has_normalized_format = all(col in df.columns for col in required_normalized_cols)
+        
+        print(f"Has normalized format: {has_normalized_format}")
+        
+        if has_normalized_format:
+            print("File is already in normalized format, processing directly...")
+            return process_normalized_excel_data(df, filename, new_patient_info_list)
+        
+        # Check if this is in pivoted format (Test_Category, Test_Name as first columns, then date columns)
+        has_pivoted_format = 'Test_Category' in df.columns and 'Test_Name' in df.columns
+        print(f"Has pivoted format: {has_pivoted_format}")
+        
+        if has_pivoted_format:
+            print("File is in pivoted format, converting to normalized format...")
+            return process_pivoted_excel_data(df, filename, new_patient_info_list)
+        
+        # If neither format is detected, try to auto-detect
+        print("Auto-detecting file format...")
+        return auto_detect_and_process(df, filename, new_patient_info_list)
+        
+    except Exception as e:
+        print(f"Error processing existing file: {str(e)}")
+        st.error(f"Error processing existing file: {str(e)}")
+        return pd.DataFrame(), {}
+
+def process_normalized_excel_data(df, filename, new_patient_info_list):
+    """
+    FIXED: Process Excel data that's already in normalized format
+    """
+    print("Processing normalized Excel data...")
+    
+    # Ensure all required columns exist
+    expected_columns = [
+        'Source_Filename', 'Patient_ID', 'Patient_Name', 'Age', 'Gender', 
+        'Test_Date', 'Lab_Name', 'Test_Category', 'Original_Test_Name', 
+        'Test_Name', 'Result', 'Unit', 'Reference_Range', 'Status', 
+        'Processed_Date', 'Result_Numeric', 'Test_Date_dt'
+    ]
+    
+    # Add missing columns with default values
+    for col in expected_columns:
+        if col not in df.columns:
+            df[col] = 'N/A'
+            print(f"Added missing column: {col}")
+    
+    # Update computed columns
+    df['Source_Filename'] = filename
+    df['Processed_Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Fix numeric conversion for Result column
+    df['Result_Numeric'] = pd.to_numeric(df['Result'], errors='coerce')
+    
+    # Fix date parsing
+    df['Test_Date_dt'] = df['Test_Date'].apply(parse_date_dd_mm_yyyy)
+    
+    # Clean up the dataframe - remove completely empty rows
+    df = df.dropna(subset=['Test_Name'], how='all')
+    df = df[df['Test_Name'] != 'N/A']
+    df = df[df['Test_Name'].notna()]
+    
+    print(f"Processed normalized data shape: {df.shape}")
+    
+    # Extract patient info from the existing data
+    existing_patient_info = extract_patient_info_from_normalized_data(df)
+    
+    # Reorder columns to match expected format
+    df = df[expected_columns]
+    
+    return df, existing_patient_info
+
+def process_pivoted_excel_data(df, filename, new_patient_info_list):
+    """
+    FIXED: Process Excel data that's in pivoted format (organized by date)
+    """
+    print("Processing pivoted Excel data...")
+    
+    # Remove header rows if they exist (Date and Lab rows)
+    original_shape = df.shape
+    
+    # Check for and remove header rows that contain dates or lab info
+    rows_to_skip = 0
+    for idx in range(min(3, len(df))):  # Check first 3 rows
+        row_content = str(df.iloc[idx, 0]).lower() if not pd.isna(df.iloc[idx, 0]) else ""
+        if any(indicator in row_content for indicator in ['📅', 'date', '🏥', 'lab']):
+            rows_to_skip = idx + 1
+    
+    if rows_to_skip > 0:
+        df = df.iloc[rows_to_skip:].reset_index(drop=True)
+        print(f"Skipped {rows_to_skip} header rows. New shape: {df.shape}")
+    
+    # Identify date-lab columns (everything except Test_Category and Test_Name)
+    non_date_cols = ['Test_Category', 'Test_Name']
+    date_lab_cols = [col for col in df.columns if col not in non_date_cols and not col.startswith('Unnamed')]
+    
+    print(f"Found {len(date_lab_cols)} date-lab columns: {date_lab_cols[:5]}...")  # Show first 5
+    
+    if not date_lab_cols:
+        print("No date columns found in pivoted data")
+        return pd.DataFrame(), {}
+    
+    # Convert from pivoted to normalized format
+    normalized_rows = []
+    
+    print(f"Processing {len(df)} test rows...")
+    
+    for idx, row in df.iterrows():
+        if idx % 10 == 0:  # Progress indicator
+            print(f"Processing row {idx}/{len(df)}")
+            
+        test_category = row.get('Test_Category', 'N/A')
+        test_name = row.get('Test_Name', 'N/A')
+        
+        # Skip if test name is not valid
+        if pd.isna(test_name) or test_name in ['N/A', '', 'Test_Name'] or str(test_name).strip() == '':
+            continue
+        
+        for date_lab_col in date_lab_cols:
+            result_value = row.get(date_lab_col, '')
+            
+            # Skip empty results
+            if pd.isna(result_value) or result_value in ['', 'N/A'] or str(result_value).strip() == '':
+                continue
+            
+            # Parse date and lab from column name
+            if '_' in str(date_lab_col):
+                parts = str(date_lab_col).split('_', 1)
+                test_date = parts[0] if len(parts) > 0 else 'N/A'
+                lab_name = parts[1] if len(parts) > 1 else 'N/A'
+            else:
+                # If no underscore, assume it's just a date
+                test_date = str(date_lab_col)
+                lab_name = 'N/A'
+            
+            # Normalize the date format
+            parsed_date = parse_date_dd_mm_yyyy(test_date)
+            formatted_date = format_date_dd_mm_yyyy(parsed_date) if parsed_date else test_date
+            
+            # Determine patient info - use from new PDFs if available, otherwise extract from filename
+            patient_name = 'N/A'
+            patient_age = 'N/A'
+            patient_gender = 'N/A'
+            patient_id = 'N/A'
+            
+            if new_patient_info_list:
+                # Use the most recent patient info from new PDFs
+                latest_info = new_patient_info_list[-1]  # Assuming the last one is most recent
+                patient_name = latest_info.get('name', extract_patient_info_from_excel_filename(filename))
+                patient_age = latest_info.get('age', 'N/A')
+                patient_gender = latest_info.get('gender', 'N/A')
+                patient_id = latest_info.get('patient_id', 'N/A')
+            else:
+                patient_name = extract_patient_info_from_excel_filename(filename)
+            
+            normalized_row = {
+                'Source_Filename': filename,
+                'Patient_ID': patient_id,
+                'Patient_Name': patient_name,
+                'Age': patient_age,
+                'Gender': patient_gender,
+                'Test_Date': formatted_date,
+                'Lab_Name': lab_name,
+                'Test_Category': test_category,
+                'Original_Test_Name': test_name,
+                'Test_Name': test_name,  # Will be standardized later if needed
+                'Result': str(result_value),
+                'Unit': 'N/A',  # Not available in pivoted format
+                'Reference_Range': 'N/A',  # Not available in pivoted format
+                'Status': 'N/A',  # Not available in pivoted format
+                'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'Result_Numeric': pd.to_numeric(result_value, errors='coerce'),
+                'Test_Date_dt': parsed_date
+            }
+            
+            normalized_rows.append(normalized_row)
+    
+    print(f"Created {len(normalized_rows)} normalized rows")
+    
+    if not normalized_rows:
+        print("No valid data found in pivoted format")
+        return pd.DataFrame(), {}
+    
+    normalized_df = pd.DataFrame(normalized_rows)
+    
+    # Extract patient info (use the most recent date)
+    if normalized_df.empty:
+        existing_patient_info = {}
+    else:
+        # Get the most recent date entry for patient info
+        most_recent_idx = normalized_df['Test_Date_dt'].idxmax() if normalized_df['Test_Date_dt'].notna().any() else 0
+        recent_row = normalized_df.iloc[most_recent_idx] if most_recent_idx is not None else normalized_df.iloc[0]
+        
+        existing_patient_info = {
+            'name': recent_row['Patient_Name'],
+            'age': recent_row['Age'],
+            'gender': recent_row['Gender'],
+            'patient_id': recent_row['Patient_ID'],
+            'date': recent_row['Test_Date'],
+            'lab_name': recent_row['Lab_Name']
+        }
+    
+    print(f"Final normalized data shape: {normalized_df.shape}")
+    return normalized_df, existing_patient_info
+
+def debug_data_combination(existing_df, new_pdf_data_list, step_name=""):
+    """
+    Helper function to debug data combination issues
+    """
+    print(f"\n=== DEBUG: {step_name} ===")
+    
+    if not existing_df.empty:
+        print(f"Existing data: {existing_df.shape} rows")
+        print(f"Existing columns: {list(existing_df.columns)}")
+        print(f"Sample existing data:")
+        print(existing_df[['Test_Name', 'Result', 'Test_Date']].head(3).to_string())
+    else:
+        print("Existing data: EMPTY")
+    
+    if new_pdf_data_list:
+        total_new_rows = sum(len(df) for df in new_pdf_data_list)
+        print(f"New PDF data: {len(new_pdf_data_list)} dataframes, {total_new_rows} total rows")
+        if new_pdf_data_list:
+            sample_df = new_pdf_data_list[0]
+            print(f"Sample new data:")
+            print(sample_df[['Test_Name', 'Result', 'Test_Date']].head(3).to_string())
+    else:
+        print("New PDF data: NONE")
+    
+    print("=" * 50)
+
+# Add this debugging version of the main workflow
+def enhanced_data_combination_workflow_debug(uploaded_excel_file, new_pdf_data_list, new_patient_info_list):
+    """
+    DEBUG VERSION: Main workflow with extensive logging
+    """
+    print("=== STARTING DEBUG DATA COMBINATION WORKFLOW ===")
+    
+    # Step 1: Process existing Excel/CSV file
+    print(f"\nSTEP 1: Processing existing file: {uploaded_excel_file.name}")
+    existing_df, existing_patient_info = process_existing_excel_csv(uploaded_excel_file, new_patient_info_list)
+    
+    debug_data_combination(existing_df, new_pdf_data_list, "After processing existing file")
+    
+    # Step 2: Initialize combined dataframe
+    combined_df = pd.DataFrame()
+    
+    # Step 3: Add existing data
+    if not existing_df.empty:
+        print(f"\nSTEP 3: Adding existing data to combined dataset...")
+        combined_df = existing_df.copy()
+        print(f"Combined data after adding existing: {combined_df.shape}")
+        print(f"Sample combined data:")
+        if not combined_df.empty:
+            print(combined_df[['Test_Name', 'Result', 'Test_Date']].head(3).to_string())
+    else:
+        print(f"\nSTEP 3: No existing data to add (existing_df is empty)")
+    
+    # Step 4: Add new PDF data if available
+    if new_pdf_data_list:
+        print(f"\nSTEP 4: Processing {len(new_pdf_data_list)} new PDF datasets...")
+        new_data_df = pd.concat(new_pdf_data_list, ignore_index=True)
+        print(f"New PDF data shape: {new_data_df.shape}")
+        
+        if not combined_df.empty:
+            print("STEP 4a: Combining existing + new data...")
+            
+            # Show column comparison
+            existing_cols = set(combined_df.columns)
+            new_cols = set(new_data_df.columns)
+            print(f"Existing columns: {len(existing_cols)}")
+            print(f"New columns: {len(new_cols)}")
+            print(f"Common columns: {len(existing_cols & new_cols)}")
+            print(f"Missing from existing: {new_cols - existing_cols}")
+            print(f"Missing from new: {existing_cols - new_cols}")
+            
+            # Ensure both dataframes have the same columns
+            all_columns = list(existing_cols | new_cols)
+            
+            # Add missing columns to both dataframes
+            for col in all_columns:
+                if col not in combined_df.columns:
+                    combined_df[col] = 'N/A'
+                    print(f"Added column '{col}' to existing data")
+                if col not in new_data_df.columns:
+                    new_data_df[col] = 'N/A'
+                    print(f"Added column '{col}' to new data")
+            
+            # Reorder columns to match
+            combined_df = combined_df[all_columns]
+            new_data_df = new_data_df[all_columns]
+            
+            print(f"Before concat - Combined: {combined_df.shape}, New: {new_data_df.shape}")
+            
+            # Combine the data
+            combined_df = pd.concat([combined_df, new_data_df], ignore_index=True)
+            print(f"After concat - Final combined data shape: {combined_df.shape}")
+            
+        else:
+            print("STEP 4b: No existing data, using only new PDF data...")
+            combined_df = new_data_df
+    else:
+        print(f"\nSTEP 4: No new PDF data to add...")
+    
+    # Step 5: Final validation
+    print(f"\nSTEP 5: Final validation")
+    print(f"Final combined data shape: {combined_df.shape}")
+    
+    if not combined_df.empty:
+        print("Sample final data:")
+        print(combined_df[['Source_Filename', 'Test_Name', 'Result', 'Test_Date']].head(5).to_string())
+        
+        # Check data sources
+        source_counts = combined_df['Source_Filename'].value_counts()
+        print(f"\nData sources breakdown:")
+        for source, count in source_counts.items():
+            print(f"  {source}: {count} records")
+    else:
+        print("WARNING: Final combined data is EMPTY!")
+    
+    # Smart consolidation of patient info
+    final_patient_info = smart_consolidate_patient_info(existing_patient_info, new_patient_info_list)
+    
+    print(f"\n=== FINAL RESULTS ===")
+    print(f"Combined data shape: {combined_df.shape}")
+    print(f"Patient info: {final_patient_info}")
+    print("=== END DEBUG WORKFLOW ===\n")
+    
+    return combined_df, final_patient_info
+
+# Replace the existing parse_date_dd_mm_yyyy function if it has issues
+def parse_date_dd_mm_yyyy(date_str):
+    """FIXED: Parse date string ensuring DD/MM/YYYY format"""
+    if not date_str or pd.isna(date_str) or date_str in ['N/A', '']:
+        return None
+    
+    # Convert to string in case it's not already
+    date_str = str(date_str).strip()
+    
+    try:
+        # First try to parse as DD/MM/YYYY
+        return pd.to_datetime(date_str, format='%d/%m/%Y', errors='raise')
+    except:
+        try:
+            # Try DD-MM-YYYY
+            return pd.to_datetime(date_str, format='%d-%m-%Y', errors='raise')
+        except:
+            try:
+                # Try DD.MM.YYYY
+                return pd.to_datetime(date_str, format='%d.%m.%Y', errors='raise')
+            except:
+                try:
+                    # If all else fails, try to parse and assume it's in DD/MM/YYYY format
+                    # Force dayfirst=True to ensure DD/MM/YYYY interpretation
+                    return pd.to_datetime(date_str, dayfirst=True, errors='raise')
+                except:
+                    print(f"Could not parse date: {date_str}")
+                    return None
 
