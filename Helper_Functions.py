@@ -1843,90 +1843,7 @@ def process_pivoted_excel_data(df, filename, new_patient_info_list):
     else:
         return pd.DataFrame(), {}
 
-def process_existing_excel_csv(uploaded_excel_file, new_patient_info_list):
-    """
-    FIXED: Handle the exact Excel structure from your screenshot
-    """
-    try:
-        filename = uploaded_excel_file.name
-        print(f"Processing file: {filename}")
-        
-        # Read the file
-        if filename.endswith('.csv'):
-            df = pd.read_csv(uploaded_excel_file)
-            print(f"✓ Read CSV: {df.shape}")
-        else:
-            # For Excel - read the exact structure shown in your image
-            print("Reading Excel with your specific structure...")
-            
-            # Read the entire first sheet without skipping rows initially
-            full_df = pd.read_excel(uploaded_excel_file, sheet_name=0, header=None)
-            print(f"Full Excel shape: {full_df.shape}")
-            
-            # Extract the date row (row 2, index 1)
-            date_row = full_df.iloc[1, :].values
-            print(f"Date row: {date_row[:10]}...")  # Show first 10 values
-            
-            # Extract the lab row (row 3, index 2) 
-            lab_row = full_df.iloc[2, :].values
-            print(f"Lab row: {lab_row[:10]}...")  # Show first 10 values
-            
-            # Create column headers by combining date + lab
-            new_columns = []
-            for i, (date_val, lab_val) in enumerate(zip(date_row, lab_row)):
-                if i == 0:  # First column is Test_Category
-                    new_columns.append('Test_Category')
-                elif i == 1:  # Second column is Test_Name
-                    new_columns.append('Test_Name')
-                else:  # Data columns - combine date_lab
-                    date_str = str(date_val).strip() if not pd.isna(date_val) else ""
-                    lab_str = str(lab_val).strip() if not pd.isna(lab_val) else ""
-                    
-                    # Create column name as date_lab
-                    if date_str and date_str != 'nan' and lab_str and lab_str != 'nan':
-                        col_name = f"{date_str}_{lab_str}"
-                    elif date_str and date_str != 'nan':
-                        col_name = date_str
-                    else:
-                        col_name = f"Col_{i}"
-                    
-                    new_columns.append(col_name)
-            
-            print(f"Created column names: {new_columns[:10]}...")
-            
-            # Extract the actual data (starting from row 5, index 4)
-            data_df = full_df.iloc[4:].copy()
-            
-            # Set the new column names
-            data_df.columns = new_columns[:len(data_df.columns)]
-            
-            # Remove completely empty rows
-            data_df = data_df.dropna(how='all').reset_index(drop=True)
-            
-            df = data_df
-            print(f"✓ Processed Excel structure: {df.shape}")
-            print(f"Columns: {list(df.columns)[:5]}...")
-        
-        if df is None or df.empty:
-            print("❌ Could not extract any data")
-            return pd.DataFrame(), {}
-        
-        # Show what we extracted
-        print(f"Final dataframe shape: {df.shape}")
-        print(f"Sample data:")
-        print(df[['Test_Category', 'Test_Name']].head(3).to_string())
-        
-        # Process as pivoted format (since that's what your Excel structure is)
-        return process_excel_pivoted_format(df, filename, new_patient_info_list)
-        
-    except Exception as e:
-        print(f"❌ Error processing file: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
-        return pd.DataFrame(), {}
 
-
-# Add this NEW simple function for processing pivoted data:
 
 def process_pivoted_excel_data_simple(df, filename, new_patient_info_list):
     """
@@ -2127,6 +2044,238 @@ def process_excel_pivoted_format(df, filename, new_patient_info_list):
         print(f"   - {len(result_df)} total records")
         print(f"   - Patient: {patient_info.get('name', 'N/A')}")
         print(f"   - Date range: {result_df['Test_Date'].min()} to {result_df['Test_Date'].max()}")
+        
+        return result_df, patient_info
+    else:
+        print("❌ No data rows created from Excel")
+        return pd.DataFrame(), {}
+
+def process_existing_excel_csv(uploaded_excel_file, new_patient_info_list):
+    """
+    FIXED: Handle the exact Excel structure from your screenshot without creating unwanted columns
+    """
+    try:
+        filename = uploaded_excel_file.name
+        print(f"Processing file: {filename}")
+        
+        # Read the file
+        if filename.endswith('.csv'):
+            df = pd.read_csv(uploaded_excel_file)
+            print(f"✓ Read CSV: {df.shape}")
+        else:
+            # For Excel - read the exact structure shown in your image
+            print("Reading Excel with your specific structure...")
+            
+            # Read the entire first sheet without skipping rows initially
+            full_df = pd.read_excel(uploaded_excel_file, sheet_name=0, header=None)
+            print(f"Full Excel shape: {full_df.shape}")
+            
+            # Extract the date row (row 2, index 1)
+            date_row = full_df.iloc[1, :].values
+            print(f"Date row: {date_row[:10]}...")  # Show first 10 values
+            
+            # Extract the lab row (row 3, index 2) 
+            lab_row = full_df.iloc[2, :].values
+            print(f"Lab row: {lab_row[:10]}...")  # Show first 10 values
+            
+            # Create column headers by combining date + lab
+            new_columns = []
+            for i, (date_val, lab_val) in enumerate(zip(date_row, lab_row)):
+                if i == 0:  # First column is Test_Category
+                    new_columns.append('Test_Category')
+                elif i == 1:  # Second column is Test_Name
+                    new_columns.append('Test_Name')
+                else:  # Data columns - combine date_lab
+                    date_str = str(date_val).strip() if not pd.isna(date_val) else ""
+                    lab_str = str(lab_val).strip() if not pd.isna(lab_val) else ""
+                    
+                    # FIXED: Skip columns that are not actual data columns
+                    # Skip if both date and lab are empty or contain unwanted values
+                    if (not date_str or date_str.lower() in ['nan', 'col', '', 'reference', 'ranges']) and \
+                       (not lab_str or lab_str.lower() in ['nan', '7', '', 'reference', 'ranges']):
+                        continue
+                    
+                    # Skip if this looks like a reference range column header
+                    if 'reference' in date_str.lower() or 'reference' in lab_str.lower():
+                        new_columns.append('Reference_Ranges')  # Keep as reference column, don't treat as data
+                        continue
+                    
+                    # Create column name as date_lab for actual data columns
+                    if date_str and date_str != 'nan' and lab_str and lab_str != 'nan':
+                        col_name = f"{date_str}_{lab_str}"
+                    elif date_str and date_str != 'nan':
+                        col_name = date_str
+                    else:
+                        continue  # Skip this column entirely
+                    
+                    new_columns.append(col_name)
+            
+            print(f"Created column names: {new_columns}")
+            
+            # Extract the actual data (starting from row 5, index 4)
+            data_df = full_df.iloc[4:].copy()
+            
+            # FIXED: Only keep the columns we actually want
+            data_df = data_df.iloc[:, :len(new_columns)]  # Trim to match our column count
+            
+            # Set the new column names
+            data_df.columns = new_columns
+            
+            # Remove completely empty rows
+            data_df = data_df.dropna(how='all').reset_index(drop=True)
+            
+            df = data_df
+            print(f"✓ Processed Excel structure: {df.shape}")
+            print(f"Final columns: {list(df.columns)}")
+        
+        if df is None or df.empty:
+            print("❌ Could not extract any data")
+            return pd.DataFrame(), {}
+        
+        # Show what we extracted
+        print(f"Final dataframe shape: {df.shape}")
+        print(f"Sample data:")
+        if not df.empty and len(df.columns) >= 2:
+            print(df[['Test_Category', 'Test_Name']].head(3).to_string())
+        
+        # Process as pivoted format (since that's what your Excel structure is)
+        return process_excel_pivoted_format_fixed(df, filename, new_patient_info_list)
+        
+    except Exception as e:
+        print(f"❌ Error processing file: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return pd.DataFrame(), {}
+
+
+def process_excel_pivoted_format_fixed(df, filename, new_patient_info_list):
+    """
+    FIXED: Process the pivoted Excel format without including unwanted columns
+    """
+    print(f"Processing Excel pivoted format: {df.shape}")
+    print(f"All columns in dataframe: {list(df.columns)}")
+    
+    # Get data columns - exclude Test_Category, Test_Name, and Reference_Ranges
+    data_cols = []
+    excluded_cols = []
+    
+    for col in df.columns:
+        col_str = str(col).lower()
+        
+        # Skip the main structural columns
+        if col in ['Test_Category', 'Test_Name']:
+            continue
+            
+        # Skip reference range columns
+        if ('reference' in col_str and 'range' in col_str) or col_str in ['reference_ranges', 'ref_range']:
+            excluded_cols.append(col)
+            continue
+            
+        # Skip columns that look like unwanted metadata
+        if col_str in ['col', 'column', 'unnamed'] or col_str.startswith('unnamed'):
+            excluded_cols.append(col)
+            continue
+            
+        # This should be a data column
+        data_cols.append(col)
+    
+    print(f"Data columns to process: {data_cols}")
+    print(f"Excluded columns: {excluded_cols}")
+    
+    normalized_rows = []
+    
+    for idx, row in df.iterrows():
+        test_category = str(row.get('Test_Category', 'General')).strip()
+        test_name = str(row.get('Test_Name', '')).strip()
+        
+        # Skip if no valid test name
+        if not test_name or test_name.lower() in ['nan', 'test_name', ''] or pd.isna(test_name):
+            continue
+        
+        # Get reference range if available
+        ref_range = 'N/A'
+        if 'Reference_Ranges' in df.columns:
+            ref_range = str(row.get('Reference_Ranges', 'N/A')).strip()
+            if ref_range.lower() in ['nan', ''] or pd.isna(ref_range):
+                ref_range = 'N/A'
+        
+        # Process each data column
+        for col in data_cols:
+            value = row[col]
+            
+            # Skip empty values
+            if pd.isna(value) or str(value).strip() in ['', 'None', 'nan']:
+                continue
+            
+            # Parse date and lab from column name
+            col_str = str(col)
+            if '_' in col_str:
+                parts = col_str.split('_', 1)
+                date_part = parts[0]
+                lab_part = parts[1] if len(parts) > 1 else 'Lab'
+            else:
+                date_part = col_str
+                lab_part = 'Lab'
+            
+            # Use patient info from PDFs if available
+            if new_patient_info_list:
+                latest_info = new_patient_info_list[-1]
+                patient_name = latest_info.get('name', 'Patient')
+                patient_age = latest_info.get('age', 'N/A')
+                patient_gender = latest_info.get('gender', 'N/A')
+                patient_id = latest_info.get('patient_id', 'N/A')
+            else:
+                patient_name = extract_patient_info_from_excel_filename(filename)
+                patient_age = 'N/A'
+                patient_gender = 'N/A'
+                patient_id = 'N/A'
+            
+            # Create normalized row
+            normalized_row = {
+                'Source_Filename': filename,
+                'Patient_ID': patient_id,
+                'Patient_Name': patient_name,
+                'Age': patient_age,
+                'Gender': patient_gender,
+                'Test_Date': date_part,
+                'Lab_Name': lab_part,
+                'Test_Category': test_category,
+                'Original_Test_Name': test_name,
+                'Test_Name': test_name,
+                'Result': str(value),
+                'Unit': 'N/A',
+                'Reference_Range': ref_range,  # Use the reference range from the Excel file
+                'Status': 'N/A',
+                'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'Result_Numeric': pd.to_numeric(value, errors='coerce'),
+                'Test_Date_dt': parse_date_dd_mm_yyyy(date_part)
+            }
+            
+            normalized_rows.append(normalized_row)
+    
+    print(f"✅ Created {len(normalized_rows)} normalized rows from Excel")
+    
+    if normalized_rows:
+        result_df = pd.DataFrame(normalized_rows)
+        
+        # Create patient info
+        if new_patient_info_list:
+            patient_info = new_patient_info_list[-1].copy()
+        else:
+            patient_info = {
+                'name': patient_name if 'patient_name' in locals() else 'Patient',
+                'age': patient_age if 'patient_age' in locals() else 'N/A',
+                'gender': patient_gender if 'patient_gender' in locals() else 'N/A',
+                'patient_id': patient_id if 'patient_id' in locals() else 'N/A',
+                'date': date_part if 'date_part' in locals() else 'N/A',
+                'lab_name': lab_part if 'lab_part' in locals() else 'N/A'
+            }
+        
+        print(f"✅ Successfully processed Excel data:")
+        print(f"   - {len(result_df)} total records")
+        print(f"   - Patient: {patient_info.get('name', 'N/A')}")
+        if not result_df.empty:
+            print(f"   - Date range: {result_df['Test_Date'].min()} to {result_df['Test_Date'].max()}")
         
         return result_df, patient_info
     else:
