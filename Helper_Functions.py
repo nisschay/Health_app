@@ -149,10 +149,11 @@ def init_gemini_models(api_key_for_gemini):
         
         genai.configure(api_key=api_key_for_gemini)
         
+       
+        # Note: gemini-3.0-flash is the latest available model as of Dec 2025
         gemini_model_extraction = genai.GenerativeModel('gemini-2.5-flash')
         gemini_model_chat = genai.GenerativeModel('gemini-2.5-flash')
         
-        st.success("Successfully connected to Gemini API")
         return True
     except Exception as e:
         st.error(f"Error configuring Gemini: {e}. Please ensure your API key is correct and valid.")
@@ -2281,3 +2282,809 @@ def process_excel_pivoted_format_fixed(df, filename, new_patient_info_list):
     else:
         print("❌ No data rows created from Excel")
         return pd.DataFrame(), {}
+
+
+# =========================================
+# HEALTH INSIGHTS DASHBOARD FUNCTIONS
+# =========================================
+
+def calculate_health_score(df):
+    """
+    Calculate an overall health score based on test results.
+    Returns a score from 0-100 and breakdown by category.
+    """
+    if df.empty:
+        return {'overall_score': 0, 'category_scores': {}, 'concerns': []}
+    
+    # Count status distribution
+    status_counts = df['Status'].value_counts().to_dict()
+    total_tests = len(df)
+    
+    # Weights for different statuses
+    status_weights = {
+        'Normal': 100,
+        'N/A': 80,  # Unknown is neutral
+        'Low': 60,
+        'High': 40,
+        'Critical': 10,
+        'Positive': 30,  # For disease markers
+        'Negative': 100  # For disease markers - good
+    }
+    
+    # Calculate weighted score
+    weighted_sum = 0
+    for status, count in status_counts.items():
+        status_clean = str(status).strip().title()
+        weight = status_weights.get(status_clean, 70)
+        weighted_sum += weight * count
+    
+    overall_score = int(weighted_sum / total_tests) if total_tests > 0 else 0
+    
+    # Calculate scores by category
+    category_scores = {}
+    for category in df['Test_Category'].unique():
+        if pd.isna(category) or category == 'N/A':
+            continue
+        cat_df = df[df['Test_Category'] == category]
+        cat_total = len(cat_df)
+        if cat_total == 0:
+            continue
+        
+        cat_weighted_sum = 0
+        for _, row in cat_df.iterrows():
+            status = str(row.get('Status', 'N/A')).strip().title()
+            weight = status_weights.get(status, 70)
+            cat_weighted_sum += weight
+        
+        category_scores[category] = {
+            'score': int(cat_weighted_sum / cat_total),
+            'total_tests': cat_total,
+            'abnormal_count': len(cat_df[cat_df['Status'].isin(['High', 'Low', 'Critical', 'Positive'])])
+        }
+    
+    # Identify concerns (tests with abnormal values)
+    concerns = []
+    abnormal_df = df[df['Status'].isin(['High', 'Low', 'Critical', 'Positive'])]
+    for _, row in abnormal_df.iterrows():
+        concerns.append({
+            'test_name': row.get('Test_Name', 'Unknown'),
+            'result': row.get('Result', 'N/A'),
+            'status': row.get('Status', 'N/A'),
+            'reference': row.get('Reference_Range', 'N/A'),
+            'category': row.get('Test_Category', 'N/A'),
+            'date': row.get('Test_Date', 'N/A')
+        })
+    
+    return {
+        'overall_score': overall_score,
+        'category_scores': category_scores,
+        'concerns': concerns
+    }
+
+
+def get_body_system_analysis(df):
+    """
+    Analyze health by body system with concern levels.
+    Returns sorted list from most concerning to least.
+    """
+    if df.empty:
+        return []
+    
+    body_systems = {}
+    
+    for category in df['Test_Category'].unique():
+        if pd.isna(category) or category == 'N/A':
+            continue
+            
+        cat_df = df[df['Test_Category'] == category]
+        
+        # Get body parts for this category
+        body_parts = TEST_CATEGORY_TO_BODY_PARTS.get(category, ['General'])
+        
+        for body_part in body_parts:
+            if body_part not in body_systems:
+                body_systems[body_part] = {
+                    'tests': [],
+                    'abnormal_count': 0,
+                    'total_count': 0,
+                    'categories': set()
+                }
+            
+            body_systems[body_part]['categories'].add(category)
+            body_systems[body_part]['total_count'] += len(cat_df)
+            
+            abnormal = cat_df[cat_df['Status'].isin(['High', 'Low', 'Critical', 'Positive'])]
+            body_systems[body_part]['abnormal_count'] += len(abnormal)
+            
+            for _, row in cat_df.iterrows():
+                body_systems[body_part]['tests'].append({
+                    'name': row.get('Test_Name', 'Unknown'),
+                    'result': row.get('Result', 'N/A'),
+                    'status': row.get('Status', 'N/A'),
+                    'category': category
+                })
+    
+    # Calculate concern level for each body system
+    # CRITICAL: Only flag systems where >= 50% of tests are abnormal
+    # This prevents over-alarming patients with misleading visual indicators
+    result = []
+    for system, data in body_systems.items():
+        if data['total_count'] == 0:
+            continue
+            
+        abnormal_ratio = data['abnormal_count'] / data['total_count']
+        
+        # MEDICAL LOGIC: Only flag if >= 50% abnormal (strict threshold)
+        if abnormal_ratio >= 0.50:
+            concern_level = 'flagged'
+            concern_score = 2
+        else:
+            concern_level = 'normal'
+            concern_score = 1
+        
+        result.append({
+            'system': system,
+            'emoji': BODY_PARTS_TO_EMOJI.get(system, '📊'),
+            'concern_level': concern_level,
+            'concern_score': concern_score,
+            'abnormal_count': data['abnormal_count'],
+            'total_count': data['total_count'],
+            'abnormal_ratio': abnormal_ratio,
+            'categories': list(data['categories']),
+            'tests': data['tests']
+        })
+    
+    # Sort by concern score (highest first), then by abnormal count
+    result.sort(key=lambda x: (-x['concern_score'], -x['abnormal_count']))
+    
+    return result
+
+
+def create_normalized_chart(df, test_name, height=300):
+    """
+    Create a normalized chart that handles different value ranges gracefully.
+    Uses percentage of reference range for normalization.
+    """
+    test_data = df[df['Test_Name'] == test_name].copy()
+    
+    if test_data.empty:
+        return None
+    
+    test_data = test_data.sort_values('Test_Date_dt')
+    test_data = test_data[test_data['Result_Numeric'].notna()]
+    
+    if len(test_data) == 0:
+        return None
+    
+    fig = go.Figure()
+    
+    # Get reference range
+    ref_range_str = test_data.iloc[-1].get('Reference_Range', '')
+    low_ref, high_ref, ref_type = parse_reference_range(ref_range_str)
+    
+    # Format dates for display
+    test_data['Date_Display'] = test_data['Test_Date_dt'].apply(
+        lambda x: format_date_dd_mm_yyyy(x) if pd.notna(x) else 'N/A'
+    )
+    
+    # Create normalized values (percentage of reference range midpoint)
+    if ref_type == 'range' and low_ref is not None and high_ref is not None:
+        ref_mid = (low_ref + high_ref) / 2
+        test_data['Normalized'] = (test_data['Result_Numeric'] / ref_mid) * 100
+        y_label = "% of Normal"
+        
+        # Reference lines at normalized positions
+        low_norm = (low_ref / ref_mid) * 100
+        high_norm = (high_ref / ref_mid) * 100
+        
+        fig.add_hline(y=high_norm, line_dash="dash", line_color="#ef4444", 
+                      annotation_text="Upper Limit", annotation_position="bottom right")
+        fig.add_hline(y=low_norm, line_dash="dash", line_color="#22c55e",
+                      annotation_text="Lower Limit", annotation_position="top right")
+        fig.add_hrect(y0=low_norm, y1=high_norm, fillcolor="#22c55e", opacity=0.1)
+        
+        y_values = test_data['Normalized']
+    else:
+        # Just use the actual values
+        y_values = test_data['Result_Numeric']
+        y_label = "Value"
+    
+    # Determine color based on latest status
+    latest_status = test_data.iloc[-1].get('Status', 'N/A')
+    if latest_status in ['High', 'Low', 'Critical']:
+        line_color = '#ef4444'
+    elif latest_status == 'Normal':
+        line_color = '#22c55e'
+    else:
+        line_color = '#a855f7'
+    
+    # Add the line trace
+    fig.add_trace(go.Scatter(
+        x=test_data['Date_Display'],
+        y=y_values,
+        mode='lines+markers',
+        name=test_name,
+        line=dict(color=line_color, width=3),
+        marker=dict(size=10, color=line_color),
+        hovertemplate='<b>%{x}</b><br>Value: %{customdata:.2f}<extra></extra>',
+        customdata=test_data['Result_Numeric']
+    ))
+    
+    # Style the chart - using correct Plotly syntax (no deprecated titlefont)
+    fig.update_layout(
+        title=dict(text=test_name, font=dict(size=14, color='#f5f5f5')),
+        xaxis=dict(
+            title=dict(text='Date', font=dict(color='#a3a3a3')),
+            showgrid=True,
+            gridcolor='rgba(255,255,255,0.08)',
+            tickfont=dict(color='#a3a3a3')
+        ),
+        yaxis=dict(
+            title=dict(text=y_label, font=dict(color='#a3a3a3')),
+            showgrid=True,
+            gridcolor='rgba(255,255,255,0.08)',
+            tickfont=dict(color='#a3a3a3')
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        height=height,
+        margin=dict(l=40, r=20, t=40, b=40),
+        showlegend=False,
+        font=dict(color='#f5f5f5')
+    )
+    
+    return fig
+
+
+def generate_health_summary_with_ai(df, patient_info, api_key):
+    """
+    Generate an AI-powered health summary for the PDF report.
+    """
+    global gemini_model_chat
+    if not gemini_model_chat:
+        init_gemini_models(api_key)
+    
+    if df.empty:
+        return "No data available for analysis."
+    
+    # Prepare summary data
+    health_data = calculate_health_score(df)
+    body_systems = get_body_system_analysis(df)
+    
+    # Create a concise data summary for the AI
+    data_summary = f"""
+Patient: {patient_info.get('name', 'N/A')}, Age: {patient_info.get('age', 'N/A')}, Gender: {patient_info.get('gender', 'N/A')}
+Overall Health Score: {health_data['overall_score']}/100
+
+Test Results Summary:
+"""
+    
+    for category, scores in health_data['category_scores'].items():
+        data_summary += f"- {category}: Score {scores['score']}/100, {scores['abnormal_count']} abnormal out of {scores['total_tests']} tests\n"
+    
+    if health_data['concerns']:
+        data_summary += "\nAbnormal Results:\n"
+        for concern in health_data['concerns'][:10]:  # Limit to top 10
+            data_summary += f"- {concern['test_name']}: {concern['result']} ({concern['status']}) - Ref: {concern['reference']}\n"
+    
+    prompt = f"""Based on this medical report data, provide a professional health summary suitable for a PDF report.
+Include:
+1. A brief overall health assessment (2-3 sentences)
+2. Key findings and areas of concern (if any)
+3. General recommendations (no specific medical advice)
+
+Keep the response concise, professional, and suitable for a patient to share with their doctor.
+Do not provide specific medical diagnoses or treatment recommendations.
+
+{data_summary}
+"""
+    
+    try:
+        response = gemini_model_chat.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Unable to generate AI summary: {str(e)}"
+
+
+def create_pdf_report(df, patient_info, api_key):
+    """
+    Generate a comprehensive PDF health report with charts and insights.
+    Returns PDF bytes.
+    """
+    from io import BytesIO
+    import base64
+    
+    # Get analysis data
+    health_data = calculate_health_score(df)
+    body_systems = get_body_system_analysis(df)
+    ai_summary = generate_health_summary_with_ai(df, patient_info, api_key)
+    
+    # Generate HTML for PDF
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Health Report - {patient_info.get('name', 'Patient')}</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+            
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            
+            body {{
+                font-family: 'Inter', -apple-system, sans-serif;
+                color: #1a1a1a;
+                line-height: 1.6;
+                padding: 40px;
+                max-width: 800px;
+                margin: 0 auto;
+            }}
+            
+            .header {{
+                text-align: center;
+                margin-bottom: 40px;
+                padding-bottom: 20px;
+                border-bottom: 3px solid #a855f7;
+            }}
+            
+            .header h1 {{
+                font-size: 28px;
+                color: #a855f7;
+                margin-bottom: 10px;
+            }}
+            
+            .header p {{
+                color: #666;
+                font-size: 14px;
+            }}
+            
+            .patient-info {{
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 15px;
+                margin-bottom: 30px;
+                background: #f8f9fa;
+                padding: 20px;
+                border-radius: 12px;
+            }}
+            
+            .patient-info-item {{
+                text-align: center;
+            }}
+            
+            .patient-info-item label {{
+                font-size: 12px;
+                color: #666;
+                text-transform: uppercase;
+                display: block;
+                margin-bottom: 5px;
+            }}
+            
+            .patient-info-item value {{
+                font-size: 16px;
+                font-weight: 600;
+                color: #1a1a1a;
+            }}
+            
+            .score-section {{
+                text-align: center;
+                margin: 30px 0;
+                padding: 30px;
+                background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+                border-radius: 16px;
+            }}
+            
+            .health-score {{
+                font-size: 72px;
+                font-weight: 700;
+                background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }}
+            
+            .score-label {{
+                font-size: 14px;
+                color: #666;
+                text-transform: uppercase;
+                letter-spacing: 2px;
+            }}
+            
+            .section {{
+                margin: 30px 0;
+            }}
+            
+            .section h2 {{
+                font-size: 20px;
+                color: #1a1a1a;
+                margin-bottom: 15px;
+                padding-bottom: 10px;
+                border-bottom: 2px solid #e9ecef;
+            }}
+            
+            .ai-summary {{
+                background: #f8f9fa;
+                padding: 20px;
+                border-radius: 12px;
+                border-left: 4px solid #a855f7;
+            }}
+            
+            .body-system {{
+                display: flex;
+                align-items: center;
+                padding: 15px;
+                margin: 10px 0;
+                border-radius: 10px;
+                background: #fff;
+                border: 1px solid #e9ecef;
+            }}
+            
+            .body-system.high {{
+                border-left: 4px solid #ef4444;
+                background: #fef2f2;
+            }}
+            
+            .body-system.medium {{
+                border-left: 4px solid #f97316;
+                background: #fff7ed;
+            }}
+            
+            .body-system.low {{
+                border-left: 4px solid #22c55e;
+                background: #f0fdf4;
+            }}
+            
+            .body-system-emoji {{
+                font-size: 24px;
+                margin-right: 15px;
+            }}
+            
+            .body-system-name {{
+                flex: 1;
+                font-weight: 600;
+            }}
+            
+            .body-system-stats {{
+                text-align: right;
+                font-size: 14px;
+                color: #666;
+            }}
+            
+            .concerns-table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 15px;
+            }}
+            
+            .concerns-table th {{
+                background: #f8f9fa;
+                padding: 12px;
+                text-align: left;
+                font-size: 12px;
+                text-transform: uppercase;
+                color: #666;
+                border-bottom: 2px solid #e9ecef;
+            }}
+            
+            .concerns-table td {{
+                padding: 12px;
+                border-bottom: 1px solid #e9ecef;
+            }}
+            
+            .status-badge {{
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            
+            .status-high {{
+                background: #fee2e2;
+                color: #dc2626;
+            }}
+            
+            .status-low {{
+                background: #fed7aa;
+                color: #ea580c;
+            }}
+            
+            .status-normal {{
+                background: #dcfce7;
+                color: #16a34a;
+            }}
+            
+            .footer {{
+                margin-top: 50px;
+                padding-top: 20px;
+                border-top: 1px solid #e9ecef;
+                text-align: center;
+                color: #999;
+                font-size: 12px;
+            }}
+            
+            @media print {{
+                body {{
+                    padding: 20px;
+                }}
+                .section {{
+                    page-break-inside: avoid;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>🏥 Health Report</h1>
+            <p>Generated on {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
+        </div>
+        
+        <div class="patient-info">
+            <div class="patient-info-item">
+                <label>Patient Name</label>
+                <value>{patient_info.get('name', 'N/A')}</value>
+            </div>
+            <div class="patient-info-item">
+                <label>Age</label>
+                <value>{patient_info.get('age', 'N/A')}</value>
+            </div>
+            <div class="patient-info-item">
+                <label>Gender</label>
+                <value>{patient_info.get('gender', 'N/A')}</value>
+            </div>
+            <div class="patient-info-item">
+                <label>Report Date</label>
+                <value>{patient_info.get('date', 'N/A')}</value>
+            </div>
+        </div>
+        
+        <div class="score-section">
+            <div class="score-label">Overall Health Score</div>
+            <div class="health-score">{health_data['overall_score']}</div>
+            <div class="score-label">out of 100</div>
+        </div>
+        
+        <div class="section">
+            <h2>📋 AI Health Summary</h2>
+            <div class="ai-summary">
+                {ai_summary.replace(chr(10), '<br>')}
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>🫀 Body Systems Analysis</h2>
+            <p style="color: #666; margin-bottom: 15px;">Ordered from most concerning to least concerning:</p>
+    """
+    
+    for system in body_systems:
+        concern_class = system['concern_level']
+        html_content += f"""
+            <div class="body-system {concern_class}">
+                <span class="body-system-emoji">{system['emoji']}</span>
+                <span class="body-system-name">{system['system']}</span>
+                <span class="body-system-stats">
+                    {system['abnormal_count']} / {system['total_count']} tests flagged
+                </span>
+            </div>
+        """
+    
+    html_content += """
+        </div>
+        
+        <div class="section">
+            <h2>⚠️ Items Requiring Attention</h2>
+    """
+    
+    if health_data['concerns']:
+        html_content += """
+            <table class="concerns-table">
+                <thead>
+                    <tr>
+                        <th>Test Name</th>
+                        <th>Result</th>
+                        <th>Reference</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+        """
+        
+        for concern in health_data['concerns']:
+            status_class = 'status-high' if concern['status'] in ['High', 'Critical'] else 'status-low'
+            html_content += f"""
+                <tr>
+                    <td><strong>{concern['test_name']}</strong></td>
+                    <td>{concern['result']}</td>
+                    <td>{concern['reference']}</td>
+                    <td><span class="status-badge {status_class}">{concern['status']}</span></td>
+                </tr>
+            """
+        
+        html_content += """
+                </tbody>
+            </table>
+        """
+    else:
+        html_content += """
+            <p style="color: #22c55e; padding: 20px; background: #f0fdf4; border-radius: 10px;">
+                ✅ All test results are within normal ranges. Keep up the good work!
+            </p>
+        """
+    
+    html_content += f"""
+        </div>
+        
+        <div class="footer">
+            <p><strong>Disclaimer:</strong> This report is for informational purposes only and should not be considered medical advice.</p>
+            <p>Always consult with a qualified healthcare provider for medical decisions.</p>
+            <p style="margin-top: 10px;">Generated by Medical Report Analyzer • {datetime.now().strftime('%Y')}</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return html_content
+
+
+def generate_health_insights_dashboard(df):
+    """
+    Generate a comprehensive health insights dashboard in Streamlit.
+    Shows body systems analysis with clinical, restrained design.
+    Uses 50% threshold for flagging - only truly concerning systems are highlighted.
+    """
+    import streamlit as st
+    
+    if df.empty:
+        st.warning("No data available for health insights.")
+        return
+    
+    # Calculate health score and body systems analysis
+    health_data = calculate_health_score(df)
+    body_systems = get_body_system_analysis(df)
+    
+    # Overall Health Score Card - CLEAN, NO GRADIENTS
+    score = health_data['overall_score']
+    if score >= 80:
+        score_color = "#10b981"
+        score_text = "Good"
+    elif score >= 60:
+        score_color = "#f59e0b"
+        score_text = "Fair"
+    else:
+        score_color = "#dc2626"
+        score_text = "Needs Review"
+    
+    # Clean, clinical score display - solid background, no text-shadow/glow
+    st.markdown(f"""
+    <div style='text-align: center; padding: 1.5rem; background: #1c1c1c; 
+                border-radius: 12px; margin-bottom: 1.5rem; border: 1px solid #2a2a2a;'>
+        <p style='font-size: 0.75rem; color: #737373; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;'>
+            Overall Health Score
+        </p>
+        <div style='font-size: 3rem; font-weight: 700; color: {score_color};'>
+            {score}
+        </div>
+        <p style='font-size: 1rem; color: {score_color}; font-weight: 500;'>{score_text}</p>
+        <p style='font-size: 0.75rem; color: #737373; margin-top: 0.5rem;'>
+            Based on {len(df)} test results across {len(health_data['category_scores'])} categories
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Body Systems Overview - CLINICAL DESIGN
+    st.markdown("### Body Systems Overview")
+    
+    # Count flagged vs normal systems for summary
+    flagged_count = sum(1 for s in body_systems if s['concern_level'] == 'flagged')
+    normal_count = len(body_systems) - flagged_count
+    
+    if flagged_count > 0:
+        st.markdown(f"<p style='color: #a3a3a3; margin-bottom: 1rem;'>{flagged_count} system(s) flagged for review (≥50% abnormal tests). {normal_count} system(s) within normal limits.</p>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<p style='color: #10b981; margin-bottom: 1rem;'>✓ All {len(body_systems)} body systems are within normal limits.</p>", unsafe_allow_html=True)
+    
+    if not body_systems:
+        st.info("No body system data available.")
+    else:
+        # Show flagged systems first (if any), then normal systems
+        flagged_systems = [s for s in body_systems if s['concern_level'] == 'flagged']
+        normal_systems = [s for s in body_systems if s['concern_level'] == 'normal']
+        
+        # Flagged systems - only these get visual emphasis
+        if flagged_systems:
+            st.markdown("#### ⚠️ Systems Requiring Attention")
+            for system in flagged_systems:
+                # Solid background with subtle left border - NO gradient
+                st.markdown(f"""
+                <div style='background: #1c1c1c; border-radius: 8px; padding: 1rem; 
+                            margin-bottom: 0.5rem; border: 1px solid #2a2a2a;
+                            border-left: 3px solid #dc2626;'>
+                    <div style='display: flex; align-items: center; gap: 0.75rem;'>
+                        <span style='font-size: 1.25rem;'>{system['emoji']}</span>
+                        <div style='flex: 1;'>
+                            <div style='font-weight: 600; color: #f5f5f5; font-size: 0.9rem;'>{system['system']}</div>
+                            <div style='font-size: 0.75rem; color: #dc2626;'>
+                                {system['abnormal_count']} of {system['total_count']} tests abnormal ({int(system['abnormal_ratio']*100)}%)
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        # Normal systems - muted, understated
+        if normal_systems:
+            with st.expander(f"✓ Normal Systems ({len(normal_systems)})", expanded=False):
+                cols = st.columns(min(len(normal_systems), 4))
+                for i, system in enumerate(normal_systems):
+                    col_idx = i % len(cols)
+                    with cols[col_idx]:
+                        # Very muted, calm display - solid colors only
+                        st.markdown(f"""
+                        <div style='background: #1c1c1c; border-radius: 8px; padding: 0.75rem; 
+                                    margin-bottom: 0.5rem; border: 1px solid #2a2a2a;
+                                    border-left: 3px solid #10b981;'>
+                            <div style='font-size: 1rem; margin-bottom: 0.25rem;'>{system['emoji']}</div>
+                            <div style='font-weight: 500; color: #a3a3a3; font-size: 0.8rem;'>{system['system']}</div>
+                            <div style='font-size: 0.7rem; color: #737373;'>
+                                {system['abnormal_count']}/{system['total_count']}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+        
+        # Expandable details for flagged systems only (to reduce visual clutter)
+        if flagged_systems:
+            st.markdown("#### Detailed Test Results")
+            for system in flagged_systems:
+                with st.expander(f"{system['emoji']} {system['system']} - {system['abnormal_count']}/{system['total_count']} abnormal"):
+                    tests_data = []
+                    for test in system['tests']:
+                        status = test.get('status', 'N/A')
+                        if status in ['High', 'Low', 'Critical']:
+                            status_badge = f"⚠️ {status}"
+                        elif status == 'Normal':
+                            status_badge = f"✓ Normal"
+                        else:
+                            status_badge = f"— {status}"
+                        
+                        tests_data.append({
+                            'Test': test['name'],
+                            'Result': test['result'],
+                            'Status': status_badge,
+                            'Category': test.get('category', 'N/A')
+                        })
+                    
+                    if tests_data:
+                        tests_df = pd.DataFrame(tests_data)
+                        st.dataframe(tests_df, use_container_width=True, hide_index=True)
+
+
+def generate_pdf_health_report(df, patient_info, api_key):
+    """
+    Generate a PDF health report and return bytes.
+    Uses HTML generation since ReportLab may not be installed.
+    """
+    from io import BytesIO
+    
+    # Generate HTML content
+    html_content = create_pdf_report(df, patient_info, api_key)
+    
+    # Try to use pdfkit if available, otherwise return HTML
+    try:
+        import pdfkit
+        pdf_bytes = pdfkit.from_string(html_content, False)
+        return pdf_bytes
+    except ImportError:
+        # pdfkit not available, try weasyprint
+        try:
+            from weasyprint import HTML
+            pdf_buffer = BytesIO()
+            HTML(string=html_content).write_pdf(pdf_buffer)
+            pdf_buffer.seek(0)
+            return pdf_buffer.getvalue()
+        except ImportError:
+            # Neither pdfkit nor weasyprint available
+            # Return HTML as bytes for download
+            return html_content.encode('utf-8')

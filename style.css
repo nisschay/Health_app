@@ -1,93 +1,479 @@
-/* Chat container styling */
-.stChatFloatingInputContainer {
-    margin-bottom: 20px;
-    background: #0e1117;
+/* =========================================
+   MEDICAL REPORT ANALYZER - CLINICAL UI
+   =========================================
+   Design Philosophy:
+   - Calm, minimal, clinical, trustworthy
+   - NO gradients on buttons, cards, tables
+   - Subtle background gradient only
+   - Muted colors, single accent
+   ========================================= */
+
+/* Import clean fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* Root variables - Restrained clinical palette */
+:root {
+    /* Primary accent - single restrained color */
+    --accent-color: #6366f1;
+    --accent-hover: #4f46e5;
+    --accent-muted: rgba(99, 102, 241, 0.1);
+    
+    /* Status colors - clinical */
+    --success-color: #10b981;
+    --warning-color: #f59e0b;
+    --danger-color: #dc2626;
+    
+    /* Backgrounds - charcoal/near-black */
+    --bg-primary: #0f0f0f;
+    --bg-secondary: #171717;
+    --bg-card: #1c1c1c;
+    --bg-card-hover: #242424;
+    --bg-muted: #262626;
+    
+    /* Text */
+    --text-primary: #f5f5f5;
+    --text-secondary: #a3a3a3;
+    --text-muted: #737373;
+    
+    /* Borders */
+    --border-color: #2a2a2a;
+    --border-hover: #404040;
+    
+    /* Spacing & radii */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    
+    /* Shadows - subtle */
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
+
+/* =========================================
+   GLOBAL STYLES - SUBTLE BACKGROUND GRADIENT
+   ========================================= */
+
+.stApp {
+    /* Only place where gradient is allowed - very subtle */
+    background: linear-gradient(180deg, #0a0a0a 0%, #0f0f0f 50%, #141414 100%) !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    color: var(--text-primary) !important;
+}
+
+/* Hide Streamlit branding */
+#MainMenu, footer, header {
+    visibility: hidden !important;
+}
+
+/* Main container */
+.main .block-container {
+    padding: 2rem 3rem !important;
+    max-width: 1300px !important;
+}
+
+/* =========================================
+   TYPOGRAPHY - Clean, readable
+   ========================================= */
+
+h1 {
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 700 !important;
+    font-size: 2rem !important;
+    color: var(--text-primary) !important;
+    margin-bottom: 0.5rem !important;
+}
+
+h2 {
+    font-family: 'Inter', sans-serif !important;
+    color: var(--text-primary) !important;
+    font-weight: 600 !important;
+    font-size: 1.25rem !important;
+}
+
+h3 {
+    font-family: 'Inter', sans-serif !important;
+    color: var(--text-secondary) !important;
+    font-weight: 600 !important;
+    font-size: 1rem !important;
+}
+
+p, span {
+    color: var(--text-secondary) !important;
+    font-size: 0.9rem !important;
+    line-height: 1.6 !important;
+}
+
+label {
+    color: var(--text-primary) !important;
+    font-size: 0.875rem !important;
+}
+
+/* =========================================
+   BUTTONS - SOLID, NO GRADIENTS
+   ========================================= */
+
+/* Default button - solid accent */
+.stButton > button {
+    background: var(--accent-color) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: var(--radius-md) !important;
+    padding: 0.75rem 1.5rem !important;
+    font-weight: 600 !important;
+    font-size: 0.9rem !important;
+    transition: background 0.2s ease, transform 0.1s ease !important;
+    box-shadow: none !important;
+}
+
+.stButton > button:hover {
+    background: var(--accent-hover) !important;
+    transform: translateY(-1px) !important;
+}
+
+.stButton > button:active {
+    transform: translateY(0) !important;
+}
+
+.stButton > button:focus {
+    outline: 2px solid var(--accent-color) !important;
+    outline-offset: 2px !important;
+}
+
+/* Primary button (Analyze) - solid indigo/blue, same as download button */
+button[kind="primary"], 
+.stButton > button[data-testid="baseButton-primary"] {
+    background: var(--accent-color) !important;
+    font-size: 1rem !important;
+    padding: 0.875rem 2rem !important;
+}
+
+button[kind="primary"]:hover, 
+.stButton > button[data-testid="baseButton-primary"]:hover {
+    background: var(--accent-hover) !important;
+}
+
+/* Secondary button */
+button[kind="secondary"],
+.stButton > button[data-testid="baseButton-secondary"] {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+button[kind="secondary"]:hover,
+.stButton > button[data-testid="baseButton-secondary"]:hover {
+    background: var(--bg-card-hover) !important;
+    border-color: var(--border-hover) !important;
+}
+
+/* Download button - solid, distinct */
+.stDownloadButton > button {
+    background: var(--accent-color) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: var(--radius-md) !important;
+    padding: 0.75rem 1.5rem !important;
+    font-weight: 600 !important;
+    box-shadow: none !important;
+}
+
+.stDownloadButton > button:hover {
+    background: var(--accent-hover) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* =========================================
+   CARDS & CONTAINERS - SOLID, MUTED
+   ========================================= */
+
+/* Metric cards - solid background, NO gradient */
+[data-testid="stMetric"] {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: 1.25rem !important;
+    box-shadow: var(--shadow-sm) !important;
+}
+
+[data-testid="stMetric"]:hover {
+    background: var(--bg-card-hover) !important;
+    border-color: var(--border-hover) !important;
+}
+
+[data-testid="stMetricLabel"] {
+    color: var(--text-muted) !important;
+    font-weight: 500 !important;
+    font-size: 0.75rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.05em !important;
+}
+
+[data-testid="stMetricValue"] {
+    color: var(--text-primary) !important;
+    font-weight: 600 !important;
+    font-size: 1.25rem !important;
+}
+
+/* Expander - solid */
+.stExpander {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--radius-md) !important;
+    overflow: hidden !important;
+    margin-bottom: 0.75rem !important;
+}
+
+.stExpander > div:first-child {
+    background: var(--bg-card) !important;
+    border-bottom: 1px solid var(--border-color) !important;
+}
+
+/* =========================================
+   FILE UPLOADER
+   ========================================= */
+
+[data-testid="stFileUploader"] {
+    background: var(--bg-card) !important;
+    border: 1px dashed var(--border-color) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 1.5rem !important;
+}
+
+[data-testid="stFileUploader"]:hover {
+    border-color: var(--accent-color) !important;
+    background: var(--accent-muted) !important;
+}
+
+/* =========================================
+   INPUTS & SELECTS
+   ========================================= */
+
+.stSelectbox > div > div {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--radius-sm) !important;
+    color: var(--text-primary) !important;
+}
+
+.stSelectbox > div > div:hover {
+    border-color: var(--border-hover) !important;
+}
+
+.stTextInput > div > div > input {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--radius-sm) !important;
+    color: var(--text-primary) !important;
+    padding: 0.75rem 1rem !important;
+}
+
+.stTextInput > div > div > input:focus {
+    border-color: var(--accent-color) !important;
+    box-shadow: 0 0 0 2px var(--accent-muted) !important;
+}
+
+/* Radio buttons */
+.stRadio > div {
+    background: var(--bg-card) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 0.75rem !important;
+    border: 1px solid var(--border-color) !important;
+}
+
+.stRadio label {
+    color: var(--text-primary) !important;
+}
+
+/* =========================================
+   CHAT INTERFACE
+   ========================================= */
 
 .stChatInputContainer {
-    background-color: #262730 !important;
-    border-radius: 15px;
-    padding: 10px;
-    border: 1px solid #4a4a4a;
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--radius-md) !important;
 }
 
-.stTextInput input {
-    color: white !important;
-    background-color: #262730 !important;
+.stChatInputContainer textarea {
+    color: var(--text-primary) !important;
+    background: transparent !important;
 }
 
-/* Button styling */
-.stButton button {
-    background-color: #262730;
-    color: white;
-    border: 1px solid #4a4a4a;
-    border-radius: 15px;
-    padding: 15px 20px;
-    transition: all 0.3s ease;
-    margin: 5px 0;
-    width: 100%;
-    text-align: left;
-}
-
-.stButton button:hover {
-    background-color: #e0e2e6;
-    transform: translateY(-2px);
-}
-
-/* Chat message styling */
 .stChatMessage {
-    padding: 15px;
-    border-radius: 15px;
-    margin: 10px 0;
-    background-color: #262730 !important;
-    border: 1px solid #4a4a4a;
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 1rem !important;
+    margin: 0.5rem 0 !important;
 }
 
-/* Style message content */
-.stChatMessage p {
-    color: #ffffff !important;
-    margin: 0;
-    padding: 0;
-}
-
-/* User message specific styling */
 [data-testid="chat-message-user"] {
-    background-color: #1e1e1e !important;
+    background: var(--accent-muted) !important;
+    border-color: var(--accent-color) !important;
 }
 
-/* Assistant message specific styling */
-[data-testid="chat-message-assistant"] {
-    background-color: #262730 !important;
+.stChatMessage p {
+    color: var(--text-primary) !important;
 }
 
-/* Avatar styling */
-[data-testid="chat-message-avatar"] {
-    background-color: transparent !important;
+/* =========================================
+   DATA TABLES - CLEAN, NO GRADIENTS
+   ========================================= */
+
+.stDataFrame {
+    background: var(--bg-card) !important;
+    border-radius: var(--radius-md) !important;
+    border: 1px solid var(--border-color) !important;
 }
 
-/* Header styling */
-h1 {
-    color: #1e88e5;
-    margin-bottom: 30px;
+.stDataFrame th {
+    background: var(--bg-muted) !important;
+    color: var(--text-primary) !important;
+    font-weight: 600 !important;
+    padding: 0.75rem !important;
+    font-size: 0.75rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.03em !important;
 }
 
-h5 {
-    color: #666;
-    margin: 20px 0 10px 0;
+.stDataFrame td {
+    background: var(--bg-card) !important;
+    color: var(--text-secondary) !important;
+    padding: 0.75rem !important;
+    border-bottom: 1px solid var(--border-color) !important;
 }
 
-/* Question buttons styling */
-.question-button {
-    margin: 5px;
-    padding: 10px;
-    border-radius: 10px;
-    background: #f8f9fa;
-    border: 1px solid #e9ecef;
-    transition: all 0.2s;
+.stDataFrame tr:hover td {
+    background: var(--bg-card-hover) !important;
 }
 
-.question-button:hover {
-    background: #e9ecef;
-    transform: translateY(-2px);
-    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+/* =========================================
+   PROGRESS & LOADING
+   ========================================= */
+
+.stProgress > div > div {
+    background: var(--accent-color) !important;
+    border-radius: 4px !important;
+}
+
+.stProgress > div {
+    background: var(--bg-muted) !important;
+    border-radius: 4px !important;
+}
+
+/* =========================================
+   ALERTS & MESSAGES
+   ========================================= */
+
+.stSuccess {
+    background: rgba(16, 185, 129, 0.1) !important;
+    border: 1px solid rgba(16, 185, 129, 0.2) !important;
+    border-left: 3px solid var(--success-color) !important;
+    border-radius: var(--radius-sm) !important;
+    color: var(--success-color) !important;
+}
+
+.stInfo {
+    background: rgba(99, 102, 241, 0.1) !important;
+    border: 1px solid rgba(99, 102, 241, 0.2) !important;
+    border-left: 3px solid var(--accent-color) !important;
+    border-radius: var(--radius-sm) !important;
+    color: var(--accent-color) !important;
+}
+
+.stWarning {
+    background: rgba(245, 158, 11, 0.1) !important;
+    border: 1px solid rgba(245, 158, 11, 0.2) !important;
+    border-left: 3px solid var(--warning-color) !important;
+    border-radius: var(--radius-sm) !important;
+    color: var(--warning-color) !important;
+}
+
+.stError {
+    background: rgba(220, 38, 38, 0.1) !important;
+    border: 1px solid rgba(220, 38, 38, 0.2) !important;
+    border-left: 3px solid var(--danger-color) !important;
+    border-radius: var(--radius-sm) !important;
+    color: var(--danger-color) !important;
+}
+
+/* =========================================
+   DIVIDERS
+   ========================================= */
+
+hr, [data-testid="stDivider"] {
+    border-color: var(--border-color) !important;
+    margin: 1.5rem 0 !important;
+    opacity: 0.6 !important;
+}
+
+/* =========================================
+   TABS - SOLID
+   ========================================= */
+
+.stTabs [data-baseweb="tab-list"] {
+    background: var(--bg-card) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 0.25rem !important;
+    gap: 0.25rem !important;
+}
+
+.stTabs [data-baseweb="tab"] {
+    background: transparent !important;
+    color: var(--text-secondary) !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 0.5rem 1rem !important;
+    font-weight: 500 !important;
+}
+
+.stTabs [aria-selected="true"] {
+    background: var(--accent-color) !important;
+    color: white !important;
+}
+
+/* =========================================
+   PLOTLY CHARTS - CLEAN
+   ========================================= */
+
+.js-plotly-plot .plotly {
+    background: transparent !important;
+}
+
+/* =========================================
+   RESPONSIVE
+   ========================================= */
+
+@media (max-width: 768px) {
+    .main .block-container {
+        padding: 1rem !important;
+    }
+    
+    h1 {
+        font-size: 1.5rem !important;
+    }
+    
+    [data-testid="stMetric"] {
+        padding: 0.875rem !important;
+    }
+    
+    .stButton > button {
+        padding: 0.625rem 1rem !important;
+        font-size: 0.875rem !important;
+    }
+}
+
+/* =========================================
+   ACCESSIBILITY
+   ========================================= */
+
+*:focus {
+    outline: 2px solid var(--accent-color) !important;
+    outline-offset: 2px !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation: none !important;
+        transition: none !important;
+    }
 }
