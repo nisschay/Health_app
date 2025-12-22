@@ -3064,27 +3064,101 @@ def generate_health_insights_dashboard(df):
 def generate_pdf_health_report(df, patient_info, api_key):
     """
     Generate a PDF health report and return bytes.
-    Uses HTML generation since ReportLab may not be installed.
+    Uses ReportLab for reliable PDF generation without system dependencies.
     """
     from io import BytesIO
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.colors import HexColor
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from datetime import datetime
     
-    # Generate HTML content
-    html_content = create_pdf_report(df, patient_info, api_key)
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, 
+                           rightMargin=0.75*inch, leftMargin=0.75*inch,
+                           topMargin=0.75*inch, bottomMargin=0.75*inch)
     
-    # Try to use pdfkit if available, otherwise return HTML
-    try:
-        import pdfkit
-        pdf_bytes = pdfkit.from_string(html_content, False)
-        return pdf_bytes
-    except ImportError:
-        # pdfkit not available, try weasyprint
-        try:
-            from weasyprint import HTML
-            pdf_buffer = BytesIO()
-            HTML(string=html_content).write_pdf(pdf_buffer)
-            pdf_buffer.seek(0)
-            return pdf_buffer.getvalue()
-        except ImportError:
-            # Neither pdfkit nor weasyprint available
-            # Return HTML as bytes for download
-            return html_content.encode('utf-8')
+    styles = getSampleStyleSheet()
+    
+    # Custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle', parent=styles['Heading1'],
+        fontSize=24, spaceAfter=30, textColor=HexColor('#1e293b'),
+        alignment=1  # Center
+    )
+    heading_style = ParagraphStyle(
+        'CustomHeading', parent=styles['Heading2'],
+        fontSize=14, spaceAfter=12, textColor=HexColor('#6366f1'),
+        spaceBefore=20
+    )
+    normal_style = ParagraphStyle(
+        'CustomNormal', parent=styles['Normal'],
+        fontSize=10, spaceAfter=6, textColor=HexColor('#374151')
+    )
+    
+    story = []
+    
+    # Title
+    story.append(Paragraph("Health Report", title_style))
+    story.append(Paragraph(f"Generated on {datetime.now().strftime('%B %d, %Y at %I:%M %p')}", normal_style))
+    story.append(Spacer(1, 20))
+    
+    # Patient Info
+    story.append(Paragraph("Patient Information", heading_style))
+    patient_name = patient_info.get('name', 'N/A') if patient_info else 'N/A'
+    patient_age = patient_info.get('age', 'N/A') if patient_info else 'N/A'
+    patient_gender = patient_info.get('gender', 'N/A') if patient_info else 'N/A'
+    story.append(Paragraph(f"<b>Name:</b> {patient_name}", normal_style))
+    story.append(Paragraph(f"<b>Age:</b> {patient_age}", normal_style))
+    story.append(Paragraph(f"<b>Gender:</b> {patient_gender}", normal_style))
+    story.append(Spacer(1, 15))
+    
+    # Test Results Table
+    story.append(Paragraph("Test Results Summary", heading_style))
+    
+    if df is not None and not df.empty:
+        # Build table data
+        table_data = [['Test Name', 'Value', 'Unit', 'Reference Range', 'Status']]
+        
+        for _, row in df.iterrows():
+            test_name = str(row.get('Test_Name', row.get('test_name', 'N/A')))[:30]
+            value = str(row.get('Value', row.get('value', 'N/A')))
+            unit = str(row.get('Unit', row.get('unit', '')))
+            ref_range = str(row.get('Reference_Range', row.get('reference_range', 'N/A')))
+            status = str(row.get('Status', row.get('status', 'Normal')))
+            table_data.append([test_name, value, unit, ref_range, status])
+        
+        # Create table
+        table = Table(table_data, colWidths=[2*inch, 0.8*inch, 0.6*inch, 1.5*inch, 0.8*inch])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), HexColor('#6366f1')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
+            ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#e5e7eb')),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#f9fafb')]),
+        ]))
+        story.append(table)
+    else:
+        story.append(Paragraph("No test results available.", normal_style))
+    
+    story.append(Spacer(1, 20))
+    
+    # Disclaimer
+    story.append(Paragraph("Disclaimer", heading_style))
+    disclaimer_text = """This report is generated by an AI-powered analysis tool and is intended 
+    for informational purposes only. It does not constitute medical advice, diagnosis, or treatment. 
+    Always consult with qualified healthcare professionals for medical decisions."""
+    story.append(Paragraph(disclaimer_text, normal_style))
+    
+    # Build PDF
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()

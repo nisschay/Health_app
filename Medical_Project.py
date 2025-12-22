@@ -492,23 +492,14 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
                     for c in st.session_state.consolidated_patient_info.get('name', 'health_report')
                 )
                 
-                # Determine file type and MIME
-                is_html = isinstance(report_bytes, bytes) and report_bytes.startswith(b'<!DOCTYPE html>')
-                if is_html:
-                    filename = f"health_report_{patient_name_for_file}.html"
-                    mime_type = 'text/html'
-                    label = "Download Health Report (HTML)"
-                else:
-                    filename = f"health_report_{patient_name_for_file}.pdf"
-                    mime_type = 'application/pdf'
-                    label = "Download Health Report (PDF)"
+                filename = f"health_report_{patient_name_for_file}.pdf"
                 
-                # SINGLE download button - no generate step needed
+                # SINGLE download button - generates valid PDF with reportlab
                 st.download_button(
-                    label=f"📥 {label}",
+                    label="📥 Download Health Report (PDF)",
                     data=report_bytes,
                     file_name=filename,
-                    mime=mime_type,
+                    mime='application/pdf',
                     use_container_width=True,
                     type="primary"
                 )
