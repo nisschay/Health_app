@@ -6,9 +6,15 @@ Handles text extraction with parallel processing and smart caching
 import io
 import hashlib
 import concurrent.futures
+import warnings
+import logging
 from typing import List, Dict, Tuple, Optional
 import PyPDF2
 import streamlit as st
+
+# Suppress PyPDF2 warnings for corrupted PDFs
+warnings.filterwarnings('ignore', category=PyPDF2.errors.PdfReadWarning)
+logging.getLogger('PyPDF2').setLevel(logging.ERROR)
 
 
 class PDFProcessor:
@@ -27,10 +33,15 @@ class PDFProcessor:
         """
         Extract text from PDF with optimized processing.
         Uses page-level parallelization for large PDFs.
+        Handles corrupted PDFs gracefully.
         """
         try:
             pdf_file = io.BytesIO(file_content)
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            
+            # Suppress warnings during PDF reading
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                pdf_reader = PyPDF2.PdfReader(pdf_file, strict=False)
             
             num_pages = len(pdf_reader.pages)
             
@@ -38,16 +49,28 @@ class PDFProcessor:
             if num_pages < 5:
                 text_parts = []
                 for page_num, page in enumerate(pdf_reader.pages):
-                    page_text = page.extract_text()
-                    if page_text:
-                        text_parts.append(f"\n--- Page {page_num+1} ---\n{page_text}")
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            page_text = page.extract_text()
+                        if page_text:
+                            text_parts.append(f"\n--- Page {page_num+1} ---\n{page_text}")
+                    except Exception:
+                        # Skip corrupted pages silently
+                        continue
                 text = "".join(text_parts)
             else:
                 # For larger PDFs, extract pages in parallel
                 def extract_page(args):
                     page_num, page = args
-                    page_text = page.extract_text()
-                    return (page_num, f"\n--- Page {page_num+1} ---\n{page_text}" if page_text else "")
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            page_text = page.extract_text()
+                        return (page_num, f"\n--- Page {page_num+1} ---\n{page_text}" if page_text else "")
+                    except Exception:
+                        # Skip corrupted pages silently
+                        return (page_num, "")
                 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                     results = list(executor.map(extract_page, enumerate(pdf_reader.pages)))
@@ -61,8 +84,13 @@ class PDFProcessor:
             
             return text
             
+        except PyPDF2.errors.PdfReadError:
+            # PDF is too corrupted - still return None but don't show error to user
+            return None
         except Exception as e:
-            st.error(f"Error reading PDF: {str(e)}")
+            # Only show error for unexpected issues
+            if "Invalid Elementary Object" not in str(e):
+                st.error(f"Error reading PDF: {str(e)}")
             return None
     
     @classmethod

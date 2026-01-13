@@ -14,8 +14,8 @@
 /* Root variables - Restrained clinical palette */
 :root {
     /* Primary accent - single restrained color */
-    --accent-color: #6366f1;
-    --accent-hover: #4f46e5;
+    --accent-color: #ffffff;
+    --accent-hover: #cac9cf;
     --accent-muted: rgba(99, 102, 241, 0.1);
     
     /* Status colors - clinical */
