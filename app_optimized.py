@@ -29,6 +29,7 @@ from core.data_processor import DataProcessor
 from core.patient_info import PatientInfoManager
 from core.visualization import VisualizationManager, CATEGORY_TO_BODY_PARTS, BODY_PART_EMOJIS
 from core.report_generator import ReportGenerator
+from core.performance_tracker import PerformanceTracker
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI
 from unify_test_names import unify_test_names
 
@@ -80,6 +81,10 @@ if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'raw_texts' not in st.session_state:
     st.session_state.raw_texts = []
+if 'performance_tracker' not in st.session_state:
+    st.session_state.performance_tracker = PerformanceTracker()
+if 'corrupted_files' not in st.session_state:
+    st.session_state.corrupted_files = []
 
 
 # --- Upload Section ---
@@ -147,6 +152,11 @@ if analyze_button:
     total_steps = (len(uploaded_files) if uploaded_files else 0) * 2 + 3
     current_step = 0
     
+    # Initialize performance tracker for this session
+    tracker = st.session_state.performance_tracker
+    tracker.start_session(len(uploaded_files) if uploaded_files else 0)
+    st.session_state.corrupted_files = []
+    
     # STEP 1: Extract text from all PDFs in PARALLEL
     if uploaded_files:
         status_text.info("📄 Extracting text from PDFs (parallel processing)...")
@@ -159,6 +169,18 @@ if analyze_button:
         
         # Parallel extraction - MAJOR SPEEDUP
         extraction_results = PDFProcessor.process_multiple_pdfs_parallel(pdf_data)
+        
+        # Track extraction results and identify corrupted files
+        for result in extraction_results:
+            tracker.start_pdf(result['name'])
+            if result['success'] and result['text']:
+                tracker.log_extraction_complete(result['name'], len(result['text']))
+            else:
+                tracker.log_extraction_complete(result['name'], 0, error=result.get('error', 'Unknown error'))
+                st.session_state.corrupted_files.append({
+                    'name': result['name'],
+                    'error': result.get('error', 'Could not extract text from PDF')
+                })
         
         current_step += len(uploaded_files)
         progress_bar.progress(current_step / total_steps, text="📄 PDF text extracted")
@@ -183,7 +205,10 @@ if analyze_button:
                 )
                 
                 # Analyze with AI
+                import time
+                ai_start = time.time()
                 ai_result = AIAnalyzer.analyze_report(result['text'], api_key)
+                ai_duration = time.time() - ai_start
                 
                 if ai_result:
                     df, patient_info = DataProcessor.create_dataframe_from_ai_result(
@@ -191,10 +216,12 @@ if analyze_button:
                     )
                     if not df.empty:
                         all_dfs.append(df)
+                        tracker.log_ai_complete(result['name'], len(df), ai_duration)
                     if patient_info:
                         all_patient_infos.append(patient_info)
-                    status_text.success(f"✅ {result['name']} analyzed")
+                    status_text.success(f"✅ {result['name']} analyzed ({ai_duration:.1f}s)")
                 else:
+                    tracker.log_ai_complete(result['name'], 0, ai_duration, error="AI analysis failed")
                     status_text.warning(f"⚠️ Could not analyze {result['name']}")
             else:
                 status_text.error(f"❌ Failed to extract text from {result['name']}")
@@ -278,11 +305,22 @@ if analyze_button:
     st.session_state.consolidated_patient_info = consolidated_info
     st.session_state.analysis_done = True
     
+    # End performance tracking
+    tracker.end_session()
+    
     # Complete!
     progress_bar.progress(1.0, text="✅ Analysis complete!")
     status_text.empty()
     st.balloons()
     st.success(f"🎉 Successfully analyzed {len(combined_df)} test records!")
+    
+    # Show corrupted files warning if any
+    if st.session_state.corrupted_files:
+        with st.expander(f"⚠️ {len(st.session_state.corrupted_files)} file(s) could not be processed", expanded=True):
+            st.warning("The following PDF files could not be read. They may be corrupted, password-protected, or in an unsupported format.")
+            for cf in st.session_state.corrupted_files:
+                st.error(f"❌ **{cf['name']}**: {cf['error']}")
+            st.info("💡 **Tip**: Try re-scanning the document or obtaining a new copy of the PDF.")
 
 
 # --- Display Results ---
@@ -448,6 +486,12 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
         with st.expander(f"✓ Normal Systems ({len(normal)})"):
             for sys in normal:
                 st.write(f"{sys['emoji']} **{sys['system']}**: {sys['abnormal_count']}/{sys['total_count']}")
+    
+    st.divider()
+    
+    # --- Performance Metrics ---
+    with st.expander("⚡ Performance Metrics", expanded=False):
+        st.session_state.performance_tracker.display_metrics_ui()
     
     st.divider()
     
