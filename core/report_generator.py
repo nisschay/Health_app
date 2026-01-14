@@ -209,23 +209,26 @@ class ReportGenerator:
         if concerns:
             story.append(Paragraph("⚠️ Tests Requiring Attention", section_style))
             
-            concern_header = [['Test Name', 'Result', 'Reference Range', 'Status', 'Category']]
+            concern_header = [['Test Name', 'Result', 'Reference Range', 'Status', 'Test Date']]
             concern_rows = []
             
             for concern in concerns[:20]:  # Limit to 20
                 status = concern.get('status', 'N/A')
                 indicator, color = cls._get_status_indicator(status)
+                test_date = concern.get('date', 'N/A')
+                if test_date == 'N/A' or pd.isna(test_date):
+                    test_date = 'N/A'
                 
                 concern_rows.append([
                     str(concern.get('test_name', 'N/A'))[:30],
                     str(concern.get('result', 'N/A')),
                     str(concern.get('reference', 'N/A'))[:20],
                     f"{indicator} {status}",
-                    str(concern.get('category', 'N/A'))[:15]
+                    str(test_date)[:12]
                 ])
             
             concern_table = Table(concern_header + concern_rows, 
-                                 colWidths=[2*inch, 0.9*inch, 1.3*inch, 0.9*inch, 1.3*inch])
+                                 colWidths=[2*inch, 0.9*inch, 1.3*inch, 0.9*inch, 1.1*inch])
             concern_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), HexColor('#fef2f2')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), HexColor('#991b1b')),
@@ -260,8 +263,8 @@ class ReportGenerator:
             # Category header
             story.append(Paragraph(f"▸ {category}", category_style))
             
-            # Table header
-            table_header = [['Test Name', 'Value', 'Unit', 'Reference Range', 'Status']]
+            # Table header with Date column
+            table_header = [['Test Name', 'Value', 'Unit', 'Reference', 'Status', 'Date']]
             table_rows = []
             
             for _, row in cat_df.iterrows():
@@ -270,20 +273,24 @@ class ReportGenerator:
                 unit = str(row.get('Unit', ''))
                 ref_range = str(row.get('Reference_Range', 'N/A'))
                 status = str(row.get('Status', 'N/A'))
+                test_date = str(row.get('Test_Date', 'N/A'))
+                if test_date == 'nan' or test_date == 'NaT':
+                    test_date = 'N/A'
                 
                 indicator, _ = cls._get_status_indicator(status)
                 
                 table_rows.append([
-                    test_name[:35],
+                    test_name[:30],
                     result,
                     unit,
-                    ref_range[:25],
-                    f"{indicator} {status}"
+                    ref_range[:18],
+                    f"{indicator} {status}",
+                    test_date[:12]
                 ])
             
-            # Create table
+            # Create table with adjusted column widths for date
             cat_table = Table(table_header + table_rows,
-                             colWidths=[2.2*inch, 0.9*inch, 0.7*inch, 1.5*inch, 1.1*inch])
+                             colWidths=[1.9*inch, 0.8*inch, 0.5*inch, 1.2*inch, 0.9*inch, 0.9*inch])
             
             # Style based on status
             table_style = [

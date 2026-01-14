@@ -1,22 +1,37 @@
 """
 Performance Logging Module
 Tracks timing, errors, and provides analytics for the analysis pipeline
+Logs to file for developer debugging (not shown to users)
 """
 
+import os
 import time
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
-import streamlit as st
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%H:%M:%S'
-)
+# Create logs directory
+LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# Configure file logging
+log_filename = os.path.join(LOG_DIR, f"analysis_{datetime.now().strftime('%Y%m%d')}.log")
+file_handler = logging.FileHandler(log_filename)
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+
+# Console handler for development
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S'))
+
+# Setup logger
 logger = logging.getLogger('MedicalAnalyzer')
+logger.setLevel(logging.INFO)
+logger.handlers.clear()
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 
 @dataclass

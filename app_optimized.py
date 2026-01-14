@@ -193,38 +193,46 @@ if analyze_button:
                     "text": result['text'][:2000] if result['text'] else "No text"
                 })
         
-        # STEP 2: Analyze each PDF with AI
-        status_text.info("🤖 Analyzing reports with AI...")
+        # STEP 2: Analyze all PDFs with AI in PARALLEL (major speedup!)
+        status_text.info("🤖 Analyzing reports with AI (parallel processing)...")
         
-        for result in extraction_results:
-            if result['success'] and result['text']:
+        # Prepare reports for parallel analysis
+        reports_to_analyze = [
+            {'name': r['name'], 'text': r['text']} 
+            for r in extraction_results 
+            if r['success'] and r['text']
+        ]
+        
+        if reports_to_analyze:
+            # Parallel AI analysis - 3 concurrent workers
+            ai_results = AIAnalyzer.analyze_reports_parallel(
+                reports_to_analyze, 
+                api_key, 
+                max_workers=3
+            )
+            
+            # Process results
+            for ai_res in ai_results:
                 current_step += 1
                 progress_bar.progress(
                     current_step / total_steps, 
-                    text=f"🤖 Analyzing: {result['name']}"
+                    text=f"🤖 Processed: {ai_res['name']}"
                 )
                 
-                # Analyze with AI
-                import time
-                ai_start = time.time()
-                ai_result = AIAnalyzer.analyze_report(result['text'], api_key)
-                ai_duration = time.time() - ai_start
-                
-                if ai_result:
+                if ai_res['success'] and ai_res['result']:
                     df, patient_info = DataProcessor.create_dataframe_from_ai_result(
-                        ai_result, result['name']
+                        ai_res['result'], ai_res['name']
                     )
                     if not df.empty:
                         all_dfs.append(df)
-                        tracker.log_ai_complete(result['name'], len(df), ai_duration)
+                        tracker.log_ai_complete(ai_res['name'], len(df), ai_res.get('duration', 0))
                     if patient_info:
                         all_patient_infos.append(patient_info)
-                    status_text.success(f"✅ {result['name']} analyzed ({ai_duration:.1f}s)")
+                    status_text.success(f"✅ {ai_res['name']} analyzed ({ai_res.get('duration', 0):.1f}s)")
                 else:
-                    tracker.log_ai_complete(result['name'], 0, ai_duration, error="AI analysis failed")
-                    status_text.warning(f"⚠️ Could not analyze {result['name']}")
-            else:
-                status_text.error(f"❌ Failed to extract text from {result['name']}")
+                    error_detail = ai_res.get('error', 'Unknown error')
+                    tracker.log_ai_complete(ai_res['name'], 0, ai_res.get('duration', 0), error=error_detail)
+                    status_text.warning(f"⚠️ {ai_res['name']}: {error_detail[:100]}")
     
     # STEP 3: Process existing Excel/CSV if provided
     existing_df = pd.DataFrame()
@@ -486,12 +494,6 @@ if st.session_state.analysis_done and not st.session_state.report_df.empty:
         with st.expander(f"✓ Normal Systems ({len(normal)})"):
             for sys in normal:
                 st.write(f"{sys['emoji']} **{sys['system']}**: {sys['abnormal_count']}/{sys['total_count']}")
-    
-    st.divider()
-    
-    # --- Performance Metrics ---
-    with st.expander("⚡ Performance Metrics", expanded=False):
-        st.session_state.performance_tracker.display_metrics_ui()
     
     st.divider()
     

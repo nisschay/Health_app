@@ -7,9 +7,14 @@ import re
 import json
 import hashlib
 import concurrent.futures
+import threading
+import logging
 from typing import Dict, List, Optional, Any
 import streamlit as st
 import google.generativeai as genai
+
+# Get logger
+logger = logging.getLogger('MedicalAnalyzer')
 
 
 class AIAnalyzer:
@@ -19,13 +24,14 @@ class AIAnalyzer:
     Key optimizations:
     - Reduced prompt size (removed redundant instructions)
     - Response caching with content hash
-    - Batch processing support
+    - PARALLEL processing for multiple PDFs
     - Streaming responses for better UX
     """
     
     _extraction_model = None
     _chat_model = None
     _response_cache: Dict[str, Dict] = {}
+    _lock = threading.Lock()  # Thread-safe cache access
     
     # Optimized, shorter prompt template (reduced from ~2500 to ~1200 tokens)
     EXTRACTION_PROMPT = """Extract medical test data from this report as JSON.
@@ -38,7 +44,7 @@ REQUIRED OUTPUT FORMAT:
         "gender": "Male/Female",
         "patient_id": "ID if present",
         "date": "DD-MM-YYYY format",
-        "lab_name": "Main laboratory name (e.g., 'Neuberg', 'Apollo')"
+        "lab_name": "Main laboratory BRAND name from header/logo (e.g., 'Neuberg Abha', 'Thyrocare', 'Apollo Diagnostics', 'Dr Lal PathLabs')"
     }},
     "test_results": [
         {{
@@ -56,7 +62,7 @@ RULES:
 - Date must be DD-MM-YYYY (day first)
 - Extract ALL test parameters
 - Infer status from result vs reference range if not stated
-- Lab name: prefer main brand (Neuberg, Apollo) over billing addresses
+- Lab name: Extract the MAIN BRAND NAME from the header/logo at the TOP of the report (e.g., "Neuberg Abha", "Thyrocare", "Apollo"). NEVER use billing location addresses or branch names. Look for the prominent company name/logo.
 
 REPORT TEXT:
 ---
@@ -109,50 +115,158 @@ Assistant (use bullet points):"""
         return hashlib.md5(text.encode()).hexdigest()
     
     @classmethod
-    def analyze_report(cls, report_text: str, api_key: str) -> Optional[Dict]:
+    def analyze_report(cls, report_text: str, api_key: str, filename: str = "unknown") -> tuple:
         """
         Analyze a medical report and extract structured data.
         Uses caching to avoid re-analyzing identical content.
+        Thread-safe for parallel processing.
+        
+        Returns:
+            tuple: (result_dict or None, error_message or None)
         """
         if not cls._extraction_model and not cls.initialize(api_key):
-            return None
+            return None, "AI model not initialized"
         
         if not report_text or not report_text.strip():
-            return None
+            return None, "Empty report text"
         
-        # Check cache
+        # Check cache (thread-safe)
         text_hash = cls._get_content_hash(report_text)
-        if text_hash in cls._response_cache:
-            return cls._response_cache[text_hash]
+        with cls._lock:
+            if text_hash in cls._response_cache:
+                logger.info(f"   ⚡ Cache hit for {filename}")
+                return cls._response_cache[text_hash], None
         
-        # Truncate very long reports to save tokens (keep first 15000 chars)
-        truncated_text = report_text[:15000] if len(report_text) > 15000 else report_text
+        # Truncate very long reports to save tokens (keep first 18000 chars)
+        # Note: Larger limit needed for comprehensive medical reports
+        truncated_text = report_text[:18000] if len(report_text) > 18000 else report_text
+        text_chars = len(truncated_text)
+        logger.debug(f"   📝 {filename}: Processing {text_chars} chars")
         
         prompt = cls.EXTRACTION_PROMPT.format(text=truncated_text)
         
-        try:
-            response = cls._extraction_model.generate_content(prompt)
-            response_text = response.text
+        # Retry logic for transient failures
+        max_retries = 2
+        last_error = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                response = cls._extraction_model.generate_content(prompt)
+                response_text = response.text
+                
+                # Extract JSON from response
+                json_str = cls._extract_json(response_text)
+                if not json_str:
+                    error_msg = f"No valid JSON in response (attempt {attempt + 1})"
+                    logger.warning(f"   ⚠ {filename}: {error_msg}")
+                    last_error = error_msg
+                    if attempt < max_retries:
+                        import time
+                        time.sleep(1)  # Brief pause before retry
+                        continue
+                    return None, f"No valid JSON found after {max_retries + 1} attempts. Last response: {response_text[:150]}..."
+                
+                result = json.loads(json_str)
+                
+                # Cache the result (thread-safe)
+                with cls._lock:
+                    cls._response_cache[text_hash] = result
+                
+                return result, None
+                
+            except json.JSONDecodeError as e:
+                error_msg = f"JSON parsing error: {str(e)}"
+                logger.error(f"   ✗ {filename}: {error_msg}")
+                return None, error_msg
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {str(e)}"
+                logger.warning(f"   ⚠ {filename}: Attempt {attempt + 1} failed - {last_error}")
+                if attempt < max_retries:
+                    import time
+                    time.sleep(2)  # Wait before retry
+                    continue
+                logger.error(f"   ✗ {filename}: All {max_retries + 1} attempts failed")
+                return None, last_error
+        
+        return None, last_error or "Unknown error after retries"
+    
+    @classmethod
+    def analyze_reports_parallel(cls, reports: List[Dict], api_key: str, 
+                                  max_workers: int = 3) -> List[Dict]:
+        """
+        Analyze multiple reports in PARALLEL for significant speedup.
+        Uses ThreadPoolExecutor with controlled concurrency.
+        
+        Args:
+            reports: List of {'name': str, 'text': str} dicts
+            api_key: Gemini API key
+            max_workers: Number of parallel workers (default 3 to avoid rate limits)
             
-            # Extract JSON from response
-            json_str = cls._extract_json(response_text)
-            if not json_str:
-                st.error("Could not find JSON in AI response.")
-                return None
+        Returns:
+            List of {'name': str, 'result': Dict, 'success': bool, 'duration': float, 'error': str} dicts
+        """
+        import time
+        
+        if not cls._extraction_model and not cls.initialize(api_key):
+            error_msg = "AI model initialization failed"
+            logger.error(f"   ✗ {error_msg}")
+            return [{'name': r['name'], 'result': None, 'success': False, 'duration': 0, 'error': error_msg} 
+                    for r in reports]
+        
+        def analyze_single(report: Dict) -> Dict:
+            """Analyze a single report and return result with timing"""
+            start = time.time()
+            filename = report['name']
+            try:
+                result, error = cls.analyze_report(report['text'], api_key, filename)
+                duration = time.time() - start
+                
+                if result:
+                    test_count = len(result.get('test_results', []))
+                    logger.info(f"   ✓ AI found {test_count} tests in {duration:.2f}s for {filename}")
+                
+                return {
+                    'name': filename,
+                    'result': result,
+                    'success': result is not None,
+                    'error': error,
+                    'duration': duration
+                }
+            except Exception as e:
+                error_msg = f"{type(e).__name__}: {str(e)}"
+                logger.error(f"   ✗ {filename}: Unexpected error - {error_msg}")
+                return {
+                    'name': filename,
+                    'result': None,
+                    'success': False,
+                    'error': error_msg,
+                    'duration': time.time() - start
+                }
+        
+        # Process in parallel
+        logger.info(f"   🚀 Starting parallel AI analysis with {max_workers} workers...")
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_report = {executor.submit(analyze_single, r): r for r in reports}
             
-            result = json.loads(json_str)
-            
-            # Cache the result
-            cls._response_cache[text_hash] = result
-            
-            return result
-            
-        except json.JSONDecodeError as e:
-            st.error(f"JSON parsing error: {e}")
-            return None
-        except Exception as e:
-            st.error(f"Error analyzing report: {e}")
-            return None
+            for future in concurrent.futures.as_completed(future_to_report):
+                result = future.result()
+                results.append(result)
+        
+        # Sort by original order
+        name_order = {r['name']: i for i, r in enumerate(reports)}
+        results.sort(key=lambda x: name_order.get(x['name'], 999))
+        
+        # Log summary
+        successful = sum(1 for r in results if r['success'])
+        failed = len(results) - successful
+        if failed > 0:
+            logger.warning(f"   ⚠ AI analysis: {successful}/{len(results)} successful, {failed} failed")
+            for r in results:
+                if not r['success']:
+                    logger.error(f"      - {r['name']}: {r.get('error', 'Unknown error')}")
+        
+        return results
     
     @staticmethod
     def _extract_json(text: str) -> Optional[str]:
@@ -174,8 +288,8 @@ Assistant (use bullet points):"""
     def analyze_multiple_reports(cls, reports: List[Dict], api_key: str, 
                                   progress_callback=None) -> List[Dict]:
         """
-        Analyze multiple reports with progress tracking.
-        Uses sequential processing (Gemini rate limits prevent true parallelism).
+        Analyze multiple reports with progress tracking (sequential).
+        Use analyze_reports_parallel for faster processing.
         
         Args:
             reports: List of {'name': str, 'text': str} dicts
@@ -183,7 +297,7 @@ Assistant (use bullet points):"""
             progress_callback: Optional function(current, total, name) for progress
             
         Returns:
-            List of {'name': str, 'result': Dict, 'success': bool} dicts
+            List of {'name': str, 'result': Dict, 'success': bool, 'error': str} dicts
         """
         results = []
         total = len(reports)
@@ -192,11 +306,12 @@ Assistant (use bullet points):"""
             if progress_callback:
                 progress_callback(i + 1, total, report['name'])
             
-            result = cls.analyze_report(report['text'], api_key)
+            result, error = cls.analyze_report(report['text'], api_key, report['name'])
             results.append({
                 'name': report['name'],
                 'result': result,
-                'success': result is not None
+                'success': result is not None,
+                'error': error
             })
         
         return results
