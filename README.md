@@ -1,132 +1,149 @@
-# Medical Report Analyzer & Health Insights
+# Medical Project
 
-A powerful web application built with Streamlit that analyzes medical test reports in PDF format, providing structured data visualization and AI-powered insights.
+Medical report analysis platform with:
+- Python FastAPI backend for PDF parsing, Gemini-powered extraction, insights, chat, and PDF export
+- Next.js frontend intended for Vercel deployment
+- Firebase-ready auth flow using bearer tokens
 
-## 🚀 Setup
+## Project Layout
 
-1. Clone the repository
-2. Copy `.streamlit/secrets.template.toml` to `.streamlit/secrets.toml`
-3. Get a Gemini API key from Google Cloud Console
-4. Add your API key to `.streamlit/secrets.toml`
+- backend_api/: FastAPI service
+- web/: Next.js frontend (deploy this on Vercel)
+- archive/: moved legacy docs and notebooks
+- start.sh / stop.sh: local testing helpers
+- Medical_Project.py: legacy Streamlit prototype (kept for reference)
 
-## 🌟 Features
+## 1. Local Setup
 
-- **PDF Report Analysis**: Extract medical test data from PDF reports
-- **Smart Data Structuring**: Automatically standardizes test names, units, and status values
-- **Interactive Visualizations**:
-  - Bullet charts for single test results
-  - Trend analysis for multiple test dates
-  - Color-coded reference ranges
-- **AI-Powered Insights**:
-  - Natural language chat interface for report queries
-  - Comprehensive health summaries
-  - Abnormal findings detection
-- **Multi-Report Support**: Analyze and consolidate data from multiple PDF reports
-- **Body System Categories**: Organize tests by physiological systems
-- **Data Export**: Download analyzed data in CSV format
+### Backend
 
-## 🔧 Technical Stack
+1. Create/activate virtual env and install dependencies:
 
-- **Backend**: Python
-- **Frontend**: Streamlit
-- **AI/ML**: Google Gemini AI
-- **Data Processing**: Pandas, NumPy
-- **Visualization**: Plotly
-- **PDF Processing**: PyPDF2
-
-## 📋 Requirements
-
-```txt
-streamlit
-pandas
-plotly
-google-generativeai
-PyPDF2
-```
-
-## 🚀 Setup & Installation
-
-1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd Medical_Project
-```
-
-2. Install required packages:
-```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Configure Gemini API:
-   - Obtain an API key from Google Cloud Console
-   - Set it up in Streamlit secrets or input during runtime
+2. Create backend env file:
 
-4. Run the application:
 ```bash
-streamlit run Medical_Project.py
+cp backend_api/.env.example backend_api/.env
 ```
 
-## 📊 Features in Detail
+3. Fill values in backend_api/.env:
 
-### Data Processing
-- Standardizes test names, units, and status values using predefined mappings
-- Consolidates patient information across multiple reports
-- Converts dates to standard format
-- Handles various reference range formats
+- GEMINI_API_KEY: required for analysis/chat/export
+- API_REQUIRE_AUTH: false for local open mode, true for Firebase-protected mode
+- FIREBASE_CREDENTIALS_PATH: service account JSON path (required when auth=true)
+- FIREBASE_PROJECT_ID: Firebase project id
+- API_CORS_ORIGINS: comma-separated allowed origins (example: http://localhost:3000)
 
-### Visualization Types
-1. **Bullet Charts**:
-   - Shows current value against reference range
-   - Color-coded status indicators
-   - Clear display of test name, value, and units
+4. Run backend:
 
-2. **Trend Analysis**:
-   - Time series plots for multiple test dates
-   - Reference range bands
-   - Interactive legends
-
-### Body System Categories
-- Blood Tests
-- Liver Function
-- Kidney Function
-- Lipid Profile
-- Thyroid Profile
-- And more...
-
-## 🏗 Project Structure
-
-```
-Medical_Project/
-├── Medical_Project.py          # Main application file
-├── test_category_mapping.py    # Test categorization mappings
-├── Backend/
-│   └── Medical_Report_Analysis_(V2).ipynb  # Development notebook
-└── README.md                   # This file
+```bash
+source .venv/bin/activate
+uvicorn backend_api.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## 💡 Usage
+### Frontend
 
-1. Launch the application
-2. Upload one or more medical PDF reports
-3. Click "Analyze Reports" to process
-4. Explore:
-   - View patient information
-   - Interact with the AI chatbot
-   - Visualize test results
-   - Filter by body systems
-   - Download processed data
+1. Install dependencies:
 
-## 🌐 AI Integration
+```bash
+cd web
+npm ci
+```
 
-The application uses Google's Gemini AI for:
-- Extracting structured data from PDF reports
-- Natural language understanding
-- Providing contextual responses to user queries
-- Summarizing health insights
+2. Create frontend env file:
 
+```bash
+cp .env.example .env.local
+```
 
-## ✨ Acknowledgments
+3. Fill values in web/.env.local:
 
-- Streamlit for the wonderful web framework
-- Google Gemini AI for powerful natural language processing
-- The medical community for standardization guidelines
+- NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+- NEXT_PUBLIC_FIREBASE_* values from Firebase console (if using frontend auth)
+
+4. Run frontend:
+
+```bash
+npm run dev
+```
+
+Open:
+- Frontend: http://localhost:3000
+- Backend docs: http://localhost:8000/docs
+
+## 2. Quick Start/Stop Scripts
+
+From project root:
+
+```bash
+./start.sh
+```
+
+This starts:
+- FastAPI on port 8000
+- Next.js dev server on port 3000
+
+Logs and PIDs are stored in .run/.
+
+Stop both services:
+
+```bash
+./stop.sh
+```
+
+## 3. Vercel Deployment (Frontend)
+
+Deploy web/ as the Vercel project root.
+
+### Vercel Project Settings
+
+- Framework Preset: Next.js
+- Root Directory: web
+- Build Command: npm run build
+- Install Command: npm ci
+- Output Directory: .next
+
+### Vercel Environment Variables
+
+Set these in Vercel project settings:
+
+- NEXT_PUBLIC_API_BASE_URL=https://<your-backend-domain>
+- NEXT_PUBLIC_FIREBASE_API_KEY
+- NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+- NEXT_PUBLIC_FIREBASE_PROJECT_ID
+- NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+- NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+- NEXT_PUBLIC_FIREBASE_APP_ID
+
+## 4. Backend Deployment Notes
+
+The backend should be deployed as a separate Python service (for example: Render, Railway, Fly.io, or container host).
+
+Required backend env vars in production:
+- GEMINI_API_KEY
+- API_REQUIRE_AUTH=true (recommended)
+- FIREBASE_CREDENTIALS_PATH (or mounted credentials)
+- FIREBASE_PROJECT_ID
+- API_CORS_ORIGINS=https://<your-vercel-domain>
+
+## 5. Completed Next Steps
+
+- Dashboard now uploads PDFs to /api/v1/reports/analyze
+- Dashboard now supports conversational follow-up via /api/v1/reports/chat
+- Optional bearer token field added for Firebase-secured backend mode
+- CORS configuration added to FastAPI for deployed frontend domains
+- Legacy docs and notebook moved under archive/
+
+## 6. Archived Files
+
+Moved to keep runtime root clean:
+
+- archive/docs/GENAI_PROJECT_JUSTIFICATION.md
+- archive/docs/PROJECT_ABSTRACT.md
+- archive/docs/PRESENTATION_SLIDES_CONTENT.md
+- archive/notebooks/Medical_Report_Analysis_(V2).ipynb

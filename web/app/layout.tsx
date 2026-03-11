@@ -1,17 +1,6 @@
 import type { Metadata } from "next";
-import { Fraunces, Space_Grotesk } from "next/font/google";
 
 import "./globals.css";
-
-const displayFont = Fraunces({
-  subsets: ["latin"],
-  variable: "--font-display"
-});
-
-const bodyFont = Space_Grotesk({
-  subsets: ["latin"],
-  variable: "--font-body"
-});
 
 export const metadata: Metadata = {
   title: "Medical Project",
@@ -25,7 +14,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${displayFont.variable} ${bodyFont.variable}`}>{children}</body>
+      <body>{children}</body>
     </html>
   );
 }
