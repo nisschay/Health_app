@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import Header, HTTPException, status
 
@@ -38,6 +39,12 @@ def _firebase_enabled() -> bool:
     if not settings.firebase_credentials_path:
         return False
 
+    creds_path = Path(settings.firebase_credentials_path)
+    if not creds_path.exists():
+        # In local/dev, allow API to continue without Firebase if auth is optional.
+        print(f"[WARN] Firebase credentials file not found: {creds_path}")
+        return False
+
     if not firebase_admin._apps:
         try:
             firebase_admin.initialize_app(
@@ -47,6 +54,10 @@ def _firebase_enabled() -> bool:
             # Concurrent requests can race on first init; if default app exists, continue.
             if "already exists" not in str(exc):
                 raise
+        except Exception as exc:
+            # Avoid taking down the API when Firebase is misconfigured in optional-auth mode.
+            print(f"[WARN] Firebase initialization failed: {exc}")
+            return False
 
     return True
 

@@ -80,7 +80,13 @@ def sync_user(
 ) -> UserProfile:
     """Called after Firebase sign-in to upsert the user in PostgreSQL."""
     if not user.authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required.")
+        if settings.require_auth:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        return UserProfile(
+            firebase_uid="anonymous",
+            email=None,
+            display_name=display_name,
+        )
     row = upsert_user(db, user.user_id, user.email, display_name)
     return UserProfile(
         firebase_uid=row.firebase_uid,

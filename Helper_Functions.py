@@ -14,9 +14,52 @@ import sys
 import os
 from collections import Counter
 
+try:
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+except Exception:  # pragma: no cover - streamlit internals can vary
+    get_script_run_ctx = None
+
 
 gemini_model_extraction = None
 gemini_model_chat = None
+_last_extraction_error = ""
+
+
+def _has_streamlit_context() -> bool:
+    if get_script_run_ctx is None:
+        return False
+    try:
+        return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+
+def _ui_warn(message: str) -> None:
+    """Show warning in Streamlit UI when available, otherwise log to stdout."""
+    if _has_streamlit_context():
+        st.warning(message)
+    else:
+        print(f"[WARN] {message}")
+
+
+def _ui_error(message: str) -> None:
+    """Show error in Streamlit UI when available, otherwise log to stdout."""
+    if _has_streamlit_context():
+        st.error(message)
+    else:
+        print(f"[ERROR] {message}")
+
+
+def _ui_debug_text(label: str, value: str, height: int = 150) -> None:
+    """Optional debug output that is safe outside Streamlit execution context."""
+    if _has_streamlit_context():
+        st.text_area(label, value, height=height)
+    else:
+        print(f"[DEBUG] {label}: {value[:500]}")
+
+
+def get_last_extraction_error() -> str:
+    return _last_extraction_error
 
 
 
@@ -131,38 +174,82 @@ def extract_text_from_pdf(file_content):
     try:
         pdf_file = io.BytesIO(file_content)
         pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text = ""
+        text_parts = []
         for page_num, page in enumerate(pdf_reader.pages):
             page_text = page.extract_text()
             if page_text:
-                text += f"\n--- Page {page_num+1} ---\n{page_text}"
+                text_parts.append(f"\n--- Page {page_num+1} ---\n{page_text}")
+        text = "".join(text_parts)
         if not text.strip():
-            st.warning("Warning: No text extracted from PDF. PDF might be image-based or empty.")
+            _ui_warn("No text extracted from PDF. The PDF may be image-based or empty.")
         return text
     except Exception as e:
-        st.error(f"Error reading PDF: {str(e)}")
+        _ui_error(f"Error reading PDF: {str(e)}")
         return None
 
 def init_gemini_models(api_key_for_gemini):
     global gemini_model_extraction, gemini_model_chat
     try:
         if not api_key_for_gemini:
-            st.error("Gemini API Key is missing. Cannot initialize models.")
+            _ui_error("Gemini API key is missing. Cannot initialize models.")
             return False
         
         genai.configure(api_key=api_key_for_gemini)
-        
-       
-        # Note: gemini-3.0-flash is the latest available model as of Dec 2025
-        gemini_model_extraction = genai.GenerativeModel('gemini-2.5-flash')
-        gemini_model_chat = genai.GenerativeModel('gemini-2.5-flash')
-        
-        return True
-    except Exception as e:
-        st.error(f"Error configuring Gemini: {e}. Please ensure your API key is correct and valid.")
+
+        # Primary model requested by user. Keep a safe fallback for environments
+        # where access to 2.5 may be unavailable.
+        model_candidates = ['gemini-2.5-flash', 'gemini-1.5-flash']
+        last_error = None
+        for model_name in model_candidates:
+            try:
+                gemini_model_extraction = genai.GenerativeModel(model_name)
+                gemini_model_chat = genai.GenerativeModel(model_name)
+                return True
+            except Exception as model_exc:
+                last_error = model_exc
+                continue
+
+        _ui_error(f"Could not initialize Gemini model: {last_error}")
         gemini_model_extraction = None
         gemini_model_chat = None
         return False
+        
+    except Exception as e:
+        _ui_error(f"Error configuring Gemini: {e}. Please ensure your API key is correct and valid.")
+        gemini_model_extraction = None
+        gemini_model_chat = None
+        return False
+
+
+def _extract_first_json_object(response_text: str) -> str | None:
+    """Extract the first balanced JSON object from model text output."""
+    start_index = response_text.find('{')
+    if start_index == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start_index, len(response_text)):
+        ch = response_text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return response_text[start_index:i + 1]
+    return None
 
 
 def extract_patient_info_from_normalized_data(df):
@@ -253,13 +340,21 @@ def auto_detect_and_process(df, filename, new_patient_info_list):
 
 def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     global gemini_model_extraction
+    global _last_extraction_error
+    _last_extraction_error = ""
     if not gemini_model_extraction and not init_gemini_models(api_key_for_gemini):
-        st.error("Gemini extraction model not initialized. API key might be missing or invalid.")
+        _last_extraction_error = "Gemini extraction model not initialized. API key may be invalid or missing."
+        _ui_error(_last_extraction_error)
         return None
 
     if not text_content or not text_content.strip():
-        st.warning("No text provided to analyze.")
+        _last_extraction_error = "No extractable text was provided to Gemini."
+        _ui_warn(_last_extraction_error)
         return None
+
+    # Keep prompt size bounded to reduce timeout/limit failures on very large PDFs.
+    max_chars = 120000
+    bounded_text = text_content[:max_chars]
 
     prompt = f"""
     Analyze this medical test report. Extract all patient information and test results.
@@ -308,36 +403,76 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
 
     Medical Report Text:
     ---
-    {text_content}
+    {bounded_text}
     ---
     """
     try:
-        response = gemini_model_extraction.generate_content(prompt)
-        response_text = response.text
+        response_text = ""
+        last_exception = None
+        for _ in range(2):
+            try:
+                response = gemini_model_extraction.generate_content(
+                    prompt,
+                    generation_config={"response_mime_type": "application/json"},
+                )
+                response_text = getattr(response, "text", "") or ""
+                if not response_text and getattr(response, "candidates", None):
+                    parts = []
+                    for candidate in response.candidates:
+                        content = getattr(candidate, "content", None)
+                        if not content:
+                            continue
+                        for part in getattr(content, "parts", []) or []:
+                            part_text = getattr(part, "text", None)
+                            if part_text:
+                                parts.append(part_text)
+                    response_text = "\n".join(parts)
+                if response_text:
+                    break
+            except Exception as call_exc:
+                last_exception = call_exc
+                # Fallback call without structured output hint.
+                try:
+                    response = gemini_model_extraction.generate_content(prompt)
+                    response_text = getattr(response, "text", "") or ""
+                    if response_text:
+                        break
+                except Exception as fallback_exc:
+                    last_exception = fallback_exc
+                continue
+
+        if not response_text:
+            raise RuntimeError(f"Gemini returned empty response. Last error: {last_exception}")
         
         match_json_block = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
         if match_json_block:
             json_str = match_json_block.group(1)
         else:
-            start_index = response_text.find('{')
-            end_index = response_text.rfind('}')
-            if start_index != -1 and end_index > start_index:
-                json_str = response_text[start_index : end_index+1]
-            else:
-                st.error("Could not find a clear JSON block in Gemini API response.")
-                st.text_area("Gemini API Response (text):", response_text, height=150)
+            json_str = _extract_first_json_object(response_text)
+            if not json_str:
+                _last_extraction_error = "Gemini response did not contain valid JSON output."
+                _ui_error(_last_extraction_error)
+                _ui_debug_text("Gemini API Response (text)", response_text, height=150)
                 return None
         
-        return json.loads(json_str)
+        parsed = json.loads(json_str)
+        if not isinstance(parsed, dict) or "test_results" not in parsed:
+            _last_extraction_error = "Gemini JSON did not include required field 'test_results'."
+            _ui_error(_last_extraction_error)
+            _ui_debug_text("Gemini JSON payload", json_str, height=150)
+            return None
+        return parsed
     except json.JSONDecodeError as json_e:
-        st.error(f"Error decoding JSON from Gemini response: {json_e}")
-        st.text_area("Problematic JSON string:", json_str, height=150)
-        st.text_area("Full Gemini Response (text):", response_text, height=150)
+        _last_extraction_error = f"JSON parse error from Gemini response: {json_e}"
+        _ui_error(_last_extraction_error)
+        _ui_debug_text("Problematic JSON string", json_str, height=150)
+        _ui_debug_text("Full Gemini Response (text)", response_text, height=150)
         return None
     except Exception as e:
-        st.error(f"Error analyzing report with Gemini: {str(e)}")
+        _last_extraction_error = f"Gemini extraction exception: {str(e)}"
+        _ui_error(_last_extraction_error)
         if "API key not valid" in str(e) or "PERMISSION_DENIED" in str(e):
-            st.error("Please ensure your Gemini API key is correct and has the necessary permissions.")
+            _ui_error("Please ensure your Gemini API key is correct and has the necessary permissions.")
         return None
 
 def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF"):

@@ -21,6 +21,7 @@ from Helper_Functions import (
     parse_date_dd_mm_yyyy,
     process_existing_excel_csv,
     smart_consolidate_patient_info,
+    get_last_extraction_error,
 )
 from unify_test_names import unify_test_names
 
@@ -88,10 +89,16 @@ class MedicalAnalysisService:
         all_dfs: list[pd.DataFrame] = []
         all_patient_infos_from_pdfs: list[dict[str, Any]] = []
         raw_texts: list[dict[str, str]] = []
+        failed_files: list[str] = []
 
         for filename, payload in pdf_files:
-            report_text = extract_text_from_pdf(payload)
+            try:
+                report_text = extract_text_from_pdf(payload)
+            except Exception:
+                report_text = None
+
             if not report_text:
+                failed_files.append(f"{filename}: no extractable text")
                 continue
 
             if include_raw_texts:
@@ -104,6 +111,8 @@ class MedicalAnalysisService:
 
             gemini_analysis_json = analyze_medical_report_with_gemini(report_text, api_key)
             if not gemini_analysis_json:
+                reason = get_last_extraction_error() or "Gemini extraction failed"
+                failed_files.append(f"{filename}: {reason}")
                 continue
 
             df_single, patient_info_single = create_structured_dataframe(
@@ -133,7 +142,11 @@ class MedicalAnalysisService:
         elif all_dfs:
             combined_raw_df = pd.concat(all_dfs, ignore_index=True)
         else:
-            raise ValueError("No medical data could be extracted from the provided files.")
+            details = "; ".join(failed_files[:5]) if failed_files else "Unknown extraction failure."
+            raise ValueError(
+                "No medical data could be extracted from the provided files. "
+                f"Details: {details}"
+            )
 
         if existing_patient_info and all_patient_infos_from_pdfs:
             consolidated_info = smart_consolidate_patient_info(
