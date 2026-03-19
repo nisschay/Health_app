@@ -80,3 +80,34 @@ class InsightsResponse(BaseModel):
 class ExportPdfRequest(BaseModel):
     patient_info: PatientInfo
     records: list[MedicalRecord]
+
+
+# ── History / persistence schemas ─────────────────────────────────────────────
+
+class AnalysisHistoryItem(BaseModel):
+    id: int
+    patient_name: str | None
+    patient_age: str | None
+    patient_gender: str | None
+    lab_name: str | None
+    report_date: str | None
+    total_records: int
+    source_filenames: list[str]
+    created_at: str  # ISO datetime
+
+
+class UserProfile(BaseModel):
+    firebase_uid: str
+    email: str | None
+    display_name: str | None
+
+
+class SaveAnalysisRequest(BaseModel):
+    analysis: AnalysisResponse
+    source_filenames: list[str] = Field(default_factory=list)
+
+
+class MergeAnalysisRequest(BaseModel):
+    """Merge new PDFs into an existing saved analysis and save the result."""
+    existing_analysis_id: int
+    new_analysis: AnalysisResponse

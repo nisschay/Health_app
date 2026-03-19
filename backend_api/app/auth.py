@@ -39,9 +39,14 @@ def _firebase_enabled() -> bool:
         return False
 
     if not firebase_admin._apps:
-        firebase_admin.initialize_app(
-            credentials.Certificate(settings.firebase_credentials_path)
-        )
+        try:
+            firebase_admin.initialize_app(
+                credentials.Certificate(settings.firebase_credentials_path)
+            )
+        except ValueError as exc:
+            # Concurrent requests can race on first init; if default app exists, continue.
+            if "already exists" not in str(exc):
+                raise
 
     return True
 

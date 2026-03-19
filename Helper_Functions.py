@@ -10,10 +10,13 @@ import plotly.graph_objs as go
 import google.generativeai as genai
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI, TEST_NAME_MAPPING, UNIT_MAPPING, STATUS_MAPPING
 from unify_test_names import unify_test_names
-from Helper_Functions import *
 import sys
 import os
 from collections import Counter
+
+
+gemini_model_extraction = None
+gemini_model_chat = None
 
 
 

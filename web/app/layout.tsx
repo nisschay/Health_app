@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
+import { AuthProvider } from "@/lib/auth-context";
 
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Medical Project",
-  description: "AI-powered medical report analysis with a Vercel-ready frontend and Python backend."
+  title: "Medical Report Analyzer",
+  description: "AI-powered medical report analysis – upload, analyze, and track your health over time."
 };
 
 export default function RootLayout({
@@ -14,7 +15,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AuthProvider>{children}</AuthProvider>
+      </body>
     </html>
   );
 }

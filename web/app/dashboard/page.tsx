@@ -1,494 +1,486 @@
 "use client";
 
-import { useState, useTransition } from "react";
-
+import { useState, useTransition, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth-context";
 import {
   type AnalysisResponse,
-  analyzeReports,
+  type AnalysisHistoryItem,
   type ChatTurn,
-  getApiBaseUrl,
+  type MedicalRecord,
+  analyzeReports,
   sendChatMessage,
-  type MedicalRecord
+  fetchReportHistory,
+  fetchReportById,
+  saveAnalysis,
+  exportPdf,
+  exportExcel,
 } from "@/lib/api";
-
-const recentReports = [
-  {
-    name: "Quarterly Metabolic Panel",
-    date: "11 Mar 2026",
-    status: "Analyzed",
-    note: "3 abnormal markers flagged for review"
-  },
-  {
-    name: "CBC Follow-up",
-    date: "02 Feb 2026",
-    status: "Analyzed",
-    note: "Stable across previous test dates"
-  },
-  {
-    name: "Lipid Profile",
-    date: "18 Dec 2025",
-    status: "Imported",
-    note: "Awaiting user-confirmed history merge"
-  }
-];
-
-function formatPercent(value: number): string {
-  return `${Math.round(value * 100)}%`;
-}
+import TrendChart from "./TrendChart";
 
 function getStatusTone(status: string | null | undefined): string {
-  const normalized = status?.toLowerCase();
-  if (normalized === "normal" || normalized === "negative") {
-    return "good";
-  }
-  if (normalized === "high" || normalized === "low" || normalized === "positive") {
-    return "warn";
-  }
-  if (normalized === "critical" || normalized === "flagged") {
-    return "bad";
-  }
+  const n = status?.toLowerCase();
+  if (n === "normal" || n === "negative") return "good";
+  if (n === "high" || n === "low" || n === "positive") return "warn";
+  if (n === "critical" || n === "flagged") return "bad";
   return "muted";
 }
 
+function fmtDate(iso: string) {
+  try {
+    return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  } catch { return iso; }
+}
+
+function NavBar({ user, onLogout, onHome }: { user: { displayName?: string | null; email?: string | null } | null; onLogout: () => void; onHome: () => void }) {
+  return (
+    <nav className="top-nav">
+      <button className="nav-brand" onClick={onHome} type="button">🏥 Medical Report Analyzer</button>
+      <div className="nav-right">
+        {user && <span className="nav-user">{user.displayName ?? user.email ?? "User"}</span>}
+        <button className="secondary-button nav-logout" onClick={onLogout} type="button">Sign Out</button>
+      </div>
+    </nav>
+  );
+}
+
+function HistoryCard({ item, onLoad }: { item: AnalysisHistoryItem; onLoad: (id: number) => void }) {
+  return (
+    <article className="history-card">
+      <div className="history-card-info">
+        <h3>{item.patient_name ?? "Unknown Patient"}</h3>
+        <p>{item.total_records} records &bull; {item.lab_name ?? "Unknown Lab"} &bull; {fmtDate(item.created_at)}</p>
+        {item.source_filenames.length > 0 && <p className="history-files">📄 {item.source_filenames.join(", ")}</p>}
+      </div>
+      <button className="secondary-button" onClick={() => onLoad(item.id)} type="button">View →</button>
+    </article>
+  );
+}
+
+function DataTable({ records }: { records: MedicalRecord[] }) {
+  const valid = records.filter((r) => r.Test_Name && r.Test_Name !== "N/A" && r.Result !== null && r.Result !== undefined);
+  const dateLabs = Array.from(new Set(valid.map((r) => `${r.Test_Date ?? "Unknown"}__${r.Lab_Name ?? "Unknown Lab"}`))).sort();
+  const rowMap = new Map<string, Map<string, string>>();
+  for (const r of valid) {
+    const key = `${r.Test_Category ?? ""}||${r.Test_Name ?? ""}`;
+    const dlKey = `${r.Test_Date ?? "Unknown"}__${r.Lab_Name ?? "Unknown Lab"}`;
+    if (!rowMap.has(key)) rowMap.set(key, new Map());
+    rowMap.get(key)!.set(dlKey, String(r.Result ?? ""));
+  }
+  const rows = Array.from(rowMap.entries()).map(([key, values]) => {
+    const [category, name] = key.split("||");
+    return { category, name, values };
+  });
+  return (
+    <div className="table-shell">
+      <table className="records-table">
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th>Test</th>
+            {dateLabs.map((dl) => { const [date, lab] = dl.split("__"); return <th key={dl}>{date}<br /><small>{lab}</small></th>; })}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i}>
+              <td>{row.category}</td>
+              <td>{row.name}</td>
+              {dateLabs.map((dl) => <td key={dl}>{row.values.get(dl) ?? "—"}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
+  const { user, loading, getToken, logout } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => { if (!loading && !user) router.replace("/login"); }, [user, loading, router]);
+
+  const [view, setView] = useState<"home" | "analyze" | "result">("home");
+  const [history, setHistory] = useState<AnalysisHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [pdfFiles, setPdfFiles] = useState<File[]>([]);
   const [existingDataFile, setExistingDataFile] = useState<File | null>(null);
-  const [includeRawTexts, setIncludeRawTexts] = useState(false);
+  const [uploadMode, setUploadMode] = useState<"new" | "append">("new");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
-  const [token, setToken] = useState("");
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatTurn[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
   const [isChatPending, startChatTransition] = useTransition();
+  const [selectedBodySystem, setSelectedBodySystem] = useState<string>("all");
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [selectedTest, setSelectedTest] = useState<string>("");
+  const [isExporting, setIsExporting] = useState<"pdf" | "excel" | null>(null);
 
-  const dashboardMetrics = analysis
-    ? [
-        { label: "Health score", value: `${analysis.health_summary.overall_score} / 100` },
-        { label: "Tracked systems", value: String(analysis.body_systems.length) },
-        { label: "Abnormal markers", value: String(analysis.health_summary.concerns.length) },
-        { label: "Records extracted", value: String(analysis.total_records) }
-      ]
-    : [
-        { label: "Health score", value: "Awaiting upload" },
-        { label: "Tracked systems", value: "0" },
-        { label: "Abnormal markers", value: "0" },
-        { label: "Records extracted", value: "0" }
-      ];
+  const loadHistory = useCallback(async () => {
+    const token = await getToken();
+    if (!token) return;
+    setHistoryLoading(true);
+    try {
+      const items = await fetchReportHistory(token);
+      setHistory(items);
+    } catch { /* non-critical */ } finally { setHistoryLoading(false); }
+  }, [getToken]);
+
+  useEffect(() => { if (user) loadHistory(); }, [user, loadHistory]);
 
   async function submitAnalysis() {
-    if (pdfFiles.length === 0 && !existingDataFile) {
-      setErrorMessage("Select at least one PDF report or a prior Excel or CSV file.");
-      return;
-    }
-
-    const formData = new FormData();
-    pdfFiles.forEach((file) => {
-      formData.append("pdf_files", file);
-    });
-
-    if (existingDataFile) {
-      formData.append("existing_data", existingDataFile);
-    }
-
-    formData.append("include_raw_texts", String(includeRawTexts));
-
+    setErrorMessage(null);
+    const token = await getToken();
+    if (pdfFiles.length === 0) { setErrorMessage("Please select at least one PDF file."); return; }
+    const fd = new FormData();
+    for (const f of pdfFiles) fd.append("pdf_files", f);
+    if (existingDataFile) fd.append("existing_data", existingDataFile);
     try {
-      setErrorMessage(null);
-      const authToken = token.trim() || undefined;
-      const result = await analyzeReports(formData, authToken);
+      const result = await analyzeReports(fd, token ?? undefined);
       setAnalysis(result);
       setChatHistory([]);
-      setChatError(null);
-    } catch (error) {
-      setAnalysis(null);
-      setErrorMessage(error instanceof Error ? error.message : "Unable to analyze the uploaded files.");
-    }
+      setSelectedTest("");
+      setView("result");
+      if (token) {
+        setSaveStatus("saving");
+        try {
+          await saveAnalysis(result, pdfFiles.map((f) => f.name), token);
+          setSaveStatus("saved");
+          loadHistory();
+        } catch { setSaveStatus("error"); }
+      }
+    } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Analysis failed."); }
+  }
+
+  async function loadHistoryItem(id: number) {
+    const token = await getToken();
+    if (!token) return;
+    try {
+      const result = await fetchReportById(id, token);
+      setAnalysis(result); setChatHistory([]); setSelectedTest(""); setView("result");
+    } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Failed to load."); }
   }
 
   async function submitChatQuestion() {
-    if (!analysis) {
-      setChatError("Analyze at least one report before using chat.");
-      return;
-    }
-    if (!chatQuestion.trim()) {
-      setChatError("Enter a question for the assistant.");
-      return;
-    }
-
-    const records: MedicalRecord[] = analysis.records;
-    const userTurn: ChatTurn = { role: "user", content: chatQuestion.trim() };
-    const nextHistory = [...chatHistory, userTurn];
-
+    if (!chatQuestion.trim() || !analysis) return;
+    setChatError(null);
+    const q = chatQuestion; setChatQuestion("");
+    const token = await getToken();
+    const newHistory = [...chatHistory, { role: "user", content: q }];
+    setChatHistory(newHistory);
     try {
-      setChatError(null);
-      const authToken = token.trim() || undefined;
-      const response = await sendChatMessage(records, userTurn.content, chatHistory, authToken);
-      setChatHistory([...nextHistory, { role: "assistant", content: response.answer }]);
-      setChatQuestion("");
-    } catch (error) {
-      setChatError(error instanceof Error ? error.message : "Unable to get a chatbot response.");
-    }
+      const resp = await sendChatMessage(analysis.records, q, chatHistory, token ?? undefined);
+      setChatHistory([...newHistory, { role: "assistant", content: resp.answer }]);
+    } catch (err) { setChatError(err instanceof Error ? err.message : "Chat failed."); }
+  }
+
+  function handleQuickQuestion(q: string) {
+    startChatTransition(() => {
+      void (async () => {
+        if (!analysis) return;
+        setChatError(null);
+        const token = await getToken();
+        const clean = q.replace(/^[^\s]+ /, "");
+        const newHistory = [...chatHistory, { role: "user", content: clean }];
+        setChatHistory(newHistory);
+        try {
+          const resp = await sendChatMessage(analysis.records, clean, chatHistory, token ?? undefined);
+          setChatHistory([...newHistory, { role: "assistant", content: resp.answer }]);
+        } catch (err) { setChatError(err instanceof Error ? err.message : "Chat failed."); }
+      })();
+    });
+  }
+
+  async function handleExportPdf() {
+    if (!analysis) return;
+    setIsExporting("pdf");
+    try {
+      const token = await getToken();
+      const blob = await exportPdf(analysis.records, analysis.patient_info, token ?? undefined);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url;
+      a.download = `health-report-${analysis.patient_info.name || "patient"}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+    } catch { /* graceful */ } finally { setIsExporting(null); }
+  }
+
+  async function handleExportExcel() {
+    if (!analysis) return;
+    setIsExporting("excel");
+    try {
+      const token = await getToken();
+      const blob = await exportExcel(analysis.records, analysis.patient_info, token ?? undefined);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url;
+      a.download = `medical-data-${analysis.patient_info.name || "patient"}.xlsx`; a.click();
+      URL.revokeObjectURL(url);
+    } catch { /* graceful */ } finally { setIsExporting(null); }
+  }
+
+  const records = analysis?.records ?? [];
+  const allBodySystems = Array.from(new Set(records.map((r) => r.Test_Category?.split("/")[0]?.trim() ?? "Other").filter(Boolean))).sort();
+  const filteredBySystem = selectedBodySystem === "all" ? records : records.filter((r) => (r.Test_Category ?? "").split("/")[0]?.trim() === selectedBodySystem);
+  const allCategories = Array.from(new Set(filteredBySystem.map((r) => r.Test_Category ?? "Other").filter(Boolean))).sort();
+  const filteredByCategory = selectedCategory === "all" ? filteredBySystem : filteredBySystem.filter((r) => r.Test_Category === selectedCategory);
+  const allTests = Array.from(new Set(filteredByCategory.map((r) => r.Test_Name ?? "").filter(Boolean))).sort();
+  const selectedTestData = selectedTest ? filteredByCategory.filter((r) => r.Test_Name === selectedTest) : [];
+
+  useEffect(() => { setSelectedCategory("all"); setSelectedTest(""); }, [selectedBodySystem]);
+  useEffect(() => { setSelectedTest(""); }, [selectedCategory]);
+
+  if (loading || !user) {
+    return <main className="auth-shell"><div className="auth-loading">Loading…</div></main>;
   }
 
   return (
-    <main className="dashboard-shell">
-      <section className="dashboard-hero">
-        <div>
-          <p className="eyebrow">Dashboard upload flow</p>
-          <h1>Patient overview and report workflow</h1>
-          <p className="lede">
-            This view now posts real multipart uploads to the Python API and renders the returned
-            analysis instead of staying as a static prototype.
-          </p>
-        </div>
-        <div className="upload-card">
-          <span className="panel-label">Connected backend route</span>
-          <strong>POST {getApiBaseUrl()}/api/v1/reports/analyze</strong>
-          <form
-            className="upload-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              startTransition(() => {
-                void submitAnalysis();
-              });
-            }}
-          >
-            <label className="field-block">
-              <span>Medical report PDFs</span>
-              <input
-                type="file"
-                accept="application/pdf"
-                multiple
-                onChange={(event) => {
-                  setPdfFiles(Array.from(event.target.files ?? []));
-                }}
-              />
-            </label>
+    <div className="dashboard-root">
+      <NavBar user={user} onLogout={async () => { await logout(); router.replace("/login"); }} onHome={() => setView("home")} />
 
-            <label className="field-block">
-              <span>Existing Excel or CSV history</span>
-              <input
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                onChange={(event) => {
-                  setExistingDataFile(event.target.files?.[0] ?? null);
-                }}
-              />
-            </label>
-
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={includeRawTexts}
-                onChange={(event) => {
-                  setIncludeRawTexts(event.target.checked);
-                }}
-              />
-              <span>Include extracted text previews in the response</span>
-            </label>
-
-            <label className="field-block">
-              <span>Firebase bearer token (optional for secured API mode)</span>
-              <input
-                className="text-input"
-                type="password"
-                placeholder="Paste ID token when API_REQUIRE_AUTH=true"
-                value={token}
-                onChange={(event) => {
-                  setToken(event.target.value);
-                }}
-              />
-            </label>
-
-            <div className="selected-files">
-              {pdfFiles.length > 0 ? (
-                pdfFiles.map((file) => (
-                  <span className="file-chip" key={`${file.name}-${file.size}`}>
-                    {file.name}
-                  </span>
-                ))
-              ) : (
-                <span className="muted-copy">No PDF files selected yet.</span>
-              )}
-              {existingDataFile ? (
-                <span className="file-chip accent">History: {existingDataFile.name}</span>
-              ) : null}
-            </div>
-
-            <button className="primary-button submit-button" disabled={isPending} type="submit">
-              {isPending ? "Analyzing reports..." : "Analyze reports"}
+      {/* HOME */}
+      {view === "home" && (
+        <main className="home-shell">
+          <section className="home-hero">
+            <h1>Your Health Reports</h1>
+            <p>{history.length > 0 ? "Review past analyses or upload new reports." : "Welcome! Upload your first medical report PDFs to get started."}</p>
+            <button className="primary-button" onClick={() => setView("analyze")} type="button">
+              🔬 {history.length > 0 ? "Analyze New Reports" : "Upload & Analyze"}
             </button>
+          </section>
 
-            {errorMessage ? <p className="status-text error-text">{errorMessage}</p> : null}
-            {analysis ? (
-              <p className="status-text success-text">
-                Analysis complete for {analysis.patient_info.name || "patient"}.
-              </p>
-            ) : null}
-          </form>
-        </div>
-      </section>
+          {historyLoading && <p className="muted-copy center-text">Loading your reports…</p>}
 
-      <section className="metric-grid">
-        {dashboardMetrics.map((metric) => (
-          <article className="metric-card" key={metric.label}>
-            <span>{metric.label}</span>
-            <strong>{metric.value}</strong>
-          </article>
-        ))}
-      </section>
+          {history.length > 0 && (
+            <section className="history-section">
+              <h2>Past Analyses</h2>
+              <div className="history-list">
+                {history.map((item) => <HistoryCard key={item.id} item={item} onLoad={loadHistoryItem} />)}
+              </div>
+            </section>
+          )}
 
-      <section className="dashboard-columns">
-        <div className="report-list-card">
-          <div className="section-heading">
-            <h2>{analysis ? "Analysis summary" : "Recent reports"}</h2>
-            <p>
-              {analysis
-                ? "The backend response is rendered below from the uploaded files."
-                : "Firebase persistence is still pending, so these remain illustrative entries."}
-            </p>
-          </div>
-
-          {analysis ? (
-            <div className="analysis-stack">
-              <section className="detail-card">
-                <div className="section-heading compact">
-                  <h2>Patient profile</h2>
-                </div>
-                <div className="info-grid">
-                  <div>
-                    <span>Name</span>
-                    <strong>{analysis.patient_info.name || "N/A"}</strong>
-                  </div>
-                  <div>
-                    <span>Age</span>
-                    <strong>{analysis.patient_info.age || "N/A"}</strong>
-                  </div>
-                  <div>
-                    <span>Gender</span>
-                    <strong>{analysis.patient_info.gender || "N/A"}</strong>
-                  </div>
-                  <div>
-                    <span>Patient ID</span>
-                    <strong>{analysis.patient_info.patient_id || "N/A"}</strong>
-                  </div>
-                  <div>
-                    <span>Lab</span>
-                    <strong>{analysis.patient_info.lab_name || "N/A"}</strong>
-                  </div>
-                  <div>
-                    <span>Report date</span>
-                    <strong>{analysis.patient_info.date || "N/A"}</strong>
-                  </div>
-                </div>
-              </section>
-
-              <section className="detail-card">
-                <div className="section-heading compact">
-                  <h2>Flagged concerns</h2>
-                  <p>{analysis.health_summary.concerns.length} markers need attention.</p>
-                </div>
-                <div className="concern-list">
-                  {analysis.health_summary.concerns.length > 0 ? (
-                    analysis.health_summary.concerns.slice(0, 6).map((concern) => (
-                      <article className="concern-row" key={`${concern.test_name}-${concern.date}`}>
-                        <div>
-                          <h3>{concern.test_name}</h3>
-                          <p>
-                            {concern.category} • {concern.date} • Ref {concern.reference}
-                          </p>
-                        </div>
-                        <div className="report-meta">
-                          <span className={`status-pill ${getStatusTone(concern.status)}`}>
-                            {concern.status}
-                          </span>
-                          <strong>{concern.result}</strong>
-                        </div>
-                      </article>
-                    ))
-                  ) : (
-                    <p className="muted-copy">No abnormal results were flagged in the analyzed data.</p>
-                  )}
-                </div>
-              </section>
-
-              <section className="detail-card">
-                <div className="section-heading compact">
-                  <h2>Extracted records</h2>
-                  <p>Showing the first 8 normalized test rows returned by the API.</p>
-                </div>
-                <div className="table-shell">
-                  <table className="records-table">
-                    <thead>
-                      <tr>
-                        <th>Test</th>
-                        <th>Category</th>
-                        <th>Result</th>
-                        <th>Status</th>
-                        <th>Date</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {analysis.records.slice(0, 8).map((record, index) => (
-                        <tr key={`${record.Test_Name}-${record.Test_Date}-${index}`}>
-                          <td>{record.Test_Name ?? "N/A"}</td>
-                          <td>{record.Test_Category ?? "N/A"}</td>
-                          <td>
-                            {record.Result ?? "N/A"}
-                            {record.Unit ? ` ${record.Unit}` : ""}
-                          </td>
-                          <td>
-                            <span className={`status-pill ${getStatusTone(record.Status)}`}>
-                              {record.Status ?? "N/A"}
-                            </span>
-                          </td>
-                          <td>{record.Test_Date ?? "N/A"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            </div>
-          ) : (
-            <div className="report-list">
-              {recentReports.map((report) => (
-                <article className="report-row" key={`${report.name}-${report.date}`}>
-                  <div>
-                    <h3>{report.name}</h3>
-                    <p>{report.note}</p>
-                  </div>
-                  <div className="report-meta">
-                    <span>{report.date}</span>
-                    <strong>{report.status}</strong>
-                  </div>
-                </article>
-              ))}
+          {!historyLoading && history.length === 0 && (
+            <div className="empty-state">
+              <div className="empty-icon">📋</div>
+              <h3>No reports yet</h3>
+              <p>Upload your medical PDF reports and the AI will extract and analyze all test data automatically.</p>
+              <div className="feature-row">
+                <div className="feature-pill">📄 PDF extraction</div>
+                <div className="feature-pill">📊 Health trends</div>
+                <div className="feature-pill">🤖 AI chat</div>
+                <div className="feature-pill">📥 Excel export</div>
+              </div>
             </div>
           )}
-        </div>
+        </main>
+      )}
 
-        <div className="chat-card">
-          <div className="section-heading">
-            <h2>{analysis ? "Assistant panel" : "Assistant panel"}</h2>
-            <p>
-              {analysis
-                ? "Ask follow-up questions about the analyzed records using /api/v1/reports/chat."
-                : "Run report analysis first to unlock contextual chatbot responses."}
-            </p>
-          </div>
+      {/* ANALYZE */}
+      {view === "analyze" && (
+        <main className="analyze-shell">
+          <div className="analyze-card">
+            <div className="analyze-header">
+              <button className="back-btn" onClick={() => setView("home")} type="button">← Back</button>
+              <h2>Upload Medical Reports</h2>
+              <p>Select your PDF reports and we'll extract and analyze all the test data.</p>
+            </div>
 
-          {analysis ? (
-            <div className="chat-live-shell">
-              <div className="chat-stream">
-                {chatHistory.length === 0 ? (
-                  <div className="chat-bubble assistant muted">
-                    Ask a report question like: Why are my liver markers flagged?
-                  </div>
-                ) : (
-                  chatHistory.map((turn, index) => (
-                    <div
-                      className={`chat-bubble ${turn.role === "assistant" ? "assistant" : "user"}`}
-                      key={`${turn.role}-${index}-${turn.content.slice(0, 20)}`}
-                    >
-                      {turn.content}
+            <div className="mode-tabs">
+              <button className={`mode-tab ${uploadMode === "new" ? "active" : ""}`} onClick={() => setUploadMode("new")} type="button">📄 Upload New Reports</button>
+              <button className={`mode-tab ${uploadMode === "append" ? "active" : ""}`} onClick={() => setUploadMode("append")} type="button">➕ Add to Existing Data</button>
+            </div>
+
+            <form className="upload-form" onSubmit={(e) => { e.preventDefault(); startTransition(() => { void submitAnalysis(); }); }}>
+              <label className="upload-zone">
+                <input accept="application/pdf" multiple type="file" onChange={(e) => setPdfFiles(Array.from(e.target.files ?? []))} />
+                <div className="upload-zone-inner">
+                  <span className="upload-icon">☁️</span>
+                  <strong>Drag &amp; drop or click to browse</strong>
+                  <span>PDF files only • Up to 200MB each</span>
+                </div>
+              </label>
+
+              {pdfFiles.length > 0 && (
+                <div className="file-list">
+                  {pdfFiles.map((f) => (
+                    <div className="file-row" key={`${f.name}-${f.size}`}>
+                      <span>📄</span>
+                      <span className="file-name">{f.name}</span>
+                      <span className="file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                      <button className="file-remove" type="button" onClick={() => setPdfFiles((prev) => prev.filter((x) => x !== f))}>×</button>
                     </div>
-                  ))
-                )}
-              </div>
-
-              <form
-                className="chat-input-row"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  startChatTransition(() => {
-                    void submitChatQuestion();
-                  });
-                }}
-              >
-                <input
-                  className="text-input"
-                  type="text"
-                  placeholder="Ask about results, trends, or abnormalities"
-                  value={chatQuestion}
-                  onChange={(event) => {
-                    setChatQuestion(event.target.value);
-                  }}
-                />
-                <button className="secondary-button" disabled={isChatPending} type="submit">
-                  {isChatPending ? "Sending..." : "Ask"}
-                </button>
-              </form>
-
-              {chatError ? <p className="status-text error-text">{chatError}</p> : null}
-            </div>
-          ) : (
-            <div className="chat-placeholder">
-              <div className="chat-bubble assistant">
-                I can explain abnormal findings, summarize trends, and generate patient-friendly
-                answers after the uploaded report is analyzed.
-              </div>
-              <div className="chat-bubble user">Why is my LDL still high compared with last quarter?</div>
-              <div className="chat-bubble assistant muted">
-                Pending API wiring. This panel will render responses from the FastAPI backend.
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
-
-      {analysis ? (
-        <section className="report-list-card raw-text-section">
-          <div className="section-heading">
-            <h2>Body systems overview</h2>
-            <p>Generated by the backend insights layer for quick triage by system.</p>
-          </div>
-          <div className="system-list">
-            {analysis.body_systems.map((system) => (
-              <article className="system-card" key={system.system}>
-                <div className="system-heading">
-                  <strong>
-                    {system.emoji} {system.system}
-                  </strong>
-                  <span className={`status-pill ${getStatusTone(system.concern_level)}`}>
-                    {system.concern_level}
-                  </span>
-                </div>
-                <p>
-                  {system.abnormal_count} of {system.total_count} tests abnormal
-                  ({formatPercent(system.abnormal_ratio)})
-                </p>
-                <div className="chip-row">
-                  {system.categories.map((category) => (
-                    <span className="file-chip" key={`${system.system}-${category}`}>
-                      {category}
-                    </span>
                   ))}
                 </div>
-              </article>
-            ))}
-          </div>
-        </section>
-      ) : null}
+              )}
 
-      {analysis?.raw_texts.length ? (
-        <section className="report-list-card raw-text-section">
-          <div className="section-heading">
-            <h2>Raw extraction previews</h2>
-            <p>Useful for comparing the uploaded report text against the structured output.</p>
+              {uploadMode === "append" && (
+                <label className="field-block">
+                  <span>Upload Previous Excel / CSV (optional)</span>
+                  <input accept=".xlsx,.xls,.csv" type="file" onChange={(e) => setExistingDataFile(e.target.files?.[0] ?? null)} />
+                  {existingDataFile && <span className="file-chip accent">📊 {existingDataFile.name}</span>}
+                </label>
+              )}
+
+              {errorMessage && <p className="status-text error-text">{errorMessage}</p>}
+
+              <button className="primary-button submit-button" disabled={isPending} type="submit">
+                {isPending ? "🔬 Analyzing…" : "🔬 Analyze Reports"}
+              </button>
+            </form>
           </div>
-          <div className="raw-text-grid">
-            {analysis.raw_texts.map((item) => (
-              <article className="raw-text-card" key={item.name}>
-                <strong>{item.name}</strong>
-                <pre>{item.text}</pre>
-              </article>
-            ))}
+        </main>
+      )}
+
+      {/* RESULT */}
+      {view === "result" && analysis && (
+        <main className="result-shell">
+          <div className="result-topbar">
+            <button className="back-btn" onClick={() => setView("home")} type="button">← Dashboard</button>
+            <button className="secondary-button" onClick={() => setView("analyze")} type="button">+ Analyze More</button>
+            {saveStatus === "saved" && <span className="save-badge">✅ Saved</span>}
+            {saveStatus === "saving" && <span className="save-badge muted">Saving…</span>}
+            {saveStatus === "error" && <span className="save-badge error-badge">⚠️ Not saved</span>}
           </div>
-        </section>
-      ) : null}
-    </main>
+
+          <div className="success-banner">🎉 Successfully analyzed {analysis.total_records} test records!</div>
+
+          {/* Patient profile */}
+          <section className="result-section">
+            <h2>👤 Patient Profile</h2>
+            <div className="patient-grid">
+              {[
+                { label: "NAME", icon: "👤", value: analysis.patient_info.name },
+                { label: "AGE", icon: "🎂", value: analysis.patient_info.age },
+                { label: "GENDER", icon: "⚧", value: analysis.patient_info.gender },
+                { label: "LAB", icon: "🏥", value: analysis.patient_info.lab_name },
+              ].map((item) => (
+                <div className="patient-card" key={item.label}>
+                  <span>{item.icon} {item.label}</span>
+                  <strong>{item.value || "N/A"}</strong>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* AI Health Assistant */}
+          <section className="result-section">
+            <h2>💬 AI Health Assistant</h2>
+            <p className="muted-copy">Ask questions about your medical report and get AI-powered insights.</p>
+
+            {chatHistory.length === 0 && (
+              <div className="quick-questions">
+                <h3>💡 Quick Questions</h3>
+                <div className="quick-grid">
+                  {["📊 Show a general overview of my report", "🔬 Explain my blood test results", "⚠️ Are there any concerning findings?", "📈 Show my test trends over time"].map((q) => (
+                    <button className="quick-btn" disabled={isChatPending} key={q} onClick={() => handleQuickQuestion(q)} type="button">{q}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="chat-stream">
+              {chatHistory.map((turn, i) => (
+                <div className={`chat-bubble ${turn.role === "user" ? "user" : "assistant"}`} key={i}>{turn.content}</div>
+              ))}
+              {isChatPending && <div className="chat-bubble assistant muted">🤔 Thinking…</div>}
+            </div>
+
+            {chatError && <p className="status-text error-text">{chatError}</p>}
+
+            <form className="chat-input-row" onSubmit={(e) => { e.preventDefault(); startChatTransition(() => { void submitChatQuestion(); }); }}>
+              <input className="text-input" disabled={isChatPending} placeholder="Ask me anything about your health report…" type="text" value={chatQuestion} onChange={(e) => setChatQuestion(e.target.value)} />
+              <button className="primary-button" disabled={isChatPending || !chatQuestion.trim()} type="submit">Send</button>
+            </form>
+          </section>
+
+          {/* Visualizations */}
+          <section className="result-section">
+            <h2>📈 Test Result Visualizations</h2>
+            <div className="viz-layout">
+              <div className="viz-controls">
+                <label className="field-block">
+                  <span>Filter by Body System</span>
+                  <select className="select-input" value={selectedBodySystem} onChange={(e) => setSelectedBodySystem(e.target.value)}>
+                    <option value="all">🔍 All Systems</option>
+                    {allBodySystems.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </label>
+                <label className="field-block">
+                  <span>Select Category</span>
+                  <select className="select-input" value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)}>
+                    <option value="all">📋 All Categories</option>
+                    {allCategories.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </label>
+                <label className="field-block">
+                  <span>Select Test</span>
+                  <select className="select-input" value={selectedTest} onChange={(e) => setSelectedTest(e.target.value)}>
+                    <option value="">-- Select a test --</option>
+                    {allTests.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="viz-chart-area">
+                {selectedTest && selectedTestData.length > 0 ? (
+                  <TrendChart records={selectedTestData} testName={selectedTest} />
+                ) : (
+                  <div className="viz-empty">
+                    <span>📊</span>
+                    <h3>Select a Test to Visualize</h3>
+                    <p>Choose a test from the dropdown on the left to see charts and trends.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+
+          {/* Health Alerts */}
+          {analysis.health_summary.concerns.length > 0 && (
+            <section className="result-section">
+              <h2>⚠️ Health Alerts</h2>
+              <p className="muted-copy">{analysis.health_summary.concerns.length} result{analysis.health_summary.concerns.length !== 1 ? "s" : ""} flagged for review</p>
+              <div className="concern-list">
+                {analysis.health_summary.concerns.map((c, i) => (
+                  <article className="concern-row" key={i}>
+                    <div>
+                      <h3>{c.test_name}</h3>
+                      <p>{c.category} &bull; {c.date} &bull; Ref {c.reference}</p>
+                    </div>
+                    <div className="report-meta">
+                      <span className={`status-pill ${getStatusTone(c.status)}`}>{c.status}</span>
+                      <strong>{String(c.result)}</strong>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Data Table */}
+          <section className="result-section">
+            <h2>📋 Organized Data by Date</h2>
+            <p className="muted-copy">Your medical test results organized by test category, test name, and date.</p>
+            <DataTable records={analysis.records} />
+          </section>
+
+          {/* Downloads */}
+          <section className="result-section download-section">
+            <h2>📥 Download Health Report</h2>
+            <p className="muted-copy">Download a comprehensive report with your test results and AI-powered insights.</p>
+            <div className="download-buttons">
+              <button className="primary-button" disabled={isExporting !== null} onClick={handleExportPdf} type="button">
+                {isExporting === "pdf" ? "Generating…" : "📥 Download Health Report (PDF)"}
+              </button>
+              <button className="secondary-button" disabled={isExporting !== null} onClick={handleExportExcel} type="button">
+                {isExporting === "excel" ? "Generating…" : "📊 Download Excel with Charts"}
+              </button>
+            </div>
+          </section>
+        </main>
+      )}
+    </div>
   );
 }

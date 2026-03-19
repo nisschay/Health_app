@@ -205,3 +205,65 @@ class MedicalAnalysisService:
         api_key = self._require_api_key()
         report_df = dataframe_from_records(records)
         return generate_pdf_health_report(report_df, patient_info, api_key)
+
+    def export_excel_report(
+        self,
+        records: list[dict[str, Any]],
+        patient_info: dict[str, Any],
+    ) -> bytes:
+        """Generate an Excel file with organized test data."""
+        from Helper_Functions import create_enhanced_excel_with_trends, parse_date_dd_mm_yyyy
+
+        report_df = dataframe_from_records(records)
+        if report_df.empty:
+            raise ValueError("No records to export.")
+
+        report_df["Lab_Name_Clean"] = report_df.get("Lab_Name", pd.Series()).fillna("Unknown Lab")
+        report_df["Test_Date"] = report_df.get("Test_Date", pd.Series()).fillna("Unknown Date")
+        report_df["Date_Lab"] = (
+            report_df["Test_Date"].astype(str) + "_" + report_df["Lab_Name_Clean"].astype(str)
+        )
+
+        valid = report_df[
+            report_df["Test_Name"].notna()
+            & (report_df["Test_Name"] != "N/A")
+            & report_df["Result"].notna()
+        ]
+
+        if valid.empty:
+            raise ValueError("No valid test data to export.")
+
+        organized_df = valid.pivot_table(
+            index=["Test_Category", "Test_Name"],
+            columns="Date_Lab",
+            values="Result",
+            aggfunc="first",
+        ).reset_index()
+
+        ref_range_df = valid.pivot_table(
+            index=["Test_Category", "Test_Name"],
+            columns="Date_Lab",
+            values="Reference_Range",
+            aggfunc="first",
+        ).reset_index()
+
+        date_lab_cols = [c for c in organized_df.columns if c not in ["Test_Category", "Test_Name"]]
+
+        def _sort_key(col: str) -> Any:
+            try:
+                return parse_date_dd_mm_yyyy(col.split("_")[0]) or pd.Timestamp.min
+            except Exception:
+                return pd.Timestamp.min
+
+        date_lab_cols_sorted = sorted(date_lab_cols, key=_sort_key)
+        required_cols = ["Test_Category", "Test_Name"] + date_lab_cols_sorted
+        organized_df = organized_df.reindex(columns=required_cols, fill_value="").sort_values(
+            ["Test_Category", "Test_Name"]
+        ).reset_index(drop=True)
+        ref_range_df = ref_range_df.reindex(columns=required_cols, fill_value="").sort_values(
+            ["Test_Category", "Test_Name"]
+        ).reset_index(drop=True)
+
+        return create_enhanced_excel_with_trends(
+            organized_df, ref_range_df, date_lab_cols_sorted, patient_info
+        )
