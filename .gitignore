@@ -51,4 +51,5 @@ web/.next/
 # Local run helpers
 .run/
 
-serviceAccountKey.json
+serviceAccountKey.jsonweb/.env.local
+web/.env.local
