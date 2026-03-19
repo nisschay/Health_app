@@ -8,14 +8,22 @@ FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
 
 find_port_pid() {
   local port="$1"
+  local pid=""
 
   if command -v lsof >/dev/null 2>&1; then
-    lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null | head -n 1 || true
-    return
+    pid="$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+    if [[ -n "$pid" ]]; then
+      echo "$pid"
+      return
+    fi
   fi
 
   if command -v ss >/dev/null 2>&1; then
-    ss -ltnp 2>/dev/null | awk -v p=":$port" '$4 ~ p {print $NF}' | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | head -n 1 || true
+    pid="$(ss -ltnpH "sport = :$port" 2>/dev/null | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | head -n 1 || true)"
+    if [[ -n "$pid" ]]; then
+      echo "$pid"
+      return
+    fi
     return
   fi
 

@@ -1,4 +1,5 @@
 import json
+import traceback
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -97,6 +98,11 @@ async def analyze_reports(
     include_raw_texts: bool = Form(default=False),
     user: RequestUser = Depends(get_request_user),
 ) -> AnalysisResponse:
+    print(
+        f"[ANALYZE] Request received: pdf_count={len(pdf_files or [])}, "
+        f"has_existing_data={existing_data is not None}, user={user.user_id}"
+    )
+
     pdf_payloads: list[tuple[str, bytes]] = []
     for upload in pdf_files or []:
         pdf_payloads.append((upload.filename or "uploaded.pdf", await upload.read()))
@@ -117,6 +123,15 @@ async def analyze_reports(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        print(f"[ANALYZE] Failed with unexpected error: {exc}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Analysis failed: {str(exc)}",
+        ) from exc
+
+    print(f"[ANALYZE] Completed successfully: total_records={result.get('total_records', 0)}")
 
     return AnalysisResponse(**result)
 

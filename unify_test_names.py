@@ -198,8 +198,11 @@ def unify_test_names(df, threshold=90):
                     medians[name] = vals.median()
                 else:
                     medians[name] = np.nan
-            # Compute cluster median (ignoring NaN)
-            cluster_median = np.nanmedian(list(medians.values()))
+            # Compute cluster median only when at least one numeric value exists.
+            valid_cluster_medians = [v for v in medians.values() if not np.isnan(v)]
+            if not valid_cluster_medians:
+                continue
+            cluster_median = float(np.median(valid_cluster_medians))
             # Split names whose median is >30% off from cluster median
             for name in cluster_original_names:
                 m = medians[name]

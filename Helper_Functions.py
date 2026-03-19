@@ -1243,18 +1243,14 @@ def combine_duplicate_tests(df):
     test_cat_counts = df.groupby(['Test_Name', 'Test_Category'])['Test_Date'].nunique().reset_index().rename(columns={'Test_Date': 'date_count'})
     test_cat_total = df.groupby(['Test_Name', 'Test_Category']).size().reset_index(name='row_count')
     merged = pd.merge(test_cat_counts, test_cat_total, on=['Test_Name', 'Test_Category'])
-    
-    def pick_category(subdf):
-        max_dates = subdf['date_count'].max()
-        date_winners = subdf[subdf['date_count'] == max_dates]
-        if len(date_winners) == 1:
-            return date_winners.iloc[0]['Test_Category']
-        max_rows = date_winners['row_count'].max()
-        row_winners = date_winners[date_winners['row_count'] == max_rows]
-        return row_winners.iloc[0]['Test_Category']
 
-    best_cats = merged.groupby('Test_Name').apply(pick_category).reset_index()
-    best_cats.columns = ['Test_Name', 'Best_Test_Category']
+    # Pick best category per test by max distinct dates, then max rows, then stable name order.
+    ranked = merged.sort_values(
+        by=['Test_Name', 'date_count', 'row_count', 'Test_Category'],
+        ascending=[True, False, False, True],
+    )
+    best_cats = ranked.drop_duplicates(subset=['Test_Name'])[['Test_Name', 'Test_Category']]
+    best_cats = best_cats.rename(columns={'Test_Category': 'Best_Test_Category'})
     df = pd.merge(df, best_cats, on='Test_Name', how='left')
     df['Test_Category'] = df['Best_Test_Category']
     df = df.drop(columns=['Best_Test_Category'])

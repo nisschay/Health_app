@@ -18,6 +18,8 @@ import {
 } from "@/lib/api";
 import TrendChart from "./TrendChart";
 
+type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
+
 function getStatusTone(status: string | null | undefined): string {
   const n = status?.toLowerCase();
   if (n === "normal" || n === "negative") return "good";
@@ -108,7 +110,10 @@ export default function DashboardPage() {
   const [existingDataFile, setExistingDataFile] = useState<File | null>(null);
   const [uploadMode, setUploadMode] = useState<"new" | "append">("new");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeStep, setAnalyzeStep] = useState<AnalyzeStep>("idle");
+  const [analysisStartedAt, setAnalysisStartedAt] = useState<number | null>(null);
+  const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
@@ -134,18 +139,30 @@ export default function DashboardPage() {
 
   async function submitAnalysis() {
     setErrorMessage(null);
+    setIsAnalyzing(true);
+    setAnalyzeStep("preparing");
+    setAnalysisStartedAt(Date.now());
+    setAnalysisElapsedSeconds(0);
     const token = await getToken();
-    if (pdfFiles.length === 0) { setErrorMessage("Please select at least one PDF file."); return; }
+    if (pdfFiles.length === 0) {
+      setErrorMessage("Please select at least one PDF file.");
+      setIsAnalyzing(false);
+      setAnalyzeStep("error");
+      return;
+    }
     const fd = new FormData();
     for (const f of pdfFiles) fd.append("pdf_files", f);
     if (existingDataFile) fd.append("existing_data", existingDataFile);
+    setAnalyzeStep("uploading");
     try {
+      setAnalyzeStep("processing");
       const result = await analyzeReports(fd, token ?? undefined);
       setAnalysis(result);
       setChatHistory([]);
       setSelectedTest("");
       setView("result");
       if (token) {
+        setAnalyzeStep("saving");
         setSaveStatus("saving");
         try {
           await saveAnalysis(result, pdfFiles.map((f) => f.name), token);
@@ -153,7 +170,15 @@ export default function DashboardPage() {
           loadHistory();
         } catch { setSaveStatus("error"); }
       }
-    } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Analysis failed."); }
+      setAnalyzeStep("idle");
+    } catch (err) {
+      setAnalyzeStep("error");
+      setErrorMessage(err instanceof Error ? err.message : "Analysis failed.");
+    }
+    finally {
+      setIsAnalyzing(false);
+      setAnalysisStartedAt(null);
+    }
   }
 
   async function loadHistoryItem(id: number) {
@@ -232,6 +257,25 @@ export default function DashboardPage() {
   useEffect(() => { setSelectedCategory("all"); setSelectedTest(""); }, [selectedBodySystem]);
   useEffect(() => { setSelectedTest(""); }, [selectedCategory]);
 
+  useEffect(() => {
+    if (!isAnalyzing || analysisStartedAt === null) return;
+    const timer = window.setInterval(() => {
+      setAnalysisElapsedSeconds(Math.floor((Date.now() - analysisStartedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isAnalyzing, analysisStartedAt]);
+
+  const analyzeSteps = [
+    { id: "preparing", label: "Validating files", detail: "Checking selected PDFs and upload mode" },
+    { id: "uploading", label: "Uploading reports", detail: "Sending files securely to backend" },
+    { id: "processing", label: "Running AI extraction", detail: "Parsing PDFs and building structured data" },
+    { id: "saving", label: "Saving to your history", detail: "Storing the analysis in your account" },
+  ] as const;
+
+  const activeStepIndex = Math.max(0, analyzeSteps.findIndex((step) => step.id === analyzeStep));
+  const elapsedMinutes = Math.floor(analysisElapsedSeconds / 60);
+  const elapsedSeconds = analysisElapsedSeconds % 60;
+
   if (loading || !user) {
     return <main className="auth-shell"><div className="auth-loading">Loading…</div></main>;
   }
@@ -293,7 +337,7 @@ export default function DashboardPage() {
               <button className={`mode-tab ${uploadMode === "append" ? "active" : ""}`} onClick={() => setUploadMode("append")} type="button">➕ Add to Existing Data</button>
             </div>
 
-            <form className="upload-form" onSubmit={(e) => { e.preventDefault(); startTransition(() => { void submitAnalysis(); }); }}>
+            <form className="upload-form" onSubmit={(e) => { e.preventDefault(); void submitAnalysis(); }}>
               <label className="upload-zone">
                 <input accept="application/pdf" multiple type="file" onChange={(e) => setPdfFiles(Array.from(e.target.files ?? []))} />
                 <div className="upload-zone-inner">
@@ -324,10 +368,43 @@ export default function DashboardPage() {
                 </label>
               )}
 
+              {(isAnalyzing || analyzeStep === "error") && (
+                <section className={`analysis-progress-panel ${analyzeStep === "error" ? "error" : ""}`}>
+                  <div className="analysis-progress-head">
+                    <h3>{analyzeStep === "error" ? "Analysis stopped" : "Analysis in progress"}</h3>
+                    {isAnalyzing && <span>{elapsedMinutes}m {elapsedSeconds}s</span>}
+                  </div>
+
+                  <ul className="analysis-progress-list">
+                    {analyzeSteps.map((step, idx) => {
+                      const isDone = idx < activeStepIndex && analyzeStep !== "error";
+                      const isActive = isAnalyzing && idx === activeStepIndex;
+                      const isError = analyzeStep === "error" && idx === activeStepIndex;
+                      return (
+                        <li
+                          key={step.id}
+                          className={`progress-step ${isDone ? "done" : ""} ${isActive ? "active" : ""} ${isError ? "error" : ""}`.trim()}
+                        >
+                          <span className="progress-dot" aria-hidden="true" />
+                          <div>
+                            <strong>{step.label}</strong>
+                            <p>{step.detail}</p>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+
+                  <p className="analysis-progress-note">
+                    Large report sets can take a few minutes. Keep this tab open until processing completes.
+                  </p>
+                </section>
+              )}
+
               {errorMessage && <p className="status-text error-text">{errorMessage}</p>}
 
-              <button className="primary-button submit-button" disabled={isPending} type="submit">
-                {isPending ? "🔬 Analyzing…" : "🔬 Analyze Reports"}
+              <button className="primary-button submit-button" disabled={isAnalyzing} type="submit">
+                {isAnalyzing ? "🔬 Analyzing…" : "🔬 Analyze Reports"}
               </button>
             </form>
           </div>
