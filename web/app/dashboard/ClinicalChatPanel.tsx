@@ -18,10 +18,18 @@ import { parseMedicalDate } from "@/lib/clinical";
 
 type StructuredAssistant = {
   summary: string;
-  keyFindings: string[];
+  keyFindings: Array<{
+    testName: string;
+    status: string;
+    date: string;
+    reference: string;
+    value: string;
+  }>;
   metrics: Array<{ label: string; value: string; status: string; testName: string }>;
   trends: string[];
   recommendations: string[];
+  totalAlerts: number;
+  mostAffectedCategory: string;
 };
 
 function parseRefRange(ref: string | null | undefined): { low: number | null; high: number | null } {
@@ -43,9 +51,38 @@ function parseAssistantResponse(content: string, records: MedicalRecord[]): Stru
 
   const summary = lines.slice(0, 2).join(" ") || "Clinical review generated based on available report data.";
 
-  const findingLines = lines
-    .filter((line) => /high|low|critical|positive|abnormal|concern|risk/i.test(line))
-    .slice(0, 4);
+  const abnormalRecords = records
+    .filter((record) => {
+      const status = String(record.Status ?? "").toLowerCase();
+      return status === "high" || status === "low" || status === "critical" || status === "positive" || status === "flagged" || status === "insufficient";
+    })
+    .sort((a, b) => {
+      const rank = (status: string | null | undefined) => {
+        const s = (status ?? "").toLowerCase();
+        if (s === "critical") return 0;
+        if (s === "high" || s === "positive" || s === "flagged") return 1;
+        if (s === "low" || s === "insufficient") return 2;
+        return 3;
+      };
+      return rank(a.Status) - rank(b.Status);
+    });
+
+  const keyFindings = abnormalRecords.slice(0, 8).map((record) => ({
+    testName: record.Test_Name ?? "Unknown Test",
+    status: record.Status ?? "N/A",
+    date: record.Test_Date ?? "Unknown",
+    reference: record.Reference_Range ?? "N/A",
+    value: `${String(record.Result ?? "N/A")}${record.Unit ? ` ${record.Unit}` : ""}`,
+  }));
+
+  const categoryMap = new Map<string, number>();
+  for (const record of abnormalRecords) {
+    const category = record.Test_Category?.trim() || "Uncategorized";
+    categoryMap.set(category, (categoryMap.get(category) ?? 0) + 1);
+  }
+
+  const mostAffectedCategory = Array.from(categoryMap.entries())
+    .sort((a, b) => b[1] - a[1])[0]?.[0] ?? "No category alerts";
 
   const recommendations = lines
     .filter((line) => /recommend|follow|monitor|discuss|repeat|consult/i.test(line))
@@ -74,11 +111,13 @@ function parseAssistantResponse(content: string, records: MedicalRecord[]): Stru
 
   return {
     summary,
-    keyFindings: findingLines.length > 0 ? findingLines : ["No specific critical findings were highlighted in this response."],
+    keyFindings,
     metrics,
     trends,
     recommendations:
       recommendations.length > 0 ? recommendations : ["Discuss flagged trends with your clinician for interpretation."],
+    totalAlerts: abnormalRecords.length,
+    mostAffectedCategory,
   };
 }
 
@@ -116,7 +155,15 @@ function badgeTone(status: string) {
   if (s === "critical") return "bad";
   if (s === "high" || s === "positive" || s === "flagged") return "warn";
   if (s === "low") return "muted";
+  if (s === "normal" || s === "negative") return "good";
   return "muted";
+}
+
+function findingTone(status: string) {
+  const s = status.toLowerCase();
+  if (s === "critical" || s === "high" || s === "positive" || s === "flagged") return "critical";
+  if (s === "low" || s === "insufficient") return "low";
+  return "normal";
 }
 
 export default function ClinicalChatPanel({
@@ -138,7 +185,7 @@ export default function ClinicalChatPanel({
   onSubmit: () => void;
   onQuickQuestion: (question: string) => void;
 }) {
-  const [expandedTurns, setExpandedTurns] = useState<Record<number, boolean>>({});
+  const [showDetails, setShowDetails] = useState(false);
   const assistantTurn = [...chatHistory].reverse().find((turn) => turn.role !== "user");
   const analysisData = useMemo(
     () => parseAssistantResponse(assistantTurn?.content ?? "", records),
@@ -166,10 +213,103 @@ export default function ClinicalChatPanel({
     <section className="result-section">
       <h2>Clinical Intelligence Panel</h2>
       <div className="clinical-panel-layout">
-        <div className="clinical-chat-column">
+        <div className="clinical-chat-column clinical-panel-card">
+          <div className="clinical-top-stats">
+            <article className="clinical-stat-card">
+              <div className="clinical-stat-head">
+                <span className="clinical-stat-icon" aria-hidden="true">!</span>
+                <span>Total Alerts</span>
+              </div>
+              <strong>{analysisData.totalAlerts}</strong>
+              <span className="status-pill bad">Needs Review</span>
+            </article>
+
+            <article className="clinical-stat-card">
+              <div className="clinical-stat-head">
+                <span className="clinical-stat-icon" aria-hidden="true">C</span>
+                <span>Most Affected Category</span>
+              </div>
+              <strong>{analysisData.mostAffectedCategory}</strong>
+              <span className="status-pill warn">Top Concern</span>
+            </article>
+          </div>
+
+          <div className="clinical-summary-banner">
+            <span className="clinical-summary-icon" aria-hidden="true">i</span>
+            <p>{analysisData.summary}</p>
+          </div>
+
+          <div className="clinical-section-header-row">
+            <h3>Key Findings</h3>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setShowDetails((prev) => !prev)}
+            >
+              {showDetails ? "Hide Details" : "Show Details"}
+            </button>
+          </div>
+
+          {showDetails && (
+            <div className="clinical-findings-list" role="list">
+              {analysisData.keyFindings.length === 0 && (
+                <div className="clinical-finding-row" role="listitem">
+                  <div className="clinical-finding-main">
+                    <strong>No abnormal findings were detected in the current record set.</strong>
+                  </div>
+                </div>
+              )}
+
+              {analysisData.keyFindings.map((finding, idx) => (
+                <div className={`clinical-finding-row ${findingTone(finding.status)}`} role="listitem" key={`${finding.testName}-${finding.date}-${idx}`}>
+                  <div className="clinical-finding-main">
+                    <strong>{finding.testName}</strong>
+                    <p>{finding.value}</p>
+                    <small>{finding.date} • Ref: {finding.reference}</small>
+                  </div>
+                  <span className={`status-pill ${badgeTone(finding.status)}`}>{finding.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {showDetails && (
+            <div className="clinical-structured-card">
+              <h4>Key Metrics</h4>
+              <div className="metric-chip-row">
+                {analysisData.metrics.length === 0 && <span className="muted-copy">No highlighted metrics.</span>}
+                {analysisData.metrics.map((metric, metricIndex) => (
+                  <button
+                    type="button"
+                    key={`${metric.testName}-${metric.status}-${metric.value}-${metricIndex}`}
+                    className={`metric-chip ${activeMetric === metric.testName ? "active" : ""} ${hoveredMetric === metric.testName ? "linked" : ""}`}
+                    onClick={() => setActiveMetric(metric.testName)}
+                    onMouseEnter={() => setHoveredMetric(metric.testName)}
+                    onMouseLeave={() => setHoveredMetric(null)}
+                  >
+                    <span>{metric.label}</span>
+                    <strong>{metric.value}</strong>
+                    <em className={`status-pill ${badgeTone(metric.status)}`}>{metric.status}</em>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {showDetails && analysisData.recommendations.length > 0 && (
+            <div className="clinical-structured-card">
+              <h4>Recommendations</h4>
+              <ul>
+                {analysisData.recommendations.map((rec, i) => (
+                  <li key={`rec-${i}`}>{rec}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {chatHistory.length === 0 && (
             <div className="clinical-empty-state">
-              <p>Ask a question to generate structured clinical insights.</p>
+              <p>Try a guided query:</p>
               <div className="quick-grid">
                 {quickSuggestions.map((q) => (
                   <button key={q} className="quick-btn" type="button" disabled={isChatPending} onClick={() => onQuickQuestion(q)}>
@@ -180,115 +320,34 @@ export default function ClinicalChatPanel({
             </div>
           )}
 
-          <div className="chat-stream">
-            {chatHistory.map((turn, index) => {
-              const isAssistant = turn.role !== "user";
-              const parsed = isAssistant ? parseAssistantResponse(turn.content, records) : null;
-              const isExpanded = Boolean(expandedTurns[index]);
+          <div className="clinical-ask-ai">
+            <h3>Clinical Assistant</h3>
+            <p>Ask about trends, abnormalities, or clinical context</p>
 
-              return (
-                <article key={index} className={`clinical-chat-item ${isAssistant ? "assistant" : "user"}`}>
-                  {!isAssistant && (
-                    <div className="chat-bubble user">{turn.content}</div>
-                  )}
+            {chatError && <p className="status-text error-text">{chatError}</p>}
 
-                  {isAssistant && parsed && (
-                    <div className="clinical-structured-cards">
-                      <div className="clinical-structured-card">
-                        <h4>Summary</h4>
-                        <p>{parsed.summary}</p>
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          onClick={() => setExpandedTurns((prev) => ({ ...prev, [index]: !isExpanded }))}
-                        >
-                          {isExpanded ? "Hide Details" : "Show Details"}
-                        </button>
-                      </div>
-
-                      {isExpanded && (
-                        <>
-                          <div className="clinical-structured-card">
-                            <h4>Key Findings</h4>
-                            <ul>
-                              {parsed.keyFindings.map((finding, i) => (
-                                <li key={`${index}-finding-${i}`}>{finding}</li>
-                              ))}
-                            </ul>
-                          </div>
-
-                          <div className="clinical-structured-card">
-                            <h4>Key Metrics</h4>
-                            <div className="metric-chip-row">
-                              {parsed.metrics.length === 0 && <span className="muted-copy">No highlighted metrics.</span>}
-                              {parsed.metrics.map((metric, metricIndex) => (
-                                <button
-                                  type="button"
-                                  key={`${index}-${metric.testName}-${metric.status}-${metric.value}-${metricIndex}`}
-                                  className={`metric-chip ${activeMetric === metric.testName ? "active" : ""} ${hoveredMetric === metric.testName ? "linked" : ""}`}
-                                  onClick={() => setActiveMetric(metric.testName)}
-                                  onMouseEnter={() => setHoveredMetric(metric.testName)}
-                                  onMouseLeave={() => setHoveredMetric(null)}
-                                >
-                                  <span>{metric.label}</span>
-                                  <strong>{metric.value}</strong>
-                                  <em className={`status-pill ${badgeTone(metric.status)}`}>{metric.status}</em>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-
-                          {parsed.trends.length > 0 && (
-                            <div className="clinical-structured-card">
-                              <h4>Trends</h4>
-                              <ul>
-                                {parsed.trends.map((trend, i) => (
-                                  <li key={`${index}-trend-${i}`}>{trend}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-
-                          <div className="clinical-structured-card">
-                            <h4>Recommendations</h4>
-                            <ul>
-                              {parsed.recommendations.map((rec, i) => (
-                                <li key={`${index}-rec-${i}`}>{rec}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </article>
-              );
-            })}
-
-            {isChatPending && <div className="chat-bubble assistant muted">Analyzing clinical context...</div>}
+            <form
+              className="chat-input-row"
+              onSubmit={(e) => {
+                e.preventDefault();
+                onSubmit();
+              }}
+            >
+              <input
+                className="text-input"
+                type="text"
+                placeholder="Ask about trends, abnormalities, and clinical context..."
+                disabled={isChatPending}
+                value={chatQuestion}
+                onChange={(e) => onChangeQuestion(e.target.value)}
+              />
+              <button className="primary-button" type="submit" disabled={isChatPending || !chatQuestion.trim()}>
+                Send
+              </button>
+            </form>
           </div>
 
-          {chatError && <p className="status-text error-text">{chatError}</p>}
-
-          <form
-            className="chat-input-row"
-            onSubmit={(e) => {
-              e.preventDefault();
-              onSubmit();
-            }}
-          >
-            <input
-              className="text-input"
-              type="text"
-              placeholder="Ask about trends, abnormalities, and clinical context..."
-              disabled={isChatPending}
-              value={chatQuestion}
-              onChange={(e) => onChangeQuestion(e.target.value)}
-            />
-            <button className="primary-button" type="submit" disabled={isChatPending || !chatQuestion.trim()}>
-              Send
-            </button>
-          </form>
+          {isChatPending && <div className="chat-bubble assistant muted">Analyzing clinical context...</div>}
         </div>
 
         <aside className="clinical-viz-column">

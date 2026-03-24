@@ -2314,6 +2314,105 @@ h1 {
   min-width: 0;
 }
 
+.clinical-panel-card {
+  background: #141312;
+  border: 1px solid #2f2b27;
+  border-radius: 12px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+  padding: 1.3rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.clinical-top-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.clinical-stat-card {
+  background: #1b1917;
+  border: 1px solid #38322b;
+  border-radius: 10px;
+  padding: 0.8rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.clinical-stat-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.clinical-stat-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid #d97706;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fbbf24;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.clinical-stat-card strong {
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+}
+
+.clinical-summary-banner {
+  background: rgba(217, 119, 6, 0.12);
+  border: 1px solid rgba(217, 119, 6, 0.34);
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.clinical-summary-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid #d97706;
+  color: #fbbf24;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  margin-top: 2px;
+}
+
+.clinical-summary-banner p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+}
+
+.clinical-section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-top: 1px solid #2f2b27;
+  padding-top: 0.85rem;
+}
+
+.clinical-section-header-row h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
 .clinical-empty-state {
   border: 1px dashed var(--border-default);
   border-radius: var(--radius-md);
@@ -2340,7 +2439,7 @@ h1 {
 .clinical-structured-card {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  background: var(--bg-card);
+  background: #1a1816;
   padding: 0.75rem;
 }
 
@@ -2369,6 +2468,60 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
+}
+
+.clinical-findings-list {
+  border: 1px solid #2f2b27;
+  border-radius: 10px;
+  background: #171513;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.clinical-finding-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.7rem;
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid #2a2622;
+  border-left: 3px solid #6b7280;
+}
+
+.clinical-finding-row:last-child {
+  border-bottom: none;
+}
+
+.clinical-finding-row.critical {
+  border-left-color: #e74c3c;
+}
+
+.clinical-finding-row.low {
+  border-left-color: #f5a623;
+}
+
+.clinical-finding-row.normal {
+  border-left-color: #6b8f71;
+}
+
+.clinical-finding-main strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 0.86rem;
+}
+
+.clinical-finding-main p {
+  margin: 0.18rem 0 0;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.clinical-finding-main small {
+  display: block;
+  margin-top: 0.18rem;
+  color: var(--text-muted);
+  font-size: 0.74rem;
 }
 
 .metric-chip {
@@ -2402,6 +2555,34 @@ h1 {
 .metric-chip.linked,
 .metric-chip:hover {
   border-color: var(--accent);
+}
+
+.clinical-ask-ai {
+  border-top: 1px solid #2f2b27;
+  padding-top: 0.85rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.clinical-ask-ai h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.clinical-ask-ai p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.clinical-ask-ai .text-input {
+  border-color: #3b342d;
+  background: #141210;
+}
+
+.clinical-ask-ai .text-input:focus {
+  border-color: #d97706;
 }
 
 .clinical-viz-column {
@@ -2560,9 +2741,31 @@ h1 {
   border-top: 1px solid var(--border-subtle);
 }
 
+.organized-search-wrap {
+  margin-top: 0.7rem;
+  margin-bottom: 0.55rem;
+}
+
+.organized-search-wrap .text-input {
+  background: #141210;
+  border-color: #3b342d;
+}
+
+.organized-search-wrap .text-input:focus {
+  border-color: #d97706;
+}
+
 .data-date-block,
 .data-category-block {
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.organized-category-block {
+  transition: background-color 220ms ease;
+}
+
+.organized-category-block:hover {
+  background: #181614;
 }
 
 .data-date-head,
@@ -2580,7 +2783,8 @@ h1 {
 }
 
 .data-date-head {
-  padding: 0.8rem 0.2rem;
+  padding: 0.75rem 0.35rem;
+  min-height: 56px;
 }
 
 .data-category-head {
@@ -2589,7 +2793,7 @@ h1 {
 
 .data-date-head strong,
 .data-category-head strong {
-  font-size: 0.86rem;
+  font-size: 0.9rem;
 }
 
 .data-date-head span,
@@ -2599,13 +2803,14 @@ h1 {
 }
 
 .data-category-list {
-  padding: 0 0 0.2rem 0.7rem;
+  padding: 0 0 0.25rem 1rem;
 }
 
 .data-test-list {
-  padding: 0.1rem 0 0.35rem 0.7rem;
+  padding: 0.15rem 0 0.35rem 0.95rem;
   display: grid;
   gap: 0.2rem;
+  border-left: 1px solid #39332d;
 }
 
 .data-test-row {
@@ -2613,7 +2818,8 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 0.6rem;
-  padding: 0.35rem 0;
+  padding: 0.5rem 0.2rem;
+  min-height: 46px;
   border-bottom: 1px dashed var(--border-subtle);
 }
 
@@ -2631,6 +2837,22 @@ h1 {
   color: var(--text-muted);
 }
 
+.organized-category-left {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.organized-chevron {
+  color: #f5a623;
+  transition: transform 240ms ease;
+  font-size: 0.95rem;
+}
+
+.organized-chevron.open {
+  transform: rotate(90deg);
+}
+
 .data-test-side {
   text-align: right;
 }
@@ -2641,6 +2863,16 @@ h1 {
   font-size: 0.82rem;
   color: var(--text-primary);
   margin-bottom: 0.2rem;
+}
+
+.status-pill.low {
+  background: rgba(245, 166, 35, 0.2);
+  color: #f5a623;
+}
+
+.status-pill.na {
+  background: rgba(120, 113, 108, 0.22);
+  color: #a8a29e;
 }
 
 /* =========================================
