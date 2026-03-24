@@ -32,6 +32,7 @@ _last_extraction_error = ""
 _analysis_cache: dict[str, dict] = {}
 _analysis_cache_max_items = 128
 _active_extraction_model_name = ""
+_active_chat_model_name = ""
 
 
 def _model_candidates_from_env(var_name: str, default: str) -> list[str]:
@@ -241,7 +242,7 @@ def extract_text_from_pdf(file_content):
         return None
 
 def init_gemini_models(api_key_for_gemini):
-    global gemini_model_extraction, gemini_model_chat, _active_extraction_model_name
+    global gemini_model_extraction, gemini_model_chat, _active_extraction_model_name, _active_chat_model_name
     try:
         if not api_key_for_gemini:
             _ui_error("Gemini API key is missing. Cannot initialize models.")
@@ -268,6 +269,7 @@ def init_gemini_models(api_key_for_gemini):
         for model_name in CHAT_MODEL_CANDIDATES:
             try:
                 gemini_model_chat = genai.GenerativeModel(model_name)
+                _active_chat_model_name = model_name
                 return True
             except Exception as model_exc:
                 chat_last_error = model_exc
@@ -277,12 +279,15 @@ def init_gemini_models(api_key_for_gemini):
         gemini_model_extraction = None
         gemini_model_chat = None
         _active_extraction_model_name = ""
+        _active_chat_model_name = ""
         return False
         
     except Exception as e:
         _ui_error(f"Error configuring Gemini: {e}. Please ensure your API key is correct and valid.")
         gemini_model_extraction = None
         gemini_model_chat = None
+        _active_extraction_model_name = ""
+        _active_chat_model_name = ""
         return False
 
 
@@ -705,17 +710,33 @@ def consolidate_patient_info(patient_info_list):
     }
 
 def get_chatbot_response(report_df_for_prompt, user_question, chat_history_for_prompt, api_key_for_gemini):
-    global gemini_model_chat
+    global gemini_model_chat, _active_chat_model_name
     if not gemini_model_chat and not init_gemini_models(api_key_for_gemini):
         return "Chatbot model not initialized. API key might be missing or invalid."
     if report_df_for_prompt.empty:
         return "No report data available to answer questions. Please analyze a report first."
-    
-    df_string = report_df_for_prompt[['Test_Date', 'Test_Category', 'Test_Name', 'Result', 'Unit', 'Reference_Range', 'Status']].to_string(index=False, max_rows=50)
+
+    expected_cols = [
+        'Test_Date',
+        'Test_Category',
+        'Test_Name',
+        'Result',
+        'Unit',
+        'Reference_Range',
+        'Status',
+    ]
+    safe_df = report_df_for_prompt.copy()
+    for col in expected_cols:
+        if col not in safe_df.columns:
+            safe_df[col] = "N/A"
+    df_string = safe_df[expected_cols].to_string(index=False, max_rows=50)
     
     history_context = ""
     for entry in chat_history_for_prompt[-5:]:
-        history_context += f"{entry['role'].capitalize()}: {entry['content']}\n"
+        role = str(entry.get("role", "user")).capitalize()
+        content = str(entry.get("content", "")).strip()
+        if content:
+            history_context += f"{role}: {content}\n"
 
     prompt = f"""You are a medical report assistant, so try to be precise.
 Based on the provided medical test results and chat history, answer the user's question.
@@ -742,12 +763,57 @@ User Question: {user_question}
 
 Assistant Response (please use bullet points):
 """
-    try:
-        response = gemini_model_chat.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        st.error(f"Error getting chatbot response from Gemini: {str(e)}")
-        return "Sorry, I encountered an error trying to respond."
+
+    def _response_text_from_model_response(model_response):
+        text = (getattr(model_response, "text", "") or "").strip()
+        if text:
+            return text
+
+        parts = []
+        for candidate in getattr(model_response, "candidates", []) or []:
+            content = getattr(candidate, "content", None)
+            if not content:
+                continue
+            for part in getattr(content, "parts", []) or []:
+                part_text = getattr(part, "text", None)
+                if part_text:
+                    parts.append(part_text)
+
+        return "\n".join(parts).strip()
+
+    model_names_to_try = []
+    if _active_chat_model_name:
+        model_names_to_try.append(_active_chat_model_name)
+    for model_name in CHAT_MODEL_CANDIDATES:
+        if model_name not in model_names_to_try:
+            model_names_to_try.append(model_name)
+
+    last_error_text = ""
+    for model_name in model_names_to_try:
+        try:
+            if model_name != _active_chat_model_name:
+                gemini_model_chat = genai.GenerativeModel(model_name)
+                _active_chat_model_name = model_name
+
+            response = gemini_model_chat.generate_content(prompt)
+            response_text = _response_text_from_model_response(response)
+            if response_text:
+                return response_text
+            last_error_text = "Gemini chat returned an empty response."
+            continue
+        except Exception as e:
+            last_error_text = str(e)
+            if _is_rate_limit_error(last_error_text):
+                retry_delay = _extract_retry_delay(last_error_text)
+                return (
+                    "Gemini chat rate limit reached. "
+                    + (f"Please retry after {retry_delay}." if retry_delay else "Please try again shortly.")
+                )
+            continue
+
+    if last_error_text:
+        _ui_error(f"Error getting chatbot response from Gemini: {last_error_text}")
+    return "Sorry, I encountered an error trying to respond."
 
 def parse_reference_range(ref_range_str):
     if not isinstance(ref_range_str, str) or ref_range_str.lower() == 'n/a' or not ref_range_str.strip():

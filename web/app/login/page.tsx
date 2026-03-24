@@ -96,137 +96,140 @@ export default function LoginPage() {
       </section>
 
       <section className="auth-panel">
-        <div className="auth-brand">
-          <span className="auth-logo" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Medical icon">
-              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-            </svg>
-          </span>
-          <h1>Medical Report Analyzer</h1>
-          <p>Secure sign in to continue to your health workspace</p>
-        </div>
+        <div className="auth-card">
+          <div className="auth-brand">
+            <span className="auth-logo" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Medical icon">
+                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.6" fill="none" />
+                <path d="M5 12h3l1.3-2.3 2.2 5 1.9-3.2H19" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              </svg>
+            </span>
+            <h1>Medical Report Analyzer</h1>
+            <p>Secure sign in to continue to your health workspace</p>
+          </div>
 
-        <div className="auth-tabs" role="tablist" aria-label="Authentication mode">
+          <div className="auth-tabs" role="tablist" aria-label="Authentication mode">
+            <button
+              className={`auth-tab ${mode === "login" ? "active" : ""}`}
+              onClick={() => { setMode("login"); setError(null); }}
+              type="button"
+              role="tab"
+              aria-selected={mode === "login"}
+            >
+              Sign In
+            </button>
+            <button
+              className={`auth-tab ${mode === "register" ? "active" : ""}`}
+              onClick={() => { setMode("register"); setError(null); }}
+              type="button"
+              role="tab"
+              aria-selected={mode === "register"}
+            >
+              Create Account
+            </button>
+          </div>
+
           <button
-            className={`auth-tab ${mode === "login" ? "active" : ""}`}
-            onClick={() => { setMode("login"); setError(null); }}
+            className="google-button"
+            disabled={isPending}
+            onClick={handleGoogle}
             type="button"
-            role="tab"
-            aria-selected={mode === "login"}
           >
-            Sign In
+            <span className="google-glyph" aria-hidden="true">G</span>
+            Continue with Google
           </button>
-          <button
-            className={`auth-tab ${mode === "register" ? "active" : ""}`}
-            onClick={() => { setMode("register"); setError(null); }}
-            type="button"
-            role="tab"
-            aria-selected={mode === "register"}
-          >
-            Create Account
-          </button>
-        </div>
 
-        <button
-          className="google-button"
-          disabled={isPending}
-          onClick={handleGoogle}
-          type="button"
-        >
-          <span className="google-glyph" aria-hidden="true">G</span>
-          Continue with Google
-        </button>
+          <div className="auth-divider"><span>or</span></div>
 
-        <div className="auth-divider"><span>or</span></div>
+          <form className="auth-form" onSubmit={handleEmailSubmit}>
+            {mode === "register" && (
+              <label className="auth-field">
+                <span>Full Name</span>
+                <input
+                  autoComplete="name"
+                  disabled={isPending}
+                  placeholder="Ravi Khandelwal"
+                  required
+                  type="text"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                />
+              </label>
+            )}
 
-        <form className="auth-form" onSubmit={handleEmailSubmit}>
-          {mode === "register" && (
             <label className="auth-field">
-              <span>Full Name</span>
+              <span>Email</span>
               <input
-                autoComplete="name"
+                autoComplete="email"
                 disabled={isPending}
-                placeholder="Ravi Khandelwal"
+                placeholder="you@example.com"
                 required
-                type="text"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
               />
             </label>
-          )}
 
-          <label className="auth-field">
-            <span>Email</span>
-            <input
-              autoComplete="email"
-              disabled={isPending}
-              placeholder="you@example.com"
-              required
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </label>
+            {mode === "login" && (
+              <button className="auth-link" onClick={(e) => e.preventDefault()} type="button">
+                Forgot password?
+              </button>
+            )}
 
-          {mode === "login" && (
-            <button className="auth-link" onClick={(e) => e.preventDefault()} type="button">
-              Forgot password?
+            <label className="auth-field auth-password-field">
+              <span>Password</span>
+              <div className="password-wrap">
+                <input
+                  autoComplete={mode === "login" ? "current-password" : "new-password"}
+                  disabled={isPending}
+                  minLength={6}
+                  placeholder="••••••••"
+                  required
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+                <button
+                  className="password-toggle"
+                  disabled={isPending}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowPassword((prev) => !prev);
+                  }}
+                  type="button"
+                >
+                  {showPassword ? "Hide" : "Show"}
+                </button>
+              </div>
+            </label>
+
+            {error && <p className="auth-error">{error}</p>}
+
+            <button className="primary-button auth-submit" disabled={isPending} type="submit">
+              {isPending
+                ? "Please wait…"
+                : mode === "login"
+                ? "Sign In"
+                : "Create Account"}
             </button>
-          )}
 
-          <label className="auth-field auth-password-field">
-            <span>Password</span>
-            <div className="password-wrap">
-              <input
-                autoComplete={mode === "login" ? "current-password" : "new-password"}
-                disabled={isPending}
-                minLength={6}
-                placeholder="••••••••"
-                required
-                type={showPassword ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <button
-                className="password-toggle"
-                disabled={isPending}
-                onClick={(e) => {
-                  e.preventDefault();
-                  setShowPassword((prev) => !prev);
-                }}
-                type="button"
-              >
-                {showPassword ? "Hide" : "Show"}
-              </button>
-            </div>
-          </label>
-
-          {error && <p className="auth-error">{error}</p>}
-
-          <button className="primary-button auth-submit" disabled={isPending} type="submit">
-            {isPending
-              ? "Please wait…"
-              : mode === "login"
-              ? "Sign In"
-              : "Create Account"}
-          </button>
-
-          {mode === "login" ? (
-            <p className="auth-footnote">
-              Don&apos;t have an account?{" "}
-              <button className="auth-inline-action" onClick={() => setMode("register")} type="button">
-                Create one
-              </button>
-            </p>
-          ) : (
-            <p className="auth-footnote">
-              Already have an account?{" "}
-              <button className="auth-inline-action" onClick={() => setMode("login")} type="button">
-                Sign in
-              </button>
-            </p>
-          )}
-        </form>
+            {mode === "login" ? (
+              <p className="auth-footnote">
+                Don&apos;t have an account?{" "}
+                <button className="auth-inline-action" onClick={() => setMode("register")} type="button">
+                  Create one
+                </button>
+              </p>
+            ) : (
+              <p className="auth-footnote">
+                Already have an account?{" "}
+                <button className="auth-inline-action" onClick={() => setMode("login")} type="button">
+                  Sign in
+                </button>
+              </p>
+            )}
+          </form>
+        </div>
       </section>
     </main>
   );

@@ -7,6 +7,19 @@ BACKEND_LOG="$RUN_DIR/backend.log"
 FRONTEND_LOG="$RUN_DIR/frontend.log"
 BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
+TAIL_LINES="${TAIL_LINES:-40}"
+
+wait_for_backend() {
+  local attempts=30
+  while (( attempts > 0 )); do
+    if curl -fsS "http://localhost:8000/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+    ((attempts--))
+  done
+  return 1
+}
 
 find_port_pid() {
   local port="$1"
@@ -72,7 +85,7 @@ if [[ -f "$BACKEND_PID_FILE" ]] && kill -0 "$(cat "$BACKEND_PID_FILE")" 2>/dev/n
 else
   source "$ROOT_DIR/.venv/bin/activate"
   cd "$ROOT_DIR"
-  nohup uvicorn backend_api.app.main:app --host 0.0.0.0 --port 8000 >"$BACKEND_LOG" 2>&1 &
+  nohup stdbuf -oL -eL uvicorn backend_api.app.main:app --host 0.0.0.0 --port 8000 >"$BACKEND_LOG" 2>&1 &
   echo $! >"$BACKEND_PID_FILE"
   echo "Started backend on http://localhost:8000 (PID $(cat "$BACKEND_PID_FILE"))"
 fi
@@ -92,3 +105,25 @@ echo "  Frontend URL: http://localhost:3000"
 echo "Logs:"
 echo "  Backend: $BACKEND_LOG"
 echo "  Frontend: $FRONTEND_LOG"
+
+if ! wait_for_backend; then
+  echo
+  echo "Backend health check did not pass within timeout. Recent backend logs:"
+  tail -n "$TAIL_LINES" "$BACKEND_LOG" || true
+  exit 1
+fi
+
+if [[ -f "$BACKEND_LOG" ]]; then
+  echo
+  echo "Most recent backend logs (last $TAIL_LINES lines):"
+  tail -n "$TAIL_LINES" "$BACKEND_LOG" || true
+else
+  echo
+  echo "Backend log file not found yet."
+fi
+
+if [[ -f "$FRONTEND_LOG" ]]; then
+  echo
+  echo "Most recent frontend logs (last 20 lines):"
+  tail -n 20 "$FRONTEND_LOG" || true
+fi

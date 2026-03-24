@@ -20,6 +20,25 @@ import TrendChart from "./TrendChart";
 
 type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
 
+function parseMedicalDate(value: string | null | undefined): number {
+  if (!value) return Number.MAX_SAFE_INTEGER;
+  const raw = value.trim();
+  const ddmmyyyy = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
+  if (ddmmyyyy) {
+    const day = ddmmyyyy[1]!.padStart(2, "0");
+    const month = ddmmyyyy[2]!.padStart(2, "0");
+    const year = ddmmyyyy[3]!.length === 2 ? `20${ddmmyyyy[3]}` : ddmmyyyy[3]!;
+    return new Date(`${year}-${month}-${day}`).getTime();
+  }
+  const parsed = new Date(raw).getTime();
+  return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
+}
+
+function isConcerningStatus(status: string | null | undefined): boolean {
+  const normalized = status?.toLowerCase();
+  return normalized === "high" || normalized === "low" || normalized === "critical" || normalized === "positive" || normalized === "flagged";
+}
+
 function getStatusTone(status: string | null | undefined): string {
   const n = status?.toLowerCase();
   if (n === "normal" || n === "negative") return "good";
@@ -78,38 +97,76 @@ function HistoryCard({ item, onLoad }: { item: AnalysisHistoryItem; onLoad: (id:
 
 function DataTable({ records }: { records: MedicalRecord[] }) {
   const valid = records.filter((r) => r.Test_Name && r.Test_Name !== "N/A" && r.Result !== null && r.Result !== undefined);
-  const dateLabs = Array.from(new Set(valid.map((r) => `${r.Test_Date ?? "Unknown"}__${r.Lab_Name ?? "Unknown Lab"}`))).sort();
-  const rowMap = new Map<string, Map<string, string>>();
+  const grouped = new Map<string, MedicalRecord[]>();
+
   for (const r of valid) {
-    const key = `${r.Test_Category ?? ""}||${r.Test_Name ?? ""}`;
-    const dlKey = `${r.Test_Date ?? "Unknown"}__${r.Lab_Name ?? "Unknown Lab"}`;
-    if (!rowMap.has(key)) rowMap.set(key, new Map());
-    rowMap.get(key)!.set(dlKey, String(r.Result ?? ""));
+    const groupKey = `${r.Test_Date ?? "Unknown"}__${r.Lab_Name ?? "Unknown Lab"}`;
+    if (!grouped.has(groupKey)) grouped.set(groupKey, []);
+    grouped.get(groupKey)!.push(r);
   }
-  const rows = Array.from(rowMap.entries()).map(([key, values]) => {
-    const [category, name] = key.split("||");
-    return { category, name, values };
-  });
+
+  const sections = Array.from(grouped.entries())
+    .map(([key, items]) => {
+      const [date, lab] = key.split("__");
+      const sortedItems = [...items].sort((a, b) => {
+        const byCategory = String(a.Test_Category ?? "").localeCompare(String(b.Test_Category ?? ""));
+        if (byCategory !== 0) return byCategory;
+        return String(a.Test_Name ?? "").localeCompare(String(b.Test_Name ?? ""));
+      });
+      const concerningCount = sortedItems.filter((item) => isConcerningStatus(item.Status)).length;
+      return { key, date, lab, items: sortedItems, concerningCount };
+    })
+    .sort((a, b) => parseMedicalDate(a.date) - parseMedicalDate(b.date));
+
   return (
-    <div className="table-shell">
-      <table className="records-table">
-        <thead>
-          <tr>
-            <th>Category</th>
-            <th>Test</th>
-            {dateLabs.map((dl) => { const [date, lab] = dl.split("__"); return <th key={dl}>{date}<br /><small>{lab}</small></th>; })}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr key={i}>
-              <td>{row.category}</td>
-              <td>{row.name}</td>
-              {dateLabs.map((dl) => <td key={dl}>{row.values.get(dl) ?? "—"}</td>)}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="date-sections">
+      {sections.map((section, index) => (
+        <details className="date-section" key={section.key} open={index === 0}>
+          <summary>
+            <div className="date-section-head">
+              <div>
+                <strong>{section.date}</strong>
+                <span>{section.lab}</span>
+              </div>
+              <div className="date-section-meta">
+                <span className="status-pill muted">{section.items.length} tests</span>
+                <span className={`status-pill ${section.concerningCount > 0 ? "warn" : "good"}`}>
+                  {section.concerningCount > 0 ? `${section.concerningCount} alerts` : "All stable"}
+                </span>
+              </div>
+            </div>
+          </summary>
+
+          <div className="table-shell">
+            <table className="records-table compact">
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>Test</th>
+                  <th>Result</th>
+                  <th>Unit</th>
+                  <th>Reference</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {section.items.map((row, rowIndex) => (
+                  <tr key={`${section.key}-${rowIndex}`}>
+                    <td>{row.Test_Category ?? "N/A"}</td>
+                    <td>{row.Test_Name ?? "N/A"}</td>
+                    <td>{String(row.Result ?? "—")}</td>
+                    <td>{row.Unit ?? "—"}</td>
+                    <td>{row.Reference_Range ?? "—"}</td>
+                    <td>
+                      <span className={`status-pill ${getStatusTone(row.Status)}`}>{row.Status ?? "N/A"}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      ))}
     </div>
   );
 }
@@ -215,7 +272,7 @@ export default function DashboardPage() {
     const newHistory = [...chatHistory, { role: "user", content: q }];
     setChatHistory(newHistory);
     try {
-      const resp = await sendChatMessage(analysis.records, q, chatHistory, token ?? undefined);
+      const resp = await sendChatMessage(analysis.records, q, newHistory, token ?? undefined);
       setChatHistory([...newHistory, { role: "assistant", content: resp.answer }]);
     } catch (err) { setChatError(err instanceof Error ? err.message : "Chat failed."); }
   }
@@ -230,7 +287,7 @@ export default function DashboardPage() {
         const newHistory = [...chatHistory, { role: "user", content: clean }];
         setChatHistory(newHistory);
         try {
-          const resp = await sendChatMessage(analysis.records, clean, chatHistory, token ?? undefined);
+          const resp = await sendChatMessage(analysis.records, clean, newHistory, token ?? undefined);
           setChatHistory([...newHistory, { role: "assistant", content: resp.answer }]);
         } catch (err) { setChatError(err instanceof Error ? err.message : "Chat failed."); }
       })();
@@ -276,6 +333,27 @@ export default function DashboardPage() {
   }, null);
   const lastAnalysisLabel = latestHistory ? fmtRelativeDate(latestHistory.created_at) : "Not yet";
   const alertsCount = analysis?.health_summary?.concerns?.length ?? 0;
+  const normalCount = records.filter((record) => {
+    const normalized = record.Status?.toLowerCase();
+    return normalized === "normal" || normalized === "negative";
+  }).length;
+  const concerningCount = records.filter((record) => isConcerningStatus(record.Status)).length;
+  const trendByDateMap = new Map<string, { total: number; concerning: number; good: number }>();
+  for (const record of records) {
+    const dateKey = record.Test_Date ?? "Unknown";
+    if (!trendByDateMap.has(dateKey)) {
+      trendByDateMap.set(dateKey, { total: 0, concerning: 0, good: 0 });
+    }
+    const bucket = trendByDateMap.get(dateKey)!;
+    bucket.total += 1;
+    if (isConcerningStatus(record.Status)) bucket.concerning += 1;
+    if ((record.Status ?? "").toLowerCase() === "normal" || (record.Status ?? "").toLowerCase() === "negative") {
+      bucket.good += 1;
+    }
+  }
+  const trendByDate = Array.from(trendByDateMap.entries())
+    .map(([date, values]) => ({ date, ...values }))
+    .sort((a, b) => parseMedicalDate(a.date) - parseMedicalDate(b.date));
 
   useEffect(() => { setSelectedCategory("all"); setSelectedTest(""); }, [selectedBodySystem]);
   useEffect(() => { setSelectedTest(""); }, [selectedCategory]);
@@ -454,7 +532,7 @@ export default function DashboardPage() {
         <main className="result-shell">
           <div className="result-topbar">
             <button className="back-btn" onClick={() => setView("home")} type="button">Dashboard</button>
-            <button className="secondary-button" onClick={() => setView("analyze")} type="button">+ Analyze More</button>
+            <button className="secondary-button" onClick={() => setView("analyze")} type="button">Analyze More Reports</button>
             {saveStatus === "saved" && <span className="save-badge">✅ Saved</span>}
             {saveStatus === "saving" && <span className="save-badge muted">Saving…</span>}
             {saveStatus === "error" && <span className="save-badge error-badge">Not saved</span>}
@@ -477,6 +555,43 @@ export default function DashboardPage() {
                   <strong>{item.value || "N/A"}</strong>
                 </div>
               ))}
+            </div>
+          </section>
+
+          <section className="result-section">
+            <h2>Trend Snapshot</h2>
+            <p className="muted-copy">Quick view of stable vs concerning patterns across report dates.</p>
+
+            <div className="trend-summary-grid">
+              <article className="trend-stat good">
+                <span>Stable Results</span>
+                <strong>{normalCount}</strong>
+              </article>
+              <article className="trend-stat warn">
+                <span>Concerning Results</span>
+                <strong>{concerningCount}</strong>
+              </article>
+              <article className="trend-stat muted">
+                <span>Report Dates</span>
+                <strong>{trendByDate.length}</strong>
+              </article>
+            </div>
+
+            <div className="trend-mini-chart">
+              {trendByDate.map((point) => {
+                const concerningPct = point.total > 0 ? Math.round((point.concerning / point.total) * 100) : 0;
+                const goodPct = point.total > 0 ? Math.round((point.good / point.total) * 100) : 0;
+                return (
+                  <div className="trend-mini-row" key={point.date}>
+                    <span className="trend-mini-date">{point.date}</span>
+                    <div className="trend-mini-bars" aria-label={`Concerning ${concerningPct}% and stable ${goodPct}% on ${point.date}`}>
+                      <div className="trend-mini-bar bad" style={{ width: `${Math.max(4, concerningPct)}%` }} />
+                      <div className="trend-mini-bar good" style={{ width: `${Math.max(4, goodPct)}%` }} />
+                    </div>
+                    <span className="trend-mini-meta">{point.concerning}/{point.total} alerts</span>
+                  </div>
+                );
+              })}
             </div>
           </section>
 
@@ -515,23 +630,23 @@ export default function DashboardPage() {
           <section className="result-section">
             <h2>Test Result Visualizations</h2>
             <div className="viz-layout">
-              <div className="viz-controls">
-                <label className="field-block">
-                  <span>Filter by Body System</span>
+              <div className="viz-controls selector-panel">
+                <label className="field-block selector-field">
+                  <span className="selector-caption">Body System</span>
                   <select className="select-input" value={selectedBodySystem} onChange={(e) => setSelectedBodySystem(e.target.value)}>
                     <option value="all">All Systems</option>
                     {allBodySystems.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </label>
-                <label className="field-block">
-                  <span>Select Category</span>
+                <label className="field-block selector-field">
+                  <span className="selector-caption">Category</span>
                   <select className="select-input" value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)}>
                     <option value="all">All Categories</option>
                     {allCategories.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </label>
-                <label className="field-block">
-                  <span>Select Test</span>
+                <label className="field-block selector-field">
+                  <span className="selector-caption">Test Name</span>
                   <select className="select-input" value={selectedTest} onChange={(e) => setSelectedTest(e.target.value)}>
                     <option value="">-- Select a test --</option>
                     {allTests.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -555,20 +670,30 @@ export default function DashboardPage() {
           {analysis.health_summary.concerns.length > 0 && (
             <section className="result-section">
               <h2>Health Alerts</h2>
-              <p className="muted-copy">{analysis.health_summary.concerns.length} result{analysis.health_summary.concerns.length !== 1 ? "s" : ""} flagged for review</p>
-              <div className="concern-list">
-                {analysis.health_summary.concerns.map((c, i) => (
-                  <article className="concern-row" key={i}>
-                    <div>
-                      <h3>{c.test_name}</h3>
-                      <p>{c.category} &bull; {c.date} &bull; Ref {c.reference}</p>
-                    </div>
-                    <div className="report-meta">
-                      <span className={`status-pill ${getStatusTone(c.status)}`}>{c.status}</span>
-                      <strong>{String(c.result)}</strong>
-                    </div>
-                  </article>
-                ))}
+              <div className="alerts-dashboard">
+                <div className="alerts-summary">
+                  <span className="status-pill bad">{analysis.health_summary.concerns.length} total alerts</span>
+                  <span className="status-pill warn">{analysis.health_summary.concerns.filter((c) => String(c.status).toLowerCase() === "high" || String(c.status).toLowerCase() === "low").length} high/low</span>
+                  <span className="status-pill bad">{analysis.health_summary.concerns.filter((c) => String(c.status).toLowerCase() === "critical").length} critical</span>
+                </div>
+
+                <div className="alerts-window">
+                  {analysis.health_summary.concerns.map((c, i) => (
+                    <details className="alert-item" key={i}>
+                      <summary>
+                        <div className="alert-main">
+                          <h3>{c.test_name}</h3>
+                          <p>{c.category}</p>
+                        </div>
+                        <div className="alert-side">
+                          <span className={`status-pill ${getStatusTone(c.status)}`}>{c.status}</span>
+                          <strong>{String(c.result)}</strong>
+                        </div>
+                      </summary>
+                      <p className="alert-detail">Date: {c.date} &bull; Reference: {c.reference}</p>
+                    </details>
+                  ))}
+                </div>
               </div>
             </section>
           )}

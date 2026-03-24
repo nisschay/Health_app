@@ -65,7 +65,7 @@ export default function TrendChart({ records, testName }: Props) {
   if (chartData.length === 0) {
     return (
       <div className="chart-no-data">
-        <p>📊 No numeric data available for {testName}</p>
+        <p>No numeric data available for {testName}</p>
         <p className="muted-copy">Results may be non-numeric or missing values.</p>
       </div>
     );
@@ -93,24 +93,24 @@ export default function TrendChart({ records, testName }: Props) {
         {isSinglePoint ? (
           /* Bar-style for single data points */
           <AreaChart data={chartData} margin={{ top: 16, right: 24, bottom: 16, left: 8 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3e" />
+            <CartesianGrid strokeDasharray="3 3" stroke="#3f3a34" />
             <XAxis dataKey="date" tick={{ fill: "#94a3b8", fontSize: 12 }} />
             <YAxis tick={{ fill: "#94a3b8", fontSize: 12 }} />
             <Tooltip
-              contentStyle={{ background: "#1e1e2e", border: "1px solid #6366f1", borderRadius: 8, color: "#f1f5f9" }}
+              contentStyle={{ background: "#1c1917", border: "1px solid #d97706", borderRadius: 8, color: "#fef3c7" }}
               formatter={(val) => [`${val} ${unit}`, testName]}
             />
             {low !== null && <ReferenceLine y={low} stroke="#22c55e" strokeDasharray="5 5" label={{ value: "Low", fill: "#22c55e", fontSize: 11 }} />}
             {high !== null && <ReferenceLine y={high} stroke="#ef4444" strokeDasharray="5 5" label={{ value: "High", fill: "#ef4444", fontSize: 11 }} />}
-            <Area type="monotone" dataKey="value" stroke="#6366f1" fill="#6366f133" strokeWidth={2} dot={{ fill: "#6366f1", r: 6 }} activeDot={{ r: 8 }} />
+            <Area type="monotone" dataKey="value" stroke="#d97706" fill="#d9770638" strokeWidth={2} dot={{ fill: "#d97706", r: 6 }} activeDot={{ r: 8 }} />
           </AreaChart>
         ) : (
           <LineChart data={chartData} margin={{ top: 16, right: 24, bottom: 16, left: 8 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3e" />
+            <CartesianGrid strokeDasharray="3 3" stroke="#3f3a34" />
             <XAxis dataKey="date" tick={{ fill: "#94a3b8", fontSize: 12 }} />
             <YAxis tick={{ fill: "#94a3b8", fontSize: 12 }} />
             <Tooltip
-              contentStyle={{ background: "#1e1e2e", border: "1px solid #6366f1", borderRadius: 8, color: "#f1f5f9" }}
+              contentStyle={{ background: "#1c1917", border: "1px solid #d97706", borderRadius: 8, color: "#fef3c7" }}
               formatter={(val) => [`${val} ${unit}`, testName]}
             />
             {low !== null && <ReferenceLine y={low} stroke="#22c55e" strokeDasharray="5 5" label={{ value: "Normal Low", fill: "#22c55e", fontSize: 11 }} />}
@@ -118,14 +118,14 @@ export default function TrendChart({ records, testName }: Props) {
             <Line
               type="monotone"
               dataKey="value"
-              stroke="#6366f1"
+              stroke="#d97706"
               strokeWidth={2.5}
               dot={(props) => {
                 const d = chartData[props.index];
-                const color = d?.status?.toLowerCase() === "normal" ? "#22c55e" : d?.status?.toLowerCase() === "high" || d?.status?.toLowerCase() === "low" ? "#f59e0b" : "#6366f1";
+                const color = d?.status?.toLowerCase() === "normal" ? "#22c55e" : d?.status?.toLowerCase() === "high" || d?.status?.toLowerCase() === "low" ? "#f59e0b" : "#d97706";
                 return <circle key={props.index} cx={props.cx} cy={props.cy} r={6} fill={color} stroke="#0a0a0a" strokeWidth={2} />;
               }}
-              activeDot={{ r: 8, fill: "#6366f1" }}
+              activeDot={{ r: 8, fill: "#d97706" }}
             />
           </LineChart>
         )}
