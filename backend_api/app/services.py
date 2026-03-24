@@ -29,6 +29,11 @@ from .auth import RequestUser
 from .config import settings
 
 
+def _is_rate_limit_reason(reason: str) -> bool:
+    text = (reason or "").lower()
+    return "rate limit" in text or "quota" in text or " 429" in text or ":429" in text
+
+
 class NamedBytesIO(io.BytesIO):
     def __init__(self, payload: bytes, name: str):
         super().__init__(payload)
@@ -143,6 +148,11 @@ class MedicalAnalysisService:
             combined_raw_df = pd.concat(all_dfs, ignore_index=True)
         else:
             details = "; ".join(failed_files[:5]) if failed_files else "Unknown extraction failure."
+            if failed_files and all(_is_rate_limit_reason(item) for item in failed_files):
+                raise RuntimeError(
+                    "RATE_LIMIT_EXCEEDED: Gemini free-tier request quota reached for all uploaded files. "
+                    f"Details: {details}"
+                )
             raise ValueError(
                 "No medical data could be extracted from the provided files. "
                 f"Details: {details}"

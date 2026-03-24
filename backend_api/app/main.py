@@ -127,6 +127,11 @@ async def analyze_reports(
             include_raw_texts=include_raw_texts,
             user=user,
         )
+    except RuntimeError as exc:
+        detail = str(exc)
+        if detail.startswith("RATE_LIMIT_EXCEEDED:"):
+            raise HTTPException(status_code=429, detail=detail) from exc
+        raise HTTPException(status_code=500, detail=detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -150,7 +155,9 @@ def save_report_analysis(
 ) -> AnalysisHistoryItem:
     """Save an analysis result to PostgreSQL for the authenticated user."""
     if not user.authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required to save reports.")
+        if settings.require_auth:
+            raise HTTPException(status_code=401, detail="Authentication required to save reports.")
+        user = RequestUser(user_id="anonymous", email=None, authenticated=False)
 
     analysis_dict = payload.analysis.model_dump()
     row = save_analysis(
@@ -182,7 +189,9 @@ def list_report_history(
 ) -> list[AnalysisHistoryItem]:
     """Return all past analyses for the authenticated user."""
     if not user.authenticated:
-        return []
+        if settings.require_auth:
+            return []
+        user = RequestUser(user_id="anonymous", email=None, authenticated=False)
 
     rows = get_user_analyses(db, user.user_id)
     return [
@@ -212,7 +221,9 @@ def get_report_by_id(
 ) -> AnalysisResponse:
     """Return the full AnalysisResponse for a previously saved report."""
     if not user.authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required.")
+        if settings.require_auth:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        user = RequestUser(user_id="anonymous", email=None, authenticated=False)
 
     row = get_analysis_by_id(db, analysis_id, user.user_id)
     if not row:

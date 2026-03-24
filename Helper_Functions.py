@@ -13,16 +13,40 @@ from unify_test_names import unify_test_names
 import sys
 import os
 from collections import Counter
+import hashlib
+import copy
+import logging
 
 try:
     from streamlit.runtime.scriptrunner import get_script_run_ctx
 except Exception:  # pragma: no cover - streamlit internals can vary
     get_script_run_ctx = None
 
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
+logging.getLogger("streamlit").setLevel(logging.ERROR)
+
 
 gemini_model_extraction = None
 gemini_model_chat = None
 _last_extraction_error = ""
+_analysis_cache: dict[str, dict] = {}
+_analysis_cache_max_items = 128
+_active_extraction_model_name = ""
+
+
+def _model_candidates_from_env(var_name: str, default: str) -> list[str]:
+    raw = os.getenv(var_name, default)
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+EXTRACTION_MODEL_CANDIDATES = _model_candidates_from_env(
+    "GEMINI_EXTRACTION_MODELS",
+    "gemini-1.5-flash,gemini-2.5-flash",
+)
+CHAT_MODEL_CANDIDATES = _model_candidates_from_env(
+    "GEMINI_CHAT_MODELS",
+    "gemini-1.5-flash,gemini-2.5-flash",
+)
 
 
 def _has_streamlit_context() -> bool:
@@ -60,6 +84,35 @@ def _ui_debug_text(label: str, value: str, height: int = 150) -> None:
 
 def get_last_extraction_error() -> str:
     return _last_extraction_error
+
+
+def _is_rate_limit_error(error_text: str) -> bool:
+    lowered = (error_text or "").lower()
+    return "429" in lowered or "quota exceeded" in lowered or "rate limit" in lowered
+
+
+def _extract_retry_delay(error_text: str) -> str | None:
+    if not error_text:
+        return None
+    match_sec = re.search(r"retry in\s+([\d\.]+)s", error_text, flags=re.IGNORECASE)
+    if match_sec:
+        return f"{match_sec.group(1)}s"
+    match_ms = re.search(r"retry in\s+([\d\.]+)ms", error_text, flags=re.IGNORECASE)
+    if match_ms:
+        return f"{match_ms.group(1)}ms"
+    return None
+
+
+def _cache_get(cache_key: str):
+    cached = _analysis_cache.get(cache_key)
+    return copy.deepcopy(cached) if cached is not None else None
+
+
+def _cache_set(cache_key: str, payload: dict) -> None:
+    if len(_analysis_cache) >= _analysis_cache_max_items:
+        oldest_key = next(iter(_analysis_cache))
+        _analysis_cache.pop(oldest_key, None)
+    _analysis_cache[cache_key] = copy.deepcopy(payload)
 
 
 
@@ -188,7 +241,7 @@ def extract_text_from_pdf(file_content):
         return None
 
 def init_gemini_models(api_key_for_gemini):
-    global gemini_model_extraction, gemini_model_chat
+    global gemini_model_extraction, gemini_model_chat, _active_extraction_model_name
     try:
         if not api_key_for_gemini:
             _ui_error("Gemini API key is missing. Cannot initialize models.")
@@ -196,22 +249,34 @@ def init_gemini_models(api_key_for_gemini):
         
         genai.configure(api_key=api_key_for_gemini)
 
-        # Primary model requested by user. Keep a safe fallback for environments
-        # where access to 2.5 may be unavailable.
-        model_candidates = ['gemini-2.5-flash', 'gemini-1.5-flash']
         last_error = None
-        for model_name in model_candidates:
+        for model_name in EXTRACTION_MODEL_CANDIDATES:
             try:
                 gemini_model_extraction = genai.GenerativeModel(model_name)
-                gemini_model_chat = genai.GenerativeModel(model_name)
-                return True
+                _active_extraction_model_name = model_name
+                break
             except Exception as model_exc:
                 last_error = model_exc
                 continue
 
-        _ui_error(f"Could not initialize Gemini model: {last_error}")
+        if gemini_model_extraction is None:
+            _ui_error(f"Could not initialize Gemini extraction model: {last_error}")
+            gemini_model_chat = None
+            return False
+
+        chat_last_error = None
+        for model_name in CHAT_MODEL_CANDIDATES:
+            try:
+                gemini_model_chat = genai.GenerativeModel(model_name)
+                return True
+            except Exception as model_exc:
+                chat_last_error = model_exc
+                continue
+
+        _ui_error(f"Could not initialize Gemini chat model: {chat_last_error}")
         gemini_model_extraction = None
         gemini_model_chat = None
+        _active_extraction_model_name = ""
         return False
         
     except Exception as e:
@@ -341,6 +406,7 @@ def auto_detect_and_process(df, filename, new_patient_info_list):
 def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     global gemini_model_extraction
     global _last_extraction_error
+    global _active_extraction_model_name
     _last_extraction_error = ""
     if not gemini_model_extraction and not init_gemini_models(api_key_for_gemini):
         _last_extraction_error = "Gemini extraction model not initialized. API key may be invalid or missing."
@@ -355,6 +421,10 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     # Keep prompt size bounded to reduce timeout/limit failures on very large PDFs.
     max_chars = 120000
     bounded_text = text_content[:max_chars]
+    cache_key = hashlib.md5(bounded_text.encode("utf-8", errors="ignore")).hexdigest()
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     prompt = f"""
     Analyze this medical test report. Extract all patient information and test results.
@@ -409,7 +479,22 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     try:
         response_text = ""
         last_exception = None
-        for _ in range(2):
+        models_to_try = []
+        if _active_extraction_model_name:
+            models_to_try.append(_active_extraction_model_name)
+        for model_name in EXTRACTION_MODEL_CANDIDATES:
+            if model_name not in models_to_try:
+                models_to_try.append(model_name)
+
+        for model_name in models_to_try:
+            if model_name != _active_extraction_model_name:
+                try:
+                    gemini_model_extraction = genai.GenerativeModel(model_name)
+                    _active_extraction_model_name = model_name
+                except Exception as model_exc:
+                    last_exception = model_exc
+                    continue
+
             try:
                 response = gemini_model_extraction.generate_content(
                     prompt,
@@ -431,6 +516,8 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
                     break
             except Exception as call_exc:
                 last_exception = call_exc
+                if _is_rate_limit_error(str(call_exc)):
+                    continue
                 # Fallback call without structured output hint.
                 try:
                     response = gemini_model_extraction.generate_content(prompt)
@@ -442,6 +529,14 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
                 continue
 
         if not response_text:
+            if last_exception and _is_rate_limit_error(str(last_exception)):
+                retry_delay = _extract_retry_delay(str(last_exception))
+                _last_extraction_error = (
+                    f"Rate limit reached for Gemini extraction ({_active_extraction_model_name or 'configured models'})."
+                    + (f" Retry after {retry_delay}." if retry_delay else "")
+                )
+                _ui_error(_last_extraction_error)
+                return None
             raise RuntimeError(f"Gemini returned empty response. Last error: {last_exception}")
         
         match_json_block = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
@@ -461,6 +556,7 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
             _ui_error(_last_extraction_error)
             _ui_debug_text("Gemini JSON payload", json_str, height=150)
             return None
+        _cache_set(cache_key, parsed)
         return parsed
     except json.JSONDecodeError as json_e:
         _last_extraction_error = f"JSON parse error from Gemini response: {json_e}"
