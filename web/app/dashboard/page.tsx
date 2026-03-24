@@ -14,6 +14,7 @@ import {
   saveAnalysis,
   exportExcel,
 } from "@/lib/api";
+import TrendChart from "./TrendChart";
 import AlertsByCategory from "./AlertsByCategory";
 import OrganizedDataTree from "./OrganizedDataTree";
 import ClinicalChatPanel from "./ClinicalChatPanel";
@@ -111,6 +112,9 @@ export default function DashboardPage() {
   const [chatHistory, setChatHistory] = useState<ChatTurn[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
   const [isChatPending, startChatTransition] = useTransition();
+  const [selectedBodySystem, setSelectedBodySystem] = useState<string>("all");
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [selectedTest, setSelectedTest] = useState<string>("");
   const [isExporting, setIsExporting] = useState<"pdf" | "excel" | null>(null);
 
   const loadHistory = useCallback(async () => {
@@ -147,6 +151,9 @@ export default function DashboardPage() {
       const result = await analyzeReports(fd, token ?? undefined);
       setAnalysis(result);
       setChatHistory([]);
+      setSelectedBodySystem("all");
+      setSelectedCategory("all");
+      setSelectedTest("");
       setView("result");
       if (token) {
         setAnalyzeStep("saving");
@@ -173,7 +180,7 @@ export default function DashboardPage() {
     if (!token) return;
     try {
       const result = await fetchReportById(id, token);
-      setAnalysis(result); setChatHistory([]); setView("result");
+      setAnalysis(result); setChatHistory([]); setSelectedBodySystem("all"); setSelectedCategory("all"); setSelectedTest(""); setView("result");
     } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Failed to load."); }
   }
 
@@ -233,6 +240,12 @@ export default function DashboardPage() {
   }
 
   const records = analysis?.records ?? [];
+  const allBodySystems = Array.from(new Set(records.map((r) => r.Test_Category?.split("/")[0]?.trim() ?? "Other").filter(Boolean))).sort();
+  const filteredBySystem = selectedBodySystem === "all" ? records : records.filter((r) => (r.Test_Category ?? "").split("/")[0]?.trim() === selectedBodySystem);
+  const allCategories = Array.from(new Set(filteredBySystem.map((r) => r.Test_Category ?? "Other").filter(Boolean))).sort();
+  const filteredByCategory = selectedCategory === "all" ? filteredBySystem : filteredBySystem.filter((r) => r.Test_Category === selectedCategory);
+  const allTests = Array.from(new Set(filteredByCategory.map((r) => r.Test_Name ?? "").filter(Boolean))).sort();
+  const selectedTestData = selectedTest ? filteredByCategory.filter((r) => r.Test_Name === selectedTest) : [];
   const latestHistory = history.reduce<AnalysisHistoryItem | null>((latest, item) => {
     if (!latest) return item;
     return new Date(item.created_at).getTime() > new Date(latest.created_at).getTime() ? item : latest;
@@ -260,6 +273,15 @@ export default function DashboardPage() {
   const trendByDate = Array.from(trendByDateMap.entries())
     .map(([date, values]) => ({ date, ...values }))
     .sort((a, b) => parseMedicalDate(a.date) - parseMedicalDate(b.date));
+
+  useEffect(() => {
+    setSelectedCategory("all");
+    setSelectedTest("");
+  }, [selectedBodySystem]);
+
+  useEffect(() => {
+    setSelectedTest("");
+  }, [selectedCategory]);
 
   useEffect(() => {
     if (!isAnalyzing || analysisStartedAt === null) return;
@@ -512,6 +534,45 @@ export default function DashboardPage() {
             }}
             onQuickQuestion={(q) => handleQuickQuestion(q)}
           />
+
+          <section className="result-section">
+            <h2>Test Result Visualizations</h2>
+            <div className="viz-layout">
+              <div className="viz-controls selector-panel">
+                <label className="field-block selector-field">
+                  <span className="selector-caption">Body System</span>
+                  <select className="select-input" value={selectedBodySystem} onChange={(e) => setSelectedBodySystem(e.target.value)}>
+                    <option value="all">All Systems</option>
+                    {allBodySystems.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </label>
+                <label className="field-block selector-field">
+                  <span className="selector-caption">Category</span>
+                  <select className="select-input" value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)}>
+                    <option value="all">All Categories</option>
+                    {allCategories.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </label>
+                <label className="field-block selector-field">
+                  <span className="selector-caption">Test Name</span>
+                  <select className="select-input" value={selectedTest} onChange={(e) => setSelectedTest(e.target.value)}>
+                    <option value="">-- Select a test --</option>
+                    {allTests.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="viz-chart-area">
+                {selectedTest && selectedTestData.length > 0 ? (
+                  <TrendChart records={selectedTestData} testName={selectedTest} />
+                ) : (
+                  <div className="viz-empty">
+                    <h3>Select a Test to Visualize</h3>
+                    <p>Choose a test from the dropdown on the left to see charts and trends.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
 
           <OrganizedDataTree records={analysis.records} />
 
