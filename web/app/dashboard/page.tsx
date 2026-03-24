@@ -34,6 +34,23 @@ function fmtDate(iso: string) {
   } catch { return iso; }
 }
 
+function fmtRelativeDate(iso: string) {
+  try {
+    const value = new Date(iso).getTime();
+    if (Number.isNaN(value)) return "Unknown";
+    const deltaMs = Date.now() - value;
+    const days = Math.floor(deltaMs / 86400000);
+    if (days <= 0) return "Today";
+    if (days === 1) return "1 day ago";
+    if (days < 30) return `${days} days ago`;
+    const months = Math.floor(days / 30);
+    if (months === 1) return "1 month ago";
+    return `${months} months ago`;
+  } catch {
+    return "Unknown";
+  }
+}
+
 function NavBar({ user, onLogout, onHome }: { user: { displayName?: string | null; email?: string | null } | null; onLogout: () => void; onHome: () => void }) {
   return (
     <nav className="top-nav">
@@ -253,6 +270,12 @@ export default function DashboardPage() {
   const filteredByCategory = selectedCategory === "all" ? filteredBySystem : filteredBySystem.filter((r) => r.Test_Category === selectedCategory);
   const allTests = Array.from(new Set(filteredByCategory.map((r) => r.Test_Name ?? "").filter(Boolean))).sort();
   const selectedTestData = selectedTest ? filteredByCategory.filter((r) => r.Test_Name === selectedTest) : [];
+  const latestHistory = history.reduce<AnalysisHistoryItem | null>((latest, item) => {
+    if (!latest) return item;
+    return new Date(item.created_at).getTime() > new Date(latest.created_at).getTime() ? item : latest;
+  }, null);
+  const lastAnalysisLabel = latestHistory ? fmtRelativeDate(latestHistory.created_at) : "Not yet";
+  const alertsCount = analysis?.health_summary?.concerns?.length ?? 0;
 
   useEffect(() => { setSelectedCategory("all"); setSelectedTest(""); }, [selectedBodySystem]);
   useEffect(() => { setSelectedTest(""); }, [selectedCategory]);
@@ -287,12 +310,29 @@ export default function DashboardPage() {
       {/* HOME */}
       {view === "home" && (
         <main className="home-shell">
-          <section className="home-hero">
-            <h1>Your Health Reports</h1>
-            <p>{history.length > 0 ? "Review past analyses or upload new reports." : "Welcome! Upload your first medical report PDFs to get started."}</p>
+          <section className="dashboard-header">
+            <div>
+              <h1>Your Health Reports</h1>
+              <p>Track, analyze, and revisit your medical history.</p>
+            </div>
             <button className="primary-button" onClick={() => setView("analyze")} type="button">
-              🔬 {history.length > 0 ? "Analyze New Reports" : "Upload & Analyze"}
+              {history.length > 0 ? "Analyze New Report" : "Upload & Analyze"}
             </button>
+          </section>
+
+          <section className="stats-row" aria-label="Dashboard summary">
+            <article className="stat-card">
+              <span>Total Reports</span>
+              <strong>{history.length}</strong>
+            </article>
+            <article className="stat-card">
+              <span>Last Analysis</span>
+              <strong>{lastAnalysisLabel}</strong>
+            </article>
+            <article className="stat-card">
+              <span>Health Alerts</span>
+              <strong>{alertsCount}</strong>
+            </article>
           </section>
 
           {historyLoading && <p className="muted-copy center-text">Loading your reports…</p>}
