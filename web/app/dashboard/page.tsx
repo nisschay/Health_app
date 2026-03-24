@@ -7,16 +7,18 @@ import {
   type AnalysisResponse,
   type AnalysisHistoryItem,
   type ChatTurn,
-  type MedicalRecord,
   analyzeReports,
   sendChatMessage,
   fetchReportHistory,
   fetchReportById,
   saveAnalysis,
-  exportPdf,
   exportExcel,
 } from "@/lib/api";
 import TrendChart from "./TrendChart";
+import AlertsByCategory from "./AlertsByCategory";
+import OrganizedDataTree from "./OrganizedDataTree";
+import ClinicalChatPanel from "./ClinicalChatPanel";
+import { generateClinicalPdfReport } from "@/lib/pdf";
 
 type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
 
@@ -92,82 +94,6 @@ function HistoryCard({ item, onLoad }: { item: AnalysisHistoryItem; onLoad: (id:
       </div>
       <button className="secondary-button" onClick={() => onLoad(item.id)} type="button">View</button>
     </article>
-  );
-}
-
-function DataTable({ records }: { records: MedicalRecord[] }) {
-  const valid = records.filter((r) => r.Test_Name && r.Test_Name !== "N/A" && r.Result !== null && r.Result !== undefined);
-  const grouped = new Map<string, MedicalRecord[]>();
-
-  for (const r of valid) {
-    const groupKey = `${r.Test_Date ?? "Unknown"}__${r.Lab_Name ?? "Unknown Lab"}`;
-    if (!grouped.has(groupKey)) grouped.set(groupKey, []);
-    grouped.get(groupKey)!.push(r);
-  }
-
-  const sections = Array.from(grouped.entries())
-    .map(([key, items]) => {
-      const [date, lab] = key.split("__");
-      const sortedItems = [...items].sort((a, b) => {
-        const byCategory = String(a.Test_Category ?? "").localeCompare(String(b.Test_Category ?? ""));
-        if (byCategory !== 0) return byCategory;
-        return String(a.Test_Name ?? "").localeCompare(String(b.Test_Name ?? ""));
-      });
-      const concerningCount = sortedItems.filter((item) => isConcerningStatus(item.Status)).length;
-      return { key, date, lab, items: sortedItems, concerningCount };
-    })
-    .sort((a, b) => parseMedicalDate(a.date) - parseMedicalDate(b.date));
-
-  return (
-    <div className="date-sections">
-      {sections.map((section, index) => (
-        <details className="date-section" key={section.key} open={index === 0}>
-          <summary>
-            <div className="date-section-head">
-              <div>
-                <strong>{section.date}</strong>
-                <span>{section.lab}</span>
-              </div>
-              <div className="date-section-meta">
-                <span className="status-pill muted">{section.items.length} tests</span>
-                <span className={`status-pill ${section.concerningCount > 0 ? "warn" : "good"}`}>
-                  {section.concerningCount > 0 ? `${section.concerningCount} alerts` : "All stable"}
-                </span>
-              </div>
-            </div>
-          </summary>
-
-          <div className="table-shell">
-            <table className="records-table compact">
-              <thead>
-                <tr>
-                  <th>Category</th>
-                  <th>Test</th>
-                  <th>Result</th>
-                  <th>Unit</th>
-                  <th>Reference</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {section.items.map((row, rowIndex) => (
-                  <tr key={`${section.key}-${rowIndex}`}>
-                    <td>{row.Test_Category ?? "N/A"}</td>
-                    <td>{row.Test_Name ?? "N/A"}</td>
-                    <td>{String(row.Result ?? "—")}</td>
-                    <td>{row.Unit ?? "—"}</td>
-                    <td>{row.Reference_Range ?? "—"}</td>
-                    <td>
-                      <span className={`status-pill ${getStatusTone(row.Status)}`}>{row.Status ?? "N/A"}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </details>
-      ))}
-    </div>
   );
 }
 
@@ -298,8 +224,7 @@ export default function DashboardPage() {
     if (!analysis) return;
     setIsExporting("pdf");
     try {
-      const token = await getToken();
-      const blob = await exportPdf(analysis.records, analysis.patient_info, token ?? undefined);
+      const blob = generateClinicalPdfReport(analysis);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url;
       a.download = `health-report-${analysis.patient_info.name || "patient"}.pdf`; a.click();
@@ -595,36 +520,20 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          {/* AI Health Assistant */}
-          <section className="result-section">
-            <h2>AI Health Assistant</h2>
-            <p className="muted-copy">Ask questions about your medical report and get AI-powered insights.</p>
-
-            {chatHistory.length === 0 && (
-              <div className="quick-questions">
-                <h3>Quick Questions</h3>
-                <div className="quick-grid">
-                  {["Show a general overview of my report", "Explain my blood test results", "Are there any concerning findings?", "Show my test trends over time"].map((q) => (
-                    <button className="quick-btn" disabled={isChatPending} key={q} onClick={() => handleQuickQuestion(q)} type="button">{q}</button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="chat-stream">
-              {chatHistory.map((turn, i) => (
-                <div className={`chat-bubble ${turn.role === "user" ? "user" : "assistant"}`} key={i}>{turn.content}</div>
-              ))}
-              {isChatPending && <div className="chat-bubble assistant muted">Thinking…</div>}
-            </div>
-
-            {chatError && <p className="status-text error-text">{chatError}</p>}
-
-            <form className="chat-input-row" onSubmit={(e) => { e.preventDefault(); startChatTransition(() => { void submitChatQuestion(); }); }}>
-              <input className="text-input" disabled={isChatPending} placeholder="Ask me anything about your health report…" type="text" value={chatQuestion} onChange={(e) => setChatQuestion(e.target.value)} />
-              <button className="primary-button" disabled={isChatPending || !chatQuestion.trim()} type="submit">Send</button>
-            </form>
-          </section>
+          <ClinicalChatPanel
+            records={analysis.records}
+            chatHistory={chatHistory}
+            chatError={chatError}
+            isChatPending={isChatPending}
+            chatQuestion={chatQuestion}
+            onChangeQuestion={setChatQuestion}
+            onSubmit={() => {
+              startChatTransition(() => {
+                void submitChatQuestion();
+              });
+            }}
+            onQuickQuestion={(q) => handleQuickQuestion(q)}
+          />
 
           {/* Visualizations */}
           <section className="result-section">
@@ -666,44 +575,11 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          {/* Health Alerts */}
           {analysis.health_summary.concerns.length > 0 && (
-            <section className="result-section">
-              <h2>Health Alerts</h2>
-              <div className="alerts-dashboard">
-                <div className="alerts-summary">
-                  <span className="status-pill bad">{analysis.health_summary.concerns.length} total alerts</span>
-                  <span className="status-pill warn">{analysis.health_summary.concerns.filter((c) => String(c.status).toLowerCase() === "high" || String(c.status).toLowerCase() === "low").length} high/low</span>
-                  <span className="status-pill bad">{analysis.health_summary.concerns.filter((c) => String(c.status).toLowerCase() === "critical").length} critical</span>
-                </div>
-
-                <div className="alerts-window">
-                  {analysis.health_summary.concerns.map((c, i) => (
-                    <details className="alert-item" key={i}>
-                      <summary>
-                        <div className="alert-main">
-                          <h3>{c.test_name}</h3>
-                          <p>{c.category}</p>
-                        </div>
-                        <div className="alert-side">
-                          <span className={`status-pill ${getStatusTone(c.status)}`}>{c.status}</span>
-                          <strong>{String(c.result)}</strong>
-                        </div>
-                      </summary>
-                      <p className="alert-detail">Date: {c.date} &bull; Reference: {c.reference}</p>
-                    </details>
-                  ))}
-                </div>
-              </div>
-            </section>
+            <AlertsByCategory concerns={analysis.health_summary.concerns} />
           )}
 
-          {/* Data Table */}
-          <section className="result-section">
-            <h2>Organized Data by Date</h2>
-            <p className="muted-copy">Your medical test results organized by test category, test name, and date.</p>
-            <DataTable records={analysis.records} />
-          </section>
+          <OrganizedDataTree records={analysis.records} />
 
           {/* Downloads */}
           <section className="result-section download-section">
