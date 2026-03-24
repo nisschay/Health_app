@@ -22,6 +22,28 @@ This folder contains the first migration slice away from the Streamlit-only appl
 uvicorn backend_api.app.main:app --reload
 ```
 
+## Database Schema (Study Management)
+
+The API now includes additive schema support for three new tables:
+
+- `profiles`
+- `studies`
+- `reports`
+
+Apply SQL migration manually when needed:
+
+```bash
+psql "$DATABASE_URL" -f backend_api/sql/2026_03_24_study_management.sql
+```
+
+Notes:
+
+- Existing tables are preserved (`users`, `report_analyses`).
+- FastAPI startup still calls SQLAlchemy `create_all` for ORM-managed table creation.
+- The SQL migration includes indexes and triggers to keep `studies.updated_at` in sync.
+- The migration currently validates that `users.id` is an integer type before creating `profiles.account_owner_id`.
+- On auth sync, backend user upsert now auto-creates a default `self` profile if one does not exist.
+
 ## Planned Frontend Contract
 
 - `POST /api/v1/reports/analyze`
