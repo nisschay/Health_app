@@ -20,6 +20,7 @@ type StructuredAssistant = {
   summary: string;
   keyFindings: string[];
   metrics: Array<{ label: string; value: string; status: string; testName: string }>;
+  trends: string[];
   recommendations: string[];
 };
 
@@ -50,6 +51,10 @@ function parseAssistantResponse(content: string, records: MedicalRecord[]): Stru
     .filter((line) => /recommend|follow|monitor|discuss|repeat|consult/i.test(line))
     .slice(0, 3);
 
+  const trends = lines
+    .filter((line) => /trend|increase|decrease|stable|over time/i.test(line))
+    .slice(0, 3);
+
   const metrics: Array<{ label: string; value: string; status: string; testName: string }> = [];
   const seenMetricTests = new Set<string>();
   for (const record of records) {
@@ -71,6 +76,7 @@ function parseAssistantResponse(content: string, records: MedicalRecord[]): Stru
     summary,
     keyFindings: findingLines.length > 0 ? findingLines : ["No specific critical findings were highlighted in this response."],
     metrics,
+    trends,
     recommendations:
       recommendations.length > 0 ? recommendations : ["Discuss flagged trends with your clinician for interpretation."],
   };
@@ -132,13 +138,14 @@ export default function ClinicalChatPanel({
   onSubmit: () => void;
   onQuickQuestion: (question: string) => void;
 }) {
+  const [expandedTurns, setExpandedTurns] = useState<Record<number, boolean>>({});
   const assistantTurn = [...chatHistory].reverse().find((turn) => turn.role !== "user");
-  const structured = useMemo(
+  const analysisData = useMemo(
     () => parseAssistantResponse(assistantTurn?.content ?? "", records),
     [assistantTurn?.content, records]
   );
 
-  const [activeMetric, setActiveMetric] = useState<string | null>(structured.metrics[0]?.testName ?? null);
+  const [activeMetric, setActiveMetric] = useState<string | null>(analysisData.metrics[0]?.testName ?? null);
   const [hoveredMetric, setHoveredMetric] = useState<string | null>(null);
 
   const trendData = useMemo(() => numericTrendForMetric(records, activeMetric), [records, activeMetric]);
@@ -177,54 +184,81 @@ export default function ClinicalChatPanel({
             {chatHistory.map((turn, index) => {
               const isAssistant = turn.role !== "user";
               const parsed = isAssistant ? parseAssistantResponse(turn.content, records) : null;
+              const isExpanded = Boolean(expandedTurns[index]);
 
               return (
                 <article key={index} className={`clinical-chat-item ${isAssistant ? "assistant" : "user"}`}>
-                  <div className={`chat-bubble ${isAssistant ? "assistant" : "user"}`}>{turn.content}</div>
+                  {!isAssistant && (
+                    <div className="chat-bubble user">{turn.content}</div>
+                  )}
 
                   {isAssistant && parsed && (
                     <div className="clinical-structured-cards">
                       <div className="clinical-structured-card">
                         <h4>Summary</h4>
                         <p>{parsed.summary}</p>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => setExpandedTurns((prev) => ({ ...prev, [index]: !isExpanded }))}
+                        >
+                          {isExpanded ? "Hide Details" : "Show Details"}
+                        </button>
                       </div>
 
-                      <div className="clinical-structured-card">
-                        <h4>Key Findings</h4>
-                        <ul>
-                          {parsed.keyFindings.map((finding, i) => (
-                            <li key={`${index}-finding-${i}`}>{finding}</li>
-                          ))}
-                        </ul>
-                      </div>
+                      {isExpanded && (
+                        <>
+                          <div className="clinical-structured-card">
+                            <h4>Key Findings</h4>
+                            <ul>
+                              {parsed.keyFindings.map((finding, i) => (
+                                <li key={`${index}-finding-${i}`}>{finding}</li>
+                              ))}
+                            </ul>
+                          </div>
 
-                      <div className="clinical-structured-card">
-                        <h4>Key Metrics</h4>
-                        <div className="metric-chip-row">
-                          {parsed.metrics.length === 0 && <span className="muted-copy">No highlighted metrics.</span>}
-                          {parsed.metrics.map((metric, metricIndex) => (
-                            <button
-                              type="button"
-                              key={`${index}-${metric.testName}-${metric.status}-${metric.value}-${metricIndex}`}
-                              className={`metric-chip ${activeMetric === metric.testName ? "active" : ""} ${hoveredMetric === metric.testName ? "linked" : ""}`}
-                              onClick={() => setActiveMetric(metric.testName)}
-                            >
-                              <span>{metric.label}</span>
-                              <strong>{metric.value}</strong>
-                              <em className={`status-pill ${badgeTone(metric.status)}`}>{metric.status}</em>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+                          <div className="clinical-structured-card">
+                            <h4>Key Metrics</h4>
+                            <div className="metric-chip-row">
+                              {parsed.metrics.length === 0 && <span className="muted-copy">No highlighted metrics.</span>}
+                              {parsed.metrics.map((metric, metricIndex) => (
+                                <button
+                                  type="button"
+                                  key={`${index}-${metric.testName}-${metric.status}-${metric.value}-${metricIndex}`}
+                                  className={`metric-chip ${activeMetric === metric.testName ? "active" : ""} ${hoveredMetric === metric.testName ? "linked" : ""}`}
+                                  onClick={() => setActiveMetric(metric.testName)}
+                                  onMouseEnter={() => setHoveredMetric(metric.testName)}
+                                  onMouseLeave={() => setHoveredMetric(null)}
+                                >
+                                  <span>{metric.label}</span>
+                                  <strong>{metric.value}</strong>
+                                  <em className={`status-pill ${badgeTone(metric.status)}`}>{metric.status}</em>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
 
-                      <div className="clinical-structured-card">
-                        <h4>Recommendations</h4>
-                        <ul>
-                          {parsed.recommendations.map((rec, i) => (
-                            <li key={`${index}-rec-${i}`}>{rec}</li>
-                          ))}
-                        </ul>
-                      </div>
+                          {parsed.trends.length > 0 && (
+                            <div className="clinical-structured-card">
+                              <h4>Trends</h4>
+                              <ul>
+                                {parsed.trends.map((trend, i) => (
+                                  <li key={`${index}-trend-${i}`}>{trend}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          <div className="clinical-structured-card">
+                            <h4>Recommendations</h4>
+                            <ul>
+                              {parsed.recommendations.map((rec, i) => (
+                                <li key={`${index}-rec-${i}`}>{rec}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                 </article>
