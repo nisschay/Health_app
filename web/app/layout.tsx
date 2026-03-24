@@ -1,10 +1,7 @@
 import type { Metadata } from "next";
-import { Sora } from "next/font/google";
 import { AuthProvider } from "@/lib/auth-context";
 
 import "./globals.css";
-
-const sora = Sora({ subsets: ["latin"], display: "swap" });
 
 export const metadata: Metadata = {
   title: "Medical Report Analyzer",
@@ -18,7 +15,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={sora.className}>
+      <body>
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

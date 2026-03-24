@@ -54,7 +54,7 @@ function fmtRelativeDate(iso: string) {
 function NavBar({ user, onLogout, onHome }: { user: { displayName?: string | null; email?: string | null } | null; onLogout: () => void; onHome: () => void }) {
   return (
     <nav className="top-nav">
-      <button className="nav-brand" onClick={onHome} type="button">🏥 Medical Report Analyzer</button>
+      <button className="nav-brand" onClick={onHome} type="button">Medical Report Analyzer</button>
       <div className="nav-right">
         {user && <span className="nav-user">{user.displayName ?? user.email ?? "User"}</span>}
         <button className="secondary-button nav-logout" onClick={onLogout} type="button">Sign Out</button>
@@ -69,9 +69,9 @@ function HistoryCard({ item, onLoad }: { item: AnalysisHistoryItem; onLoad: (id:
       <div className="history-card-info">
         <h3>{item.patient_name ?? "Unknown Patient"}</h3>
         <p>{item.total_records} records &bull; {item.lab_name ?? "Unknown Lab"} &bull; {fmtDate(item.created_at)}</p>
-        {item.source_filenames.length > 0 && <p className="history-files">📄 {item.source_filenames.join(", ")}</p>}
+        {item.source_filenames.length > 0 && <p className="history-files">{item.source_filenames.join(", ")}</p>}
       </div>
-      <button className="secondary-button" onClick={() => onLoad(item.id)} type="button">View →</button>
+      <button className="secondary-button" onClick={() => onLoad(item.id)} type="button">View</button>
     </article>
   );
 }
@@ -348,14 +348,13 @@ export default function DashboardPage() {
 
           {!historyLoading && history.length === 0 && (
             <div className="empty-state">
-              <div className="empty-icon">📋</div>
               <h3>No reports yet</h3>
               <p>Upload your medical PDF reports and the AI will extract and analyze all test data automatically.</p>
               <div className="feature-row">
-                <div className="feature-pill">📄 PDF extraction</div>
-                <div className="feature-pill">📊 Health trends</div>
-                <div className="feature-pill">🤖 AI chat</div>
-                <div className="feature-pill">📥 Excel export</div>
+                <div className="feature-pill">PDF extraction</div>
+                <div className="feature-pill">Health trends</div>
+                <div className="feature-pill">AI assistant</div>
+                <div className="feature-pill">Excel export</div>
               </div>
             </div>
           )}
@@ -367,21 +366,21 @@ export default function DashboardPage() {
         <main className="analyze-shell">
           <div className="analyze-card">
             <div className="analyze-header">
-              <button className="back-btn" onClick={() => setView("home")} type="button">← Back</button>
+              <button className="back-btn" onClick={() => setView("home")} type="button">Back</button>
               <h2>Upload Medical Reports</h2>
               <p>Select your PDF reports and we'll extract and analyze all the test data.</p>
             </div>
 
             <div className="mode-tabs">
-              <button className={`mode-tab ${uploadMode === "new" ? "active" : ""}`} onClick={() => setUploadMode("new")} type="button">📄 Upload New Reports</button>
-              <button className={`mode-tab ${uploadMode === "append" ? "active" : ""}`} onClick={() => setUploadMode("append")} type="button">➕ Add to Existing Data</button>
+              <button className={`mode-tab ${uploadMode === "new" ? "active" : ""}`} onClick={() => setUploadMode("new")} type="button">Upload New Reports</button>
+              <button className={`mode-tab ${uploadMode === "append" ? "active" : ""}`} onClick={() => setUploadMode("append")} type="button">Add to Existing Data</button>
             </div>
 
             <form className="upload-form" onSubmit={(e) => { e.preventDefault(); void submitAnalysis(); }}>
               <label className="upload-zone">
                 <input accept="application/pdf" multiple type="file" onChange={(e) => setPdfFiles(Array.from(e.target.files ?? []))} />
                 <div className="upload-zone-inner">
-                  <span className="upload-icon">☁️</span>
+                  <span className="upload-icon">Upload</span>
                   <strong>Drag &amp; drop or click to browse</strong>
                   <span>PDF files only • Up to 200MB each</span>
                 </div>
@@ -391,7 +390,6 @@ export default function DashboardPage() {
                 <div className="file-list">
                   {pdfFiles.map((f) => (
                     <div className="file-row" key={`${f.name}-${f.size}`}>
-                      <span>📄</span>
                       <span className="file-name">{f.name}</span>
                       <span className="file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
                       <button className="file-remove" type="button" onClick={() => setPdfFiles((prev) => prev.filter((x) => x !== f))}>×</button>
@@ -404,7 +402,7 @@ export default function DashboardPage() {
                 <label className="field-block">
                   <span>Upload Previous Excel / CSV (optional)</span>
                   <input accept=".xlsx,.xls,.csv" type="file" onChange={(e) => setExistingDataFile(e.target.files?.[0] ?? null)} />
-                  {existingDataFile && <span className="file-chip accent">📊 {existingDataFile.name}</span>}
+                  {existingDataFile && <span className="file-chip accent">{existingDataFile.name}</span>}
                 </label>
               )}
 
@@ -444,7 +442,7 @@ export default function DashboardPage() {
               {errorMessage && <p className="status-text error-text">{errorMessage}</p>}
 
               <button className="primary-button submit-button" disabled={isAnalyzing} type="submit">
-                {isAnalyzing ? "🔬 Analyzing…" : "🔬 Analyze Reports"}
+                {isAnalyzing ? "Analyzing…" : "Analyze Reports"}
               </button>
             </form>
           </div>
@@ -455,27 +453,27 @@ export default function DashboardPage() {
       {view === "result" && analysis && (
         <main className="result-shell">
           <div className="result-topbar">
-            <button className="back-btn" onClick={() => setView("home")} type="button">← Dashboard</button>
+            <button className="back-btn" onClick={() => setView("home")} type="button">Dashboard</button>
             <button className="secondary-button" onClick={() => setView("analyze")} type="button">+ Analyze More</button>
             {saveStatus === "saved" && <span className="save-badge">✅ Saved</span>}
             {saveStatus === "saving" && <span className="save-badge muted">Saving…</span>}
-            {saveStatus === "error" && <span className="save-badge error-badge">⚠️ Not saved</span>}
+            {saveStatus === "error" && <span className="save-badge error-badge">Not saved</span>}
           </div>
 
-          <div className="success-banner">🎉 Successfully analyzed {analysis.total_records} test records!</div>
+          <div className="success-banner">Successfully analyzed {analysis.total_records} test records.</div>
 
           {/* Patient profile */}
           <section className="result-section">
-            <h2>👤 Patient Profile</h2>
+            <h2>Patient Profile</h2>
             <div className="patient-grid">
               {[
-                { label: "NAME", icon: "👤", value: analysis.patient_info.name },
-                { label: "AGE", icon: "🎂", value: analysis.patient_info.age },
-                { label: "GENDER", icon: "⚧", value: analysis.patient_info.gender },
-                { label: "LAB", icon: "🏥", value: analysis.patient_info.lab_name },
+                { label: "NAME", icon: "", value: analysis.patient_info.name },
+                { label: "AGE", icon: "", value: analysis.patient_info.age },
+                { label: "GENDER", icon: "", value: analysis.patient_info.gender },
+                { label: "LAB", icon: "", value: analysis.patient_info.lab_name },
               ].map((item) => (
                 <div className="patient-card" key={item.label}>
-                  <span>{item.icon} {item.label}</span>
+                  <span>{item.icon ? `${item.icon} ` : ""}{item.label}</span>
                   <strong>{item.value || "N/A"}</strong>
                 </div>
               ))}
@@ -484,14 +482,14 @@ export default function DashboardPage() {
 
           {/* AI Health Assistant */}
           <section className="result-section">
-            <h2>💬 AI Health Assistant</h2>
+            <h2>AI Health Assistant</h2>
             <p className="muted-copy">Ask questions about your medical report and get AI-powered insights.</p>
 
             {chatHistory.length === 0 && (
               <div className="quick-questions">
-                <h3>💡 Quick Questions</h3>
+                <h3>Quick Questions</h3>
                 <div className="quick-grid">
-                  {["📊 Show a general overview of my report", "🔬 Explain my blood test results", "⚠️ Are there any concerning findings?", "📈 Show my test trends over time"].map((q) => (
+                  {["Show a general overview of my report", "Explain my blood test results", "Are there any concerning findings?", "Show my test trends over time"].map((q) => (
                     <button className="quick-btn" disabled={isChatPending} key={q} onClick={() => handleQuickQuestion(q)} type="button">{q}</button>
                   ))}
                 </div>
@@ -502,7 +500,7 @@ export default function DashboardPage() {
               {chatHistory.map((turn, i) => (
                 <div className={`chat-bubble ${turn.role === "user" ? "user" : "assistant"}`} key={i}>{turn.content}</div>
               ))}
-              {isChatPending && <div className="chat-bubble assistant muted">🤔 Thinking…</div>}
+              {isChatPending && <div className="chat-bubble assistant muted">Thinking…</div>}
             </div>
 
             {chatError && <p className="status-text error-text">{chatError}</p>}
@@ -515,20 +513,20 @@ export default function DashboardPage() {
 
           {/* Visualizations */}
           <section className="result-section">
-            <h2>📈 Test Result Visualizations</h2>
+            <h2>Test Result Visualizations</h2>
             <div className="viz-layout">
               <div className="viz-controls">
                 <label className="field-block">
                   <span>Filter by Body System</span>
                   <select className="select-input" value={selectedBodySystem} onChange={(e) => setSelectedBodySystem(e.target.value)}>
-                    <option value="all">🔍 All Systems</option>
+                    <option value="all">All Systems</option>
                     {allBodySystems.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </label>
                 <label className="field-block">
                   <span>Select Category</span>
                   <select className="select-input" value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)}>
-                    <option value="all">📋 All Categories</option>
+                    <option value="all">All Categories</option>
                     {allCategories.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </label>
@@ -545,7 +543,6 @@ export default function DashboardPage() {
                   <TrendChart records={selectedTestData} testName={selectedTest} />
                 ) : (
                   <div className="viz-empty">
-                    <span>📊</span>
                     <h3>Select a Test to Visualize</h3>
                     <p>Choose a test from the dropdown on the left to see charts and trends.</p>
                   </div>
@@ -557,7 +554,7 @@ export default function DashboardPage() {
           {/* Health Alerts */}
           {analysis.health_summary.concerns.length > 0 && (
             <section className="result-section">
-              <h2>⚠️ Health Alerts</h2>
+              <h2>Health Alerts</h2>
               <p className="muted-copy">{analysis.health_summary.concerns.length} result{analysis.health_summary.concerns.length !== 1 ? "s" : ""} flagged for review</p>
               <div className="concern-list">
                 {analysis.health_summary.concerns.map((c, i) => (
@@ -578,21 +575,21 @@ export default function DashboardPage() {
 
           {/* Data Table */}
           <section className="result-section">
-            <h2>📋 Organized Data by Date</h2>
+            <h2>Organized Data by Date</h2>
             <p className="muted-copy">Your medical test results organized by test category, test name, and date.</p>
             <DataTable records={analysis.records} />
           </section>
 
           {/* Downloads */}
           <section className="result-section download-section">
-            <h2>📥 Download Health Report</h2>
+            <h2>Download Health Report</h2>
             <p className="muted-copy">Download a comprehensive report with your test results and AI-powered insights.</p>
             <div className="download-buttons">
               <button className="primary-button" disabled={isExporting !== null} onClick={handleExportPdf} type="button">
-                {isExporting === "pdf" ? "Generating…" : "📥 Download Health Report (PDF)"}
+                {isExporting === "pdf" ? "Generating…" : "Download Health Report (PDF)"}
               </button>
               <button className="secondary-button" disabled={isExporting !== null} onClick={handleExportExcel} type="button">
-                {isExporting === "excel" ? "Generating…" : "📊 Download Excel with Charts"}
+                {isExporting === "excel" ? "Generating…" : "Download Excel with Charts"}
               </button>
             </div>
           </section>
