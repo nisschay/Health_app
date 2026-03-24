@@ -1795,6 +1795,223 @@ h1 {
 
 .back-btn:hover { color: var(--text-primary); }
 
+.study-upload-summary {
+  margin-top: 0.8rem;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.1);
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  padding: 0.65rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+.study-flow-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 3, 3, 0.78);
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 1.2rem;
+}
+
+.study-flow-modal {
+  width: min(860px, 100%);
+  max-height: min(92vh, 900px);
+  overflow: auto;
+  background: #151515;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.55);
+  padding: 1.2rem 1.2rem 1.35rem;
+  animation: fadeSlideIn 220ms ease;
+}
+
+.study-flow-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.study-flow-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.study-flow-progress span {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.study-flow-dots {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.study-flow-dots i {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  display: inline-block;
+}
+
+.study-flow-dots i.active {
+  background: var(--accent);
+  box-shadow: 0 0 0 6px rgba(251, 191, 36, 0.15);
+}
+
+.study-step-panel {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: #101010;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.study-step-panel h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.14rem;
+}
+
+.study-step-panel p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.study-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.study-card-grid.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.study-choice-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #171717;
+  border-radius: 12px;
+  padding: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.study-choice-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.study-choice-card.active {
+  border-color: var(--accent);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.study-choice-card strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.study-choice-card span {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.study-choice-card.add {
+  border-style: dashed;
+}
+
+.study-list-stack {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.study-list-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #171717;
+  border-radius: 12px;
+  padding: 0.85rem 0.95rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.study-list-card.active {
+  border-color: var(--accent);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.study-list-card strong {
+  display: block;
+  color: var(--text-primary);
+  margin-bottom: 0.25rem;
+}
+
+.study-list-card p,
+.study-list-card span {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.study-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.input,
+.textarea {
+  width: 100%;
+  border: 1px solid var(--border-default);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  padding: 0.58rem 0.72rem;
+}
+
+.textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+
+@media (max-width: 920px) {
+  .study-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .study-flow-modal {
+    padding: 1rem;
+  }
+
+  .study-card-grid,
+  .study-card-grid.two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .study-step-actions {
+    flex-direction: column;
+  }
+
+  .study-step-actions .primary-button,
+  .study-step-actions .secondary-button {
+    width: 100%;
+  }
+}
+
 /* =========================================
    RESULT VIEW
    ========================================= */

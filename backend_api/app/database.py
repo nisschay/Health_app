@@ -243,6 +243,10 @@ def create_profile(
     return row
 
 
+def get_profile_by_id(db: Session, profile_id: uuid.UUID) -> Profile | None:
+    return db.query(Profile).filter(Profile.id == profile_id).first()
+
+
 def list_profiles_for_owner(db: Session, account_owner_id: int) -> list[Profile]:
     return (
         db.query(Profile)
@@ -280,6 +284,22 @@ def list_studies_for_profile(db: Session, profile_id: uuid.UUID) -> list[Study]:
 
 def get_study_by_id(db: Session, study_id: uuid.UUID) -> Study | None:
     return db.query(Study).filter(Study.id == study_id).first()
+
+
+def count_reports_for_study(db: Session, study_id: uuid.UUID) -> int:
+    return db.query(Report).filter(Report.study_id == study_id).count()
+
+
+def get_study_report_date_range(db: Session, study_id: uuid.UUID) -> tuple[date | None, date | None]:
+    rows = (
+        db.query(Report.report_date)
+        .filter(Report.study_id == study_id)
+        .order_by(Report.report_date.asc())
+        .all()
+    )
+    if not rows:
+        return (None, None)
+    return (rows[0][0], rows[-1][0])
 
 
 def create_report(

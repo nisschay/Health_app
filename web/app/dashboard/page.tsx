@@ -7,11 +7,18 @@ import {
   type AnalysisResponse,
   type AnalysisHistoryItem,
   type ChatTurn,
+  type ProfileItem,
+  type StudySummary,
   analyzeReports,
+  createProfile,
+  createStudy,
+  fetchProfiles,
   sendChatMessage,
+  fetchStudiesForProfile,
   fetchReportHistory,
   fetchReportById,
   saveAnalysis,
+  saveStudyAnalysis,
   exportExcel,
 } from "@/lib/api";
 import TrendChart from "./TrendChart";
@@ -21,6 +28,13 @@ import ClinicalChatPanel from "./ClinicalChatPanel";
 import { generateClinicalPdfReport } from "@/lib/pdf";
 
 type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
+type StudyAction = "add-existing" | "start-new";
+
+type AnalyzeContext = {
+  profile: ProfileItem;
+  study: StudySummary;
+  mode: "existing" | "new";
+};
 
 function parseMedicalDate(value: string | null | undefined): number {
   if (!value) return Number.MAX_SAFE_INTEGER;
@@ -64,6 +78,25 @@ function fmtRelativeDate(iso: string) {
   }
 }
 
+function fmtRange(start: string | null, end: string | null): string {
+  if (!start && !end) return "No reports yet";
+  const toLabel = (v: string) => {
+    try {
+      return new Date(v).toLocaleDateString("en-IN", { month: "short", year: "numeric" });
+    } catch {
+      return v;
+    }
+  };
+  if (start && end) return `${toLabel(start)} - ${toLabel(end)}`;
+  return toLabel(start ?? end ?? "");
+}
+
+function relationshipLabel(value: string): string {
+  const clean = (value || "").trim();
+  if (!clean) return "Family";
+  return clean.charAt(0).toUpperCase() + clean.slice(1);
+}
+
 function NavBar({ user, onLogout, onHome }: { user: { displayName?: string | null; email?: string | null } | null; onLogout: () => void; onHome: () => void }) {
   return (
     <nav className="top-nav">
@@ -86,6 +119,285 @@ function HistoryCard({ item, onLoad }: { item: AnalysisHistoryItem; onLoad: (id:
       </div>
       <button className="secondary-button" onClick={() => onLoad(item.id)} type="button">View</button>
     </article>
+  );
+}
+
+function StudyFlowModal({
+  open,
+  userName,
+  profiles,
+  selectedProfile,
+  studies,
+  selectedAction,
+  selectedStudy,
+  step,
+  loading,
+  formError,
+  onClose,
+  onSelectProfile,
+  onSelectAction,
+  onSelectStudy,
+  onConfirmAdd,
+  onBack,
+  newStudyName,
+  newStudyDescription,
+  onChangeNewStudyName,
+  onChangeNewStudyDescription,
+  onCreateStudy,
+  newMemberName,
+  newMemberRelationship,
+  newMemberOtherRelationship,
+  newMemberDob,
+  onChangeMemberName,
+  onChangeMemberRelationship,
+  onChangeMemberOtherRelationship,
+  onChangeMemberDob,
+  onCreateMember,
+  onStartNewMember,
+}: {
+  open: boolean;
+  userName: string;
+  profiles: ProfileItem[];
+  selectedProfile: ProfileItem | null;
+  studies: StudySummary[];
+  selectedAction: StudyAction | null;
+  selectedStudy: StudySummary | null;
+  step: "who" | "what" | "pick-study" | "confirm-add" | "new-study" | "new-member";
+  loading: boolean;
+  formError: string | null;
+  onClose: () => void;
+  onSelectProfile: (profile: ProfileItem) => void;
+  onSelectAction: (action: StudyAction) => void;
+  onSelectStudy: (study: StudySummary) => void;
+  onConfirmAdd: () => void;
+  onBack: () => void;
+  newStudyName: string;
+  newStudyDescription: string;
+  onChangeNewStudyName: (value: string) => void;
+  onChangeNewStudyDescription: (value: string) => void;
+  onCreateStudy: () => void;
+  newMemberName: string;
+  newMemberRelationship: string;
+  newMemberOtherRelationship: string;
+  newMemberDob: string;
+  onChangeMemberName: (value: string) => void;
+  onChangeMemberRelationship: (value: string) => void;
+  onChangeMemberOtherRelationship: (value: string) => void;
+  onChangeMemberDob: (value: string) => void;
+  onCreateMember: () => void;
+  onStartNewMember: () => void;
+}) {
+  if (!open) return null;
+
+  const stepMeta: Record<typeof step, { index: number; total: number }> = {
+    who: { index: 1, total: 3 },
+    what: { index: 2, total: 3 },
+    "pick-study": { index: 3, total: 4 },
+    "confirm-add": { index: 4, total: 4 },
+    "new-study": { index: 3, total: 3 },
+    "new-member": { index: 2, total: 3 },
+  };
+  const { index, total } = stepMeta[step];
+
+  return (
+    <div className="study-flow-backdrop" role="dialog" aria-modal="true">
+      <div className="study-flow-modal">
+        <div className="study-flow-head">
+          <div className="study-flow-progress" aria-label="Step indicator">
+            <span>Step {index} of {total}</span>
+            <div className="study-flow-dots">
+              {Array.from({ length: total }).map((_, idx) => (
+                <i key={idx} className={idx + 1 <= index ? "active" : ""} />
+              ))}
+            </div>
+          </div>
+          <button className="secondary-button" type="button" onClick={onClose}>Close</button>
+        </div>
+
+        {step === "who" && (
+          <section className="study-step-panel">
+            <h3>Who are these reports for?</h3>
+            <p>Select a profile first, then choose whether to append or start a fresh study.</p>
+            <div className="study-card-grid">
+              {profiles.map((profile) => {
+                const isSelf = profile.relationship.toLowerCase() === "self";
+                const label = isSelf
+                  ? `Myself - ${userName || profile.full_name}`
+                  : `${profile.full_name} - ${relationshipLabel(profile.relationship)}`;
+                return (
+                  <button
+                    key={profile.id}
+                    className={`study-choice-card ${selectedProfile?.id === profile.id ? "active" : ""}`}
+                    type="button"
+                    onClick={() => onSelectProfile(profile)}
+                    disabled={loading}
+                  >
+                    <strong>{label}</strong>
+                    <span>{isSelf ? "Primary account profile" : "Family profile"}</span>
+                  </button>
+                );
+              })}
+              <button className="study-choice-card add" type="button" onClick={onStartNewMember} disabled={loading}>
+                <strong>Add a New Family Member</strong>
+                <span>Create profile and continue to first study setup</span>
+              </button>
+            </div>
+          </section>
+        )}
+
+        {step === "what" && selectedProfile && (
+          <section className="study-step-panel">
+            <h3>What would you like to do for {selectedProfile.full_name}?</h3>
+            <div className="study-card-grid two-col">
+              <button
+                className={`study-choice-card ${selectedAction === "add-existing" ? "active" : ""}`}
+                type="button"
+                onClick={() => onSelectAction("add-existing")}
+                disabled={loading}
+              >
+                <strong>Add to an existing study</strong>
+                <span>Upload new reports and merge trends into an existing study.</span>
+              </button>
+              <button
+                className={`study-choice-card ${selectedAction === "start-new" ? "active" : ""}`}
+                type="button"
+                onClick={() => onSelectAction("start-new")}
+                disabled={loading}
+              >
+                <strong>Start a new study</strong>
+                <span>Begin an independent study for this same profile.</span>
+              </button>
+            </div>
+            <div className="study-step-actions">
+              <button className="secondary-button" type="button" onClick={onBack}>Back</button>
+            </div>
+          </section>
+        )}
+
+        {step === "pick-study" && selectedProfile && (
+          <section className="study-step-panel">
+            <h3>Select an existing study for {selectedProfile.full_name}</h3>
+            <div className="study-list-stack">
+              {studies.map((study) => (
+                <button
+                  key={study.id}
+                  className={`study-list-card ${selectedStudy?.id === study.id ? "active" : ""}`}
+                  type="button"
+                  onClick={() => onSelectStudy(study)}
+                >
+                  <strong>{study.name}</strong>
+                  <p>{study.report_count} reports • {fmtRange(study.range_start, study.range_end)}</p>
+                  <span>Last updated {fmtRelativeDate(study.last_updated)}</span>
+                </button>
+              ))}
+            </div>
+            <div className="study-step-actions">
+              <button className="secondary-button" type="button" onClick={onBack}>Back</button>
+            </div>
+          </section>
+        )}
+
+        {step === "confirm-add" && selectedStudy && (
+          <section className="study-step-panel">
+            <h3>Add to {selectedStudy.name}?</h3>
+            <p>
+              New reports will be analyzed together with {selectedStudy.report_count} existing reports in this study to strengthen trend tracking.
+            </p>
+            <div className="study-step-actions">
+              <button className="primary-button" type="button" onClick={onConfirmAdd}>Yes, Add to This Study</button>
+              <button className="secondary-button" type="button" onClick={onBack}>Go Back</button>
+            </div>
+          </section>
+        )}
+
+        {step === "new-study" && selectedProfile && (
+          <section className="study-step-panel">
+            <h3>Create a new study for {selectedProfile.full_name}</h3>
+            <label className="field-block">
+              <span>Study Name</span>
+              <input
+                className="input"
+                maxLength={60}
+                placeholder="e.g. Cardiac Monitoring 2025"
+                value={newStudyName}
+                onChange={(e) => onChangeNewStudyName(e.target.value)}
+              />
+            </label>
+            <label className="field-block">
+              <span>Description (optional)</span>
+              <textarea
+                className="textarea"
+                maxLength={200}
+                placeholder="What is this study tracking?"
+                value={newStudyDescription}
+                onChange={(e) => onChangeNewStudyDescription(e.target.value)}
+              />
+            </label>
+            <div className="study-step-actions">
+              <button className="primary-button" type="button" onClick={onCreateStudy} disabled={loading}>
+                Create Study and Upload Reports
+              </button>
+              <button className="secondary-button" type="button" onClick={onBack}>Back</button>
+            </div>
+          </section>
+        )}
+
+        {step === "new-member" && (
+          <section className="study-step-panel">
+            <h3>Add a new family member</h3>
+            <label className="field-block">
+              <span>Full Name</span>
+              <input
+                className="input"
+                placeholder="Enter their full name"
+                value={newMemberName}
+                onChange={(e) => onChangeMemberName(e.target.value)}
+              />
+            </label>
+            <label className="field-block">
+              <span>Relationship</span>
+              <select
+                className="select-input"
+                value={newMemberRelationship}
+                onChange={(e) => onChangeMemberRelationship(e.target.value)}
+              >
+                <option value="father">Father</option>
+                <option value="mother">Mother</option>
+                <option value="spouse">Spouse</option>
+                <option value="child">Child</option>
+                <option value="sibling">Sibling</option>
+                <option value="grandparent">Grandparent</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            {newMemberRelationship === "other" && (
+              <label className="field-block">
+                <span>Specify Relationship</span>
+                <input
+                  className="input"
+                  placeholder="e.g. Cousin"
+                  value={newMemberOtherRelationship}
+                  onChange={(e) => onChangeMemberOtherRelationship(e.target.value)}
+                />
+              </label>
+            )}
+            <label className="field-block">
+              <span>Date of Birth (optional)</span>
+              <input className="input" type="date" value={newMemberDob} onChange={(e) => onChangeMemberDob(e.target.value)} />
+            </label>
+            <small className="muted-copy">Helps with age-specific reference ranges in analysis.</small>
+            <div className="study-step-actions">
+              <button className="primary-button" type="button" onClick={onCreateMember} disabled={loading}>
+                Create Profile and Continue
+              </button>
+              <button className="secondary-button" type="button" onClick={onBack}>Back</button>
+            </div>
+          </section>
+        )}
+
+        {formError && <p className="status-text error-text">{formError}</p>}
+      </div>
+    </div>
   );
 }
 
@@ -116,6 +428,23 @@ export default function DashboardPage() {
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [selectedTest, setSelectedTest] = useState<string>("");
   const [isExporting, setIsExporting] = useState<"pdf" | "excel" | null>(null);
+  const [studyFlowOpen, setStudyFlowOpen] = useState(false);
+  const [studyFlowStep, setStudyFlowStep] = useState<"who" | "what" | "pick-study" | "confirm-add" | "new-study" | "new-member">("who");
+  const [flowLoading, setFlowLoading] = useState(false);
+  const [flowError, setFlowError] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<ProfileItem[]>([]);
+  const [selectedProfile, setSelectedProfile] = useState<ProfileItem | null>(null);
+  const [selectedAction, setSelectedAction] = useState<StudyAction | null>(null);
+  const [profileStudies, setProfileStudies] = useState<StudySummary[]>([]);
+  const [selectedStudy, setSelectedStudy] = useState<StudySummary | null>(null);
+  const [studyContext, setStudyContext] = useState<AnalyzeContext | null>(null);
+  const [studySuccessMessage, setStudySuccessMessage] = useState<string | null>(null);
+  const [newStudyName, setNewStudyName] = useState("");
+  const [newStudyDescription, setNewStudyDescription] = useState("");
+  const [newMemberName, setNewMemberName] = useState("");
+  const [newMemberRelationship, setNewMemberRelationship] = useState("father");
+  const [newMemberOtherRelationship, setNewMemberOtherRelationship] = useState("");
+  const [newMemberDob, setNewMemberDob] = useState("");
 
   const loadHistory = useCallback(async () => {
     const token = await getToken();
@@ -128,6 +457,197 @@ export default function DashboardPage() {
   }, [getToken]);
 
   useEffect(() => { if (user) loadHistory(); }, [user, loadHistory]);
+
+  function resetStudyFlow() {
+    setStudyFlowStep("who");
+    setFlowError(null);
+    setSelectedProfile(null);
+    setSelectedAction(null);
+    setProfileStudies([]);
+    setSelectedStudy(null);
+    setNewStudyName("");
+    setNewStudyDescription("");
+    setNewMemberName("");
+    setNewMemberRelationship("father");
+    setNewMemberOtherRelationship("");
+    setNewMemberDob("");
+  }
+
+  async function openStudyFlow() {
+    setStudyFlowOpen(true);
+    resetStudyFlow();
+    setFlowLoading(true);
+    try {
+      const token = await getToken();
+      if (!token) {
+        setFlowError("Please sign in again to continue.");
+        return;
+      }
+      const rows = await fetchProfiles(token);
+      setProfiles(rows);
+    } catch (err) {
+      setFlowError(err instanceof Error ? err.message : "Unable to load profiles.");
+    } finally {
+      setFlowLoading(false);
+    }
+  }
+
+  async function handleSelectProfile(profile: ProfileItem) {
+    setSelectedProfile(profile);
+    setSelectedAction(null);
+    setSelectedStudy(null);
+    setFlowError(null);
+    setFlowLoading(true);
+    try {
+      const token = await getToken();
+      if (!token) {
+        setFlowError("Please sign in again to continue.");
+        return;
+      }
+      const studies = await fetchStudiesForProfile(profile.id, token);
+      setProfileStudies(studies);
+      if (studies.length > 0) {
+        setStudyFlowStep("what");
+      } else {
+        setStudyFlowStep("new-study");
+      }
+    } catch (err) {
+      setFlowError(err instanceof Error ? err.message : "Unable to load studies.");
+    } finally {
+      setFlowLoading(false);
+    }
+  }
+
+  function handleSelectAction(action: StudyAction) {
+    setSelectedAction(action);
+    setFlowError(null);
+    if (action === "add-existing") {
+      setStudyFlowStep("pick-study");
+      return;
+    }
+    setStudyFlowStep("new-study");
+  }
+
+  function proceedToAnalyze(context: AnalyzeContext) {
+    setStudyContext(context);
+    setStudyFlowOpen(false);
+    setPdfFiles([]);
+    setExistingDataFile(null);
+    setUploadMode("new");
+    setErrorMessage(null);
+    setStudySuccessMessage(null);
+    setView("analyze");
+  }
+
+  function handleConfirmAddToStudy() {
+    if (!selectedProfile || !selectedStudy) {
+      setFlowError("Please select a study first.");
+      return;
+    }
+    proceedToAnalyze({
+      profile: selectedProfile,
+      study: selectedStudy,
+      mode: "existing",
+    });
+  }
+
+  async function handleCreateStudyAndContinue() {
+    if (!selectedProfile) {
+      setFlowError("Please select a profile first.");
+      return;
+    }
+    if (!newStudyName.trim()) {
+      setFlowError("Study name is required.");
+      return;
+    }
+    if (newStudyName.trim().length > 60) {
+      setFlowError("Study name must be 60 characters or less.");
+      return;
+    }
+    if (newStudyDescription.trim().length > 200) {
+      setFlowError("Description must be 200 characters or less.");
+      return;
+    }
+
+    setFlowLoading(true);
+    setFlowError(null);
+    try {
+      const token = await getToken();
+      if (!token) {
+        setFlowError("Please sign in again to continue.");
+        return;
+      }
+      const created = await createStudy(
+        {
+          profile_id: selectedProfile.id,
+          name: newStudyName.trim(),
+          description: newStudyDescription.trim() || undefined,
+        },
+        token,
+      );
+      proceedToAnalyze({
+        profile: selectedProfile,
+        study: created,
+        mode: "new",
+      });
+    } catch (err) {
+      setFlowError(err instanceof Error ? err.message : "Failed to create study.");
+    } finally {
+      setFlowLoading(false);
+    }
+  }
+
+  async function handleCreateFamilyMemberAndContinue() {
+    if (!newMemberName.trim()) {
+      setFlowError("Family member name is required.");
+      return;
+    }
+    const relationship = newMemberRelationship === "other"
+      ? newMemberOtherRelationship.trim()
+      : newMemberRelationship;
+    if (!relationship) {
+      setFlowError("Relationship is required.");
+      return;
+    }
+
+    setFlowLoading(true);
+    setFlowError(null);
+    try {
+      const token = await getToken();
+      if (!token) {
+        setFlowError("Please sign in again to continue.");
+        return;
+      }
+      const created = await createProfile(
+        {
+          full_name: newMemberName.trim(),
+          relationship,
+          date_of_birth: newMemberDob || undefined,
+        },
+        token,
+      );
+      setProfiles((prev) => [...prev, created]);
+      setSelectedProfile(created);
+      setProfileStudies([]);
+      setStudyFlowStep("new-study");
+    } catch (err) {
+      setFlowError(err instanceof Error ? err.message : "Failed to create profile.");
+    } finally {
+      setFlowLoading(false);
+    }
+  }
+
+  function handleStudyFlowBack() {
+    setFlowError(null);
+    if (studyFlowStep === "what") setStudyFlowStep("who");
+    else if (studyFlowStep === "pick-study") setStudyFlowStep("what");
+    else if (studyFlowStep === "confirm-add") setStudyFlowStep("pick-study");
+    else if (studyFlowStep === "new-study") {
+      if (selectedProfile && profileStudies.length > 0) setStudyFlowStep("what");
+      else setStudyFlowStep("who");
+    }
+    else if (studyFlowStep === "new-member") setStudyFlowStep("who");
+  }
 
   async function submitAnalysis() {
     setErrorMessage(null);
@@ -159,7 +679,17 @@ export default function DashboardPage() {
         setAnalyzeStep("saving");
         setSaveStatus("saving");
         try {
-          await saveAnalysis(result, pdfFiles.map((f) => f.name), token);
+          if (studyContext) {
+            const saved = await saveStudyAnalysis(studyContext.study.id, result, pdfFiles.map((f) => f.name), token);
+            setStudySuccessMessage(
+              studyContext.mode === "existing"
+                ? `${saved.added_reports} new reports added to ${saved.study_name}. Dashboard updated with new trends.`
+                : `New study ${saved.study_name} created for ${studyContext.profile.full_name}.`,
+            );
+          } else {
+            await saveAnalysis(result, pdfFiles.map((f) => f.name), token);
+            setStudySuccessMessage(null);
+          }
           setSaveStatus("saved");
           loadHistory();
         } catch { setSaveStatus("error"); }
@@ -180,6 +710,8 @@ export default function DashboardPage() {
     if (!token) return;
     try {
       const result = await fetchReportById(id, token);
+      setStudyContext(null);
+      setStudySuccessMessage(null);
       setAnalysis(result); setChatHistory([]); setSelectedBodySystem("all"); setSelectedCategory("all"); setSelectedTest(""); setView("result");
     } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Failed to load."); }
   }
@@ -318,7 +850,7 @@ export default function DashboardPage() {
               <h1>Your Health Reports</h1>
               <p>Track, analyze, and revisit your medical history.</p>
             </div>
-            <button className="primary-button" onClick={() => setView("analyze")} type="button">
+            <button className="primary-button" onClick={() => { void openStudyFlow(); }} type="button">
               {history.length > 0 ? "Analyze New Report" : "Upload & Analyze"}
             </button>
           </section>
@@ -372,12 +904,21 @@ export default function DashboardPage() {
               <button className="back-btn" onClick={() => setView("home")} type="button">Back</button>
               <h2>Upload Medical Reports</h2>
               <p>Select your PDF reports and we'll extract and analyze all the test data.</p>
+              {studyContext && (
+                <div className="study-upload-summary">
+                  {studyContext.mode === "existing"
+                    ? `Adding to: ${studyContext.study.name} • ${studyContext.study.report_count} existing reports`
+                    : `New Study: ${studyContext.study.name} • For: ${studyContext.profile.full_name}`}
+                </div>
+              )}
             </div>
 
-            <div className="mode-tabs">
-              <button className={`mode-tab ${uploadMode === "new" ? "active" : ""}`} onClick={() => setUploadMode("new")} type="button">Upload New Reports</button>
-              <button className={`mode-tab ${uploadMode === "append" ? "active" : ""}`} onClick={() => setUploadMode("append")} type="button">Add to Existing Data</button>
-            </div>
+            {!studyContext && (
+              <div className="mode-tabs">
+                <button className={`mode-tab ${uploadMode === "new" ? "active" : ""}`} onClick={() => setUploadMode("new")} type="button">Upload New Reports</button>
+                <button className={`mode-tab ${uploadMode === "append" ? "active" : ""}`} onClick={() => setUploadMode("append")} type="button">Add to Existing Data</button>
+              </div>
+            )}
 
             <form className="upload-form" onSubmit={(e) => { e.preventDefault(); void submitAnalysis(); }}>
               <label className="upload-zone">
@@ -401,7 +942,7 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              {uploadMode === "append" && (
+              {!studyContext && uploadMode === "append" && (
                 <label className="field-block">
                   <span>Upload Previous Excel / CSV (optional)</span>
                   <input accept=".xlsx,.xls,.csv" type="file" onChange={(e) => setExistingDataFile(e.target.files?.[0] ?? null)} />
@@ -457,13 +998,15 @@ export default function DashboardPage() {
         <main className="result-shell">
           <div className="result-topbar">
             <button className="back-btn" onClick={() => setView("home")} type="button">Dashboard</button>
-            <button className="secondary-button" onClick={() => setView("analyze")} type="button">Analyze More Reports</button>
+            <button className="secondary-button" onClick={() => { void openStudyFlow(); }} type="button">Analyze More Reports</button>
             {saveStatus === "saved" && <span className="save-badge">✅ Saved</span>}
             {saveStatus === "saving" && <span className="save-badge muted">Saving…</span>}
             {saveStatus === "error" && <span className="save-badge error-badge">Not saved</span>}
           </div>
 
-          <div className="success-banner">Successfully analyzed {analysis.total_records} test records.</div>
+          <div className="success-banner">
+            {studySuccessMessage || `Successfully analyzed ${analysis.total_records} test records.`}
+          </div>
 
           {/* Patient profile */}
           <section className="result-section">
@@ -595,6 +1138,49 @@ export default function DashboardPage() {
           </section>
         </main>
       )}
+
+      <StudyFlowModal
+        open={studyFlowOpen}
+        userName={user.displayName ?? user.email ?? "User"}
+        profiles={profiles}
+        selectedProfile={selectedProfile}
+        studies={profileStudies}
+        selectedAction={selectedAction}
+        selectedStudy={selectedStudy}
+        step={studyFlowStep}
+        loading={flowLoading}
+        formError={flowError}
+        onClose={() => {
+          setStudyFlowOpen(false);
+          setFlowError(null);
+        }}
+        onSelectProfile={(profile) => { void handleSelectProfile(profile); }}
+        onSelectAction={handleSelectAction}
+        onSelectStudy={(study) => {
+          setSelectedStudy(study);
+          setStudyFlowStep("confirm-add");
+        }}
+        onConfirmAdd={handleConfirmAddToStudy}
+        onBack={handleStudyFlowBack}
+        newStudyName={newStudyName}
+        newStudyDescription={newStudyDescription}
+        onChangeNewStudyName={setNewStudyName}
+        onChangeNewStudyDescription={setNewStudyDescription}
+        onCreateStudy={() => { void handleCreateStudyAndContinue(); }}
+        newMemberName={newMemberName}
+        newMemberRelationship={newMemberRelationship}
+        newMemberOtherRelationship={newMemberOtherRelationship}
+        newMemberDob={newMemberDob}
+        onChangeMemberName={setNewMemberName}
+        onChangeMemberRelationship={setNewMemberRelationship}
+        onChangeMemberOtherRelationship={setNewMemberOtherRelationship}
+        onChangeMemberDob={setNewMemberDob}
+        onCreateMember={() => { void handleCreateFamilyMemberAndContinue(); }}
+        onStartNewMember={() => {
+          setFlowError(null);
+          setStudyFlowStep("new-member");
+        }}
+      />
     </div>
   );
 }

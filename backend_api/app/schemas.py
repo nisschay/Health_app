@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -111,3 +112,51 @@ class MergeAnalysisRequest(BaseModel):
     """Merge new PDFs into an existing saved analysis and save the result."""
     existing_analysis_id: int
     new_analysis: AnalysisResponse
+
+
+# ── Study management schemas ──────────────────────────────────────────────────
+
+class ProfileResponse(BaseModel):
+    id: UUID
+    account_owner_id: int
+    full_name: str
+    relationship: str
+    date_of_birth: str | None
+    created_at: str
+
+
+class CreateProfileRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=256)
+    relationship: str = Field(min_length=1, max_length=64)
+    date_of_birth: str | None = None
+
+
+class StudySummaryResponse(BaseModel):
+    id: UUID
+    profile_id: UUID
+    name: str
+    description: str | None
+    report_count: int
+    range_start: str | None
+    range_end: str | None
+    last_updated: str
+    created_at: str
+
+
+class CreateStudyRequest(BaseModel):
+    profile_id: UUID
+    name: str = Field(min_length=1, max_length=60)
+    description: str | None = Field(default=None, max_length=200)
+
+
+class SaveStudyAnalysisRequest(BaseModel):
+    analysis: AnalysisResponse
+    source_filenames: list[str] = Field(default_factory=list)
+    source_file_urls: list[str] = Field(default_factory=list)
+
+
+class SaveStudyAnalysisResponse(BaseModel):
+    study_id: UUID
+    added_reports: int
+    total_reports: int
+    study_name: str
