@@ -13,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { ChatTurn, MedicalRecord } from "@/lib/api";
+import type { MedicalRecord } from "@/lib/api";
 import { parseMedicalDate } from "@/lib/clinical";
 
 type StructuredAssistant = {
@@ -168,28 +168,13 @@ function findingTone(status: string) {
 
 export default function ClinicalChatPanel({
   records,
-  chatHistory,
-  chatError,
-  isChatPending,
-  chatQuestion,
-  onChangeQuestion,
-  onSubmit,
-  onQuickQuestion,
 }: {
   records: MedicalRecord[];
-  chatHistory: ChatTurn[];
-  chatError: string | null;
-  isChatPending: boolean;
-  chatQuestion: string;
-  onChangeQuestion: (value: string) => void;
-  onSubmit: () => void;
-  onQuickQuestion: (question: string) => void;
 }) {
-  const [showDetails, setShowDetails] = useState(false);
-  const assistantTurn = [...chatHistory].reverse().find((turn) => turn.role !== "user");
+  const showDetails = true;
   const analysisData = useMemo(
-    () => parseAssistantResponse(assistantTurn?.content ?? "", records),
-    [assistantTurn?.content, records]
+    () => parseAssistantResponse("", records),
+    [records]
   );
 
   const [activeMetric, setActiveMetric] = useState<string | null>(analysisData.metrics[0]?.testName ?? null);
@@ -202,12 +187,6 @@ export default function ClinicalChatPanel({
     [records, activeMetric]
   );
   const activeRange = parseRefRange(activeRecord?.Reference_Range ?? null);
-
-  const quickSuggestions = [
-    "Show trends over time",
-    "Explain abnormal values",
-    "Compare categories with highest alerts",
-  ];
 
   return (
     <section className="result-section">
@@ -241,17 +220,10 @@ export default function ClinicalChatPanel({
 
           <div className="clinical-section-header-row">
             <h3>Key Findings</h3>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => setShowDetails((prev) => !prev)}
-            >
-              {showDetails ? "Hide Details" : "Show Details"}
-            </button>
           </div>
 
           {showDetails && (
-            <div className="clinical-findings-list" role="list">
+            <div className="clinical-findings-grid" role="list">
               {analysisData.keyFindings.length === 0 && (
                 <div className="clinical-finding-row" role="listitem">
                   <div className="clinical-finding-main">
@@ -263,6 +235,7 @@ export default function ClinicalChatPanel({
               {analysisData.keyFindings.map((finding, idx) => (
                 <div className={`clinical-finding-row ${findingTone(finding.status)}`} role="listitem" key={`${finding.testName}-${finding.date}-${idx}`}>
                   <div className="clinical-finding-main">
+                    <span className="clinical-finding-icon" aria-hidden="true">!</span>
                     <strong>{finding.testName}</strong>
                     <p>{finding.value}</p>
                     <small>{finding.date} • Ref: {finding.reference}</small>
@@ -307,47 +280,6 @@ export default function ClinicalChatPanel({
             </div>
           )}
 
-          {chatHistory.length === 0 && (
-            <div className="clinical-empty-state">
-              <p>Try a guided query:</p>
-              <div className="quick-grid">
-                {quickSuggestions.map((q) => (
-                  <button key={q} className="quick-btn" type="button" disabled={isChatPending} onClick={() => onQuickQuestion(q)}>
-                    {q}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="clinical-ask-ai">
-            <h3>Clinical Assistant</h3>
-            <p>Ask about trends, abnormalities, or clinical context</p>
-
-            {chatError && <p className="status-text error-text">{chatError}</p>}
-
-            <form
-              className="chat-input-row"
-              onSubmit={(e) => {
-                e.preventDefault();
-                onSubmit();
-              }}
-            >
-              <input
-                className="text-input"
-                type="text"
-                placeholder="Ask about trends, abnormalities, and clinical context..."
-                disabled={isChatPending}
-                value={chatQuestion}
-                onChange={(e) => onChangeQuestion(e.target.value)}
-              />
-              <button className="primary-button" type="submit" disabled={isChatPending || !chatQuestion.trim()}>
-                Send
-              </button>
-            </form>
-          </div>
-
-          {isChatPending && <div className="chat-bubble assistant muted">Analyzing clinical context...</div>}
         </div>
 
         <aside className="clinical-viz-column">

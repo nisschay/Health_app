@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -85,11 +85,33 @@ class MedicalAnalysisService:
         existing_data_file: tuple[str, bytes] | None = None,
         include_raw_texts: bool = False,
         user: RequestUser | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         api_key = self._require_api_key()
 
+        def emit(event: dict[str, Any]) -> None:
+            if progress_callback is not None:
+                progress_callback(event)
+
+        total_files = len(pdf_files or [])
+        processed_files = 0
+        started_at = datetime.utcnow()
+
         if not pdf_files and not existing_data_file:
             raise ValueError("At least one PDF or an existing data file is required.")
+
+        for idx, (filename, _) in enumerate(pdf_files or []):
+            emit(
+                {
+                    "type": "file",
+                    "file": filename,
+                    "step": "queued",
+                    "percent": 0,
+                    "processed": processed_files,
+                    "total": total_files,
+                    "index": idx,
+                }
+            )
 
         all_dfs: list[pd.DataFrame] = []
         all_patient_infos_from_pdfs: list[dict[str, Any]] = []
@@ -97,6 +119,17 @@ class MedicalAnalysisService:
         failed_files: list[str] = []
 
         for filename, payload in pdf_files:
+            emit(
+                {
+                    "type": "file",
+                    "file": filename,
+                    "step": "extracting",
+                    "percent": 20,
+                    "processed": processed_files,
+                    "total": total_files,
+                }
+            )
+
             try:
                 report_text = extract_text_from_pdf(payload)
             except Exception:
@@ -104,6 +137,18 @@ class MedicalAnalysisService:
 
             if not report_text:
                 failed_files.append(f"{filename}: no extractable text")
+                processed_files += 1
+                emit(
+                    {
+                        "type": "file",
+                        "file": filename,
+                        "step": "failed",
+                        "percent": 100,
+                        "processed": processed_files,
+                        "total": total_files,
+                        "error": "No extractable text found.",
+                    }
+                )
                 continue
 
             if include_raw_texts:
@@ -118,7 +163,30 @@ class MedicalAnalysisService:
             if not gemini_analysis_json:
                 reason = get_last_extraction_error() or "Gemini extraction failed"
                 failed_files.append(f"{filename}: {reason}")
+                processed_files += 1
+                emit(
+                    {
+                        "type": "file",
+                        "file": filename,
+                        "step": "failed",
+                        "percent": 100,
+                        "processed": processed_files,
+                        "total": total_files,
+                        "error": reason,
+                    }
+                )
                 continue
+
+            emit(
+                {
+                    "type": "file",
+                    "file": filename,
+                    "step": "parsing",
+                    "percent": 75,
+                    "processed": processed_files,
+                    "total": total_files,
+                }
+            )
 
             df_single, patient_info_single = create_structured_dataframe(
                 gemini_analysis_json,
@@ -128,6 +196,23 @@ class MedicalAnalysisService:
                 all_dfs.append(df_single)
             if patient_info_single:
                 all_patient_infos_from_pdfs.append(patient_info_single)
+
+            processed_files += 1
+            elapsed = (datetime.utcnow() - started_at).total_seconds()
+            avg_per_file = elapsed / processed_files if processed_files > 0 else 0
+            remaining = max(total_files - processed_files, 0)
+            eta_seconds = int(avg_per_file * remaining)
+            emit(
+                {
+                    "type": "file",
+                    "file": filename,
+                    "step": "done",
+                    "percent": 100,
+                    "processed": processed_files,
+                    "total": total_files,
+                    "eta_seconds": eta_seconds,
+                }
+            )
 
         existing_df = pd.DataFrame()
         existing_patient_info: dict[str, Any] = {}

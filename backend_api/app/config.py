@@ -5,10 +5,12 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 
-# Load backend_api/.env even when uvicorn is started from repository root.
+# Load central project .env first, with fallback to backend_api/.env.
 _APP_DIR = Path(__file__).resolve().parent
-_ENV_PATH = _APP_DIR.parent / ".env"
-load_dotenv(dotenv_path=_ENV_PATH)
+_ROOT_ENV_PATH = _APP_DIR.parent.parent / ".env"
+_LOCAL_ENV_PATH = _APP_DIR.parent / ".env"
+load_dotenv(dotenv_path=_ROOT_ENV_PATH)
+load_dotenv(dotenv_path=_LOCAL_ENV_PATH)
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:

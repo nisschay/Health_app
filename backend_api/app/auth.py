@@ -65,9 +65,6 @@ def _firebase_enabled() -> bool:
 def get_request_user(authorization: str | None = Header(default=None)) -> RequestUser:
     token = _extract_bearer_token(authorization)
 
-    if not token and not settings.require_auth:
-        return RequestUser(user_id="anonymous", authenticated=False)
-
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -75,12 +72,10 @@ def get_request_user(authorization: str | None = Header(default=None)) -> Reques
         )
 
     if not _firebase_enabled():
-        if settings.require_auth:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Firebase authentication is not configured on the API.",
-            )
-        return RequestUser(user_id="anonymous", authenticated=False)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Firebase authentication is not configured on the API.",
+        )
 
     try:
         decoded_token = firebase_auth.verify_id_token(token)

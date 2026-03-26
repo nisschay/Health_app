@@ -2,19 +2,26 @@
 
 import { useState, useTransition, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import dayjs from "dayjs";
+import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
+import { DatePicker } from "@mui/x-date-pickers/DatePicker";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { useAuth } from "@/lib/auth-context";
 import {
   type AnalysisResponse,
+  type AnalyzeStreamEvent,
   type AnalysisHistoryItem,
   type ChatTurn,
+  type DashboardSummary,
   type ProfileItem,
   type StudySummary,
-  analyzeReports,
+  analyzeReportsStream,
   createProfile,
   createStudy,
   fetchProfiles,
   sendChatMessage,
   fetchStudiesForProfile,
+  fetchStudiesDashboard,
   fetchReportHistory,
   fetchReportById,
   saveAnalysis,
@@ -29,6 +36,17 @@ import { generateClinicalPdfReport } from "@/lib/pdf";
 
 type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
 type StudyAction = "add-existing" | "start-new";
+
+type StageState = "pending" | "active" | "complete" | "error";
+
+type FileStatus = "queued" | "extracting" | "parsing" | "done" | "failed";
+
+type FileProgressItem = {
+  file: string;
+  percent: number;
+  status: FileStatus;
+  error?: string;
+};
 
 type AnalyzeContext = {
   profile: ProfileItem;
@@ -53,12 +71,6 @@ function parseMedicalDate(value: string | null | undefined): number {
 function isConcerningStatus(status: string | null | undefined): boolean {
   const normalized = status?.toLowerCase();
   return normalized === "high" || normalized === "low" || normalized === "critical" || normalized === "positive" || normalized === "flagged";
-}
-
-function fmtDate(iso: string) {
-  try {
-    return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-  } catch { return iso; }
 }
 
 function fmtRelativeDate(iso: string) {
@@ -97,6 +109,24 @@ function relationshipLabel(value: string): string {
   return clean.charAt(0).toUpperCase() + clean.slice(1);
 }
 
+function renderMarkdownToHtml(markdown: string): string {
+  const escaped = markdown
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  return escaped
+    .replace(/^###\s+(.*)$/gm, "<h4>$1</h4>")
+    .replace(/^##\s+(.*)$/gm, "<h3>$1</h3>")
+    .replace(/^#\s+(.*)$/gm, "<h2>$1</h2>")
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/^-\s+(.*)$/gm, "<li>$1</li>")
+    .replace(/(<li>[\s\S]*<\/li>)/g, "<ul>$1</ul>")
+    .replace(/\n\n/g, "<br/><br/>")
+    .replace(/\n/g, "<br/>");
+}
+
 function NavBar({ user, onLogout, onHome }: { user: { displayName?: string | null; email?: string | null } | null; onLogout: () => void; onHome: () => void }) {
   return (
     <nav className="top-nav">
@@ -106,19 +136,6 @@ function NavBar({ user, onLogout, onHome }: { user: { displayName?: string | nul
         <button className="secondary-button nav-logout" onClick={onLogout} type="button">Sign Out</button>
       </div>
     </nav>
-  );
-}
-
-function HistoryCard({ item, onLoad }: { item: AnalysisHistoryItem; onLoad: (id: number) => void }) {
-  return (
-    <article className="history-card">
-      <div className="history-card-info">
-        <h3>{item.patient_name ?? "Unknown Patient"}</h3>
-        <p>{item.total_records} records &bull; {item.lab_name ?? "Unknown Lab"} &bull; {fmtDate(item.created_at)}</p>
-        {item.source_filenames.length > 0 && <p className="history-files">{item.source_filenames.join(", ")}</p>}
-      </div>
-      <button className="secondary-button" onClick={() => onLoad(item.id)} type="button">View</button>
-    </article>
   );
 }
 
@@ -189,6 +206,13 @@ function StudyFlowModal({
 }) {
   if (!open) return null;
 
+  const sortedProfiles = [...profiles].sort((a, b) => {
+    const aSelf = a.relationship.toLowerCase() === "self" ? 0 : 1;
+    const bSelf = b.relationship.toLowerCase() === "self" ? 0 : 1;
+    if (aSelf !== bSelf) return aSelf - bSelf;
+    return a.full_name.localeCompare(b.full_name);
+  });
+
   const stepMeta: Record<typeof step, { index: number; total: number }> = {
     who: { index: 1, total: 3 },
     what: { index: 2, total: 3 },
@@ -219,7 +243,7 @@ function StudyFlowModal({
             <h3>Who are these reports for?</h3>
             <p>Select a profile first, then choose whether to append or start a fresh study.</p>
             <div className="study-card-grid">
-              {profiles.map((profile) => {
+              {sortedProfiles.map((profile) => {
                 const isSelf = profile.relationship.toLowerCase() === "self";
                 const label = isSelf
                   ? `Myself - ${userName || profile.full_name}`
@@ -383,7 +407,23 @@ function StudyFlowModal({
             )}
             <label className="field-block">
               <span>Date of Birth (optional)</span>
-              <input className="input" type="date" value={newMemberDob} onChange={(e) => onChangeMemberDob(e.target.value)} />
+              <LocalizationProvider dateAdapter={AdapterDayjs}>
+                <DatePicker
+                  format="DD/MM/YYYY"
+                  value={newMemberDob ? dayjs(newMemberDob) : null}
+                  onChange={(value) => onChangeMemberDob(value ? value.format("YYYY-MM-DD") : "")}
+                  slotProps={{
+                    textField: {
+                      size: "small",
+                      fullWidth: true,
+                      className: "mui-dob-field",
+                    },
+                    popper: {
+                      placement: "bottom-start",
+                    },
+                  }}
+                />
+              </LocalizationProvider>
             </label>
             <small className="muted-copy">Helps with age-specific reference ranges in analysis.</small>
             <div className="study-step-actions">
@@ -410,6 +450,7 @@ export default function DashboardPage() {
   const [view, setView] = useState<"home" | "analyze" | "result">("home");
   const [history, setHistory] = useState<AnalysisHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
   const [pdfFiles, setPdfFiles] = useState<File[]>([]);
   const [existingDataFile, setExistingDataFile] = useState<File | null>(null);
   const [uploadMode, setUploadMode] = useState<"new" | "append">("new");
@@ -418,6 +459,16 @@ export default function DashboardPage() {
   const [analyzeStep, setAnalyzeStep] = useState<AnalyzeStep>("idle");
   const [analysisStartedAt, setAnalysisStartedAt] = useState<number | null>(null);
   const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
+  const [estimatedRemainingSeconds, setEstimatedRemainingSeconds] = useState<number | null>(null);
+  const [currentParsingFile, setCurrentParsingFile] = useState<string | null>(null);
+  const [fileProgress, setFileProgress] = useState<FileProgressItem[]>([]);
+  const [processedFilesCount, setProcessedFilesCount] = useState(0);
+  const [stageStates, setStageStates] = useState<Record<"validating" | "uploading" | "processing" | "saving", StageState>>({
+    validating: "pending",
+    uploading: "pending",
+    processing: "pending",
+    saving: "pending",
+  });
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
@@ -445,18 +496,23 @@ export default function DashboardPage() {
   const [newMemberRelationship, setNewMemberRelationship] = useState("father");
   const [newMemberOtherRelationship, setNewMemberOtherRelationship] = useState("");
   const [newMemberDob, setNewMemberDob] = useState("");
+  const [viewLoadingProfileId, setViewLoadingProfileId] = useState<string | null>(null);
 
-  const loadHistory = useCallback(async () => {
+  const loadDashboardData = useCallback(async () => {
     const token = await getToken();
     if (!token) return;
     setHistoryLoading(true);
     try {
-      const items = await fetchReportHistory(token);
+      const [items, summary] = await Promise.all([
+        fetchReportHistory(token),
+        fetchStudiesDashboard(token),
+      ]);
       setHistory(items);
+      setDashboardSummary(summary);
     } catch { /* non-critical */ } finally { setHistoryLoading(false); }
   }, [getToken]);
 
-  useEffect(() => { if (user) loadHistory(); }, [user, loadHistory]);
+  useEffect(() => { if (user) loadDashboardData(); }, [user, loadDashboardData]);
 
   function resetStudyFlow() {
     setStudyFlowStep("who");
@@ -649,54 +705,166 @@ export default function DashboardPage() {
     else if (studyFlowStep === "new-member") setStudyFlowStep("who");
   }
 
+  function startAddReportsShortcut(profile: { profile_id: string; full_name: string; relationship: string }, study: {
+    id: string;
+    name: string;
+    report_count: number;
+    range_start: string | null;
+    range_end: string | null;
+    last_updated: string;
+  }) {
+    const profileLike: ProfileItem = {
+      id: profile.profile_id,
+      account_owner_id: 0,
+      full_name: profile.full_name,
+      relationship: profile.relationship,
+      date_of_birth: null,
+      created_at: new Date().toISOString(),
+    };
+    const studyLike: StudySummary = {
+      id: study.id,
+      profile_id: profile.profile_id,
+      name: study.name,
+      description: null,
+      report_count: study.report_count,
+      range_start: study.range_start,
+      range_end: study.range_end,
+      last_updated: study.last_updated,
+      created_at: study.last_updated,
+    };
+
+    setStudyFlowOpen(true);
+    setStudyFlowStep("confirm-add");
+    setFlowError(null);
+    setSelectedProfile(profileLike);
+    setSelectedStudy(studyLike);
+    setSelectedAction("add-existing");
+    setProfileStudies([studyLike]);
+  }
+
+  function handleAnalyzeStreamEvent(event: AnalyzeStreamEvent) {
+    if (event.type === "stage") {
+      const mapStep: Record<string, AnalyzeStep> = {
+        validating: "preparing",
+        uploading: "uploading",
+        processing: "processing",
+        saving: "saving",
+      };
+      if (event.status === "active") {
+        setAnalyzeStep(mapStep[event.step]);
+      }
+      setStageStates((prev) => ({
+        ...prev,
+        [event.step]: event.status === "complete" ? "complete" : "active",
+      }));
+      return;
+    }
+
+    if (event.type === "file") {
+      setFileProgress((prev) => {
+        const next = [...prev];
+        const idx = next.findIndex((item) => item.file === event.file);
+        const item: FileProgressItem = {
+          file: event.file,
+          percent: event.percent,
+          status: event.step,
+          error: event.error,
+        };
+        if (idx === -1) next.push(item);
+        else next[idx] = item;
+        return next;
+      });
+
+      setProcessedFilesCount(event.processed);
+      if (typeof event.eta_seconds === "number") {
+        setEstimatedRemainingSeconds(event.eta_seconds);
+      }
+      if (event.step === "extracting" || event.step === "parsing") {
+        setCurrentParsingFile(event.file);
+      }
+      if (event.step === "done" || event.step === "failed") {
+        setCurrentParsingFile((prev) => (prev === event.file ? null : prev));
+      }
+    }
+  }
+
   async function submitAnalysis() {
     setErrorMessage(null);
     setIsAnalyzing(true);
     setAnalyzeStep("preparing");
     setAnalysisStartedAt(Date.now());
     setAnalysisElapsedSeconds(0);
+    setEstimatedRemainingSeconds(null);
+    setCurrentParsingFile(null);
+    setProcessedFilesCount(0);
+    setStageStates({
+      validating: "pending",
+      uploading: "pending",
+      processing: "pending",
+      saving: "pending",
+    });
+
     const token = await getToken();
+    if (!token) {
+      setErrorMessage("Authentication required. Please sign in again.");
+      setIsAnalyzing(false);
+      setAnalyzeStep("error");
+      return;
+    }
+
     if (pdfFiles.length === 0) {
       setErrorMessage("Please select at least one PDF file.");
       setIsAnalyzing(false);
       setAnalyzeStep("error");
       return;
     }
+
+    setFileProgress(
+      pdfFiles.map((file) => ({ file: file.name, percent: 0, status: "queued" }))
+    );
+
     const fd = new FormData();
     for (const f of pdfFiles) fd.append("pdf_files", f);
     if (existingDataFile) fd.append("existing_data", existingDataFile);
-    setAnalyzeStep("uploading");
+
     try {
-      setAnalyzeStep("processing");
-      const result = await analyzeReports(fd, token ?? undefined);
+      const result = await analyzeReportsStream(fd, token, handleAnalyzeStreamEvent);
       setAnalysis(result);
       setChatHistory([]);
       setSelectedBodySystem("all");
       setSelectedCategory("all");
       setSelectedTest("");
       setView("result");
-      if (token) {
-        setAnalyzeStep("saving");
-        setSaveStatus("saving");
-        try {
-          if (studyContext) {
-            const saved = await saveStudyAnalysis(studyContext.study.id, result, pdfFiles.map((f) => f.name), token);
-            setStudySuccessMessage(
-              studyContext.mode === "existing"
-                ? `${saved.added_reports} new reports added to ${saved.study_name}. Dashboard updated with new trends.`
-                : `New study ${saved.study_name} created for ${studyContext.profile.full_name}.`,
-            );
-          } else {
-            await saveAnalysis(result, pdfFiles.map((f) => f.name), token);
-            setStudySuccessMessage(null);
-          }
-          setSaveStatus("saved");
-          loadHistory();
-        } catch { setSaveStatus("error"); }
+
+      setAnalyzeStep("saving");
+      setSaveStatus("saving");
+      try {
+        if (studyContext) {
+          const saved = await saveStudyAnalysis(studyContext.study.id, result, pdfFiles.map((f) => f.name), token);
+          setStudySuccessMessage(
+            studyContext.mode === "existing"
+              ? `${saved.added_reports} new reports added to ${saved.study_name}. Dashboard updated with new trends.`
+              : `New study ${saved.study_name} created for ${studyContext.profile.full_name}.`,
+          );
+        } else {
+          await saveAnalysis(result, pdfFiles.map((f) => f.name), token);
+          setStudySuccessMessage(null);
+        }
+        setSaveStatus("saved");
+        loadDashboardData();
+      } catch {
+        setSaveStatus("error");
       }
+
       setAnalyzeStep("idle");
     } catch (err) {
       setAnalyzeStep("error");
+      setStageStates((prev) => ({
+        validating: prev.validating,
+        uploading: prev.uploading,
+        processing: prev.processing === "complete" ? "complete" : "error",
+        saving: prev.saving,
+      }));
       setErrorMessage(err instanceof Error ? err.message : "Analysis failed.");
     }
     finally {
@@ -722,11 +890,19 @@ export default function DashboardPage() {
     const q = chatQuestion; setChatQuestion("");
     const token = await getToken();
     const newHistory = [...chatHistory, { role: "user", content: q }];
+    console.log("Chat request context", {
+      reportRecords: analysis.records.length,
+      question: q,
+      historyCount: newHistory.length,
+    });
     setChatHistory(newHistory);
     try {
       const resp = await sendChatMessage(analysis.records, q, newHistory, token ?? undefined);
       setChatHistory([...newHistory, { role: "assistant", content: resp.answer }]);
-    } catch (err) { setChatError(err instanceof Error ? err.message : "Chat failed."); }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown chat error.";
+      setChatError(msg);
+    }
   }
 
   function handleQuickQuestion(q: string) {
@@ -737,11 +913,19 @@ export default function DashboardPage() {
         const token = await getToken();
         const clean = q.replace(/^[^\s]+ /, "");
         const newHistory = [...chatHistory, { role: "user", content: clean }];
+        console.log("Quick chat request context", {
+          reportRecords: analysis.records.length,
+          question: clean,
+          historyCount: newHistory.length,
+        });
         setChatHistory(newHistory);
         try {
           const resp = await sendChatMessage(analysis.records, clean, newHistory, token ?? undefined);
           setChatHistory([...newHistory, { role: "assistant", content: resp.answer }]);
-        } catch (err) { setChatError(err instanceof Error ? err.message : "Chat failed."); }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Unknown chat error.";
+          setChatError(msg);
+        }
       })();
     });
   }
@@ -778,12 +962,6 @@ export default function DashboardPage() {
   const filteredByCategory = selectedCategory === "all" ? filteredBySystem : filteredBySystem.filter((r) => r.Test_Category === selectedCategory);
   const allTests = Array.from(new Set(filteredByCategory.map((r) => r.Test_Name ?? "").filter(Boolean))).sort();
   const selectedTestData = selectedTest ? filteredByCategory.filter((r) => r.Test_Name === selectedTest) : [];
-  const latestHistory = history.reduce<AnalysisHistoryItem | null>((latest, item) => {
-    if (!latest) return item;
-    return new Date(item.created_at).getTime() > new Date(latest.created_at).getTime() ? item : latest;
-  }, null);
-  const lastAnalysisLabel = latestHistory ? fmtRelativeDate(latestHistory.created_at) : "Not yet";
-  const alertsCount = analysis?.health_summary?.concerns?.length ?? 0;
   const normalCount = records.filter((record) => {
     const normalized = record.Status?.toLowerCase();
     return normalized === "normal" || normalized === "negative";
@@ -824,15 +1002,15 @@ export default function DashboardPage() {
   }, [isAnalyzing, analysisStartedAt]);
 
   const analyzeSteps = [
-    { id: "preparing", label: "Validating files", detail: "Checking selected PDFs and upload mode" },
+    { id: "validating", label: "Validating files", detail: "Checking selected PDFs and upload mode" },
     { id: "uploading", label: "Uploading reports", detail: "Sending files securely to backend" },
     { id: "processing", label: "Running AI extraction", detail: "Parsing PDFs and building structured data" },
     { id: "saving", label: "Saving to your history", detail: "Storing the analysis in your account" },
   ] as const;
-
-  const activeStepIndex = Math.max(0, analyzeSteps.findIndex((step) => step.id === analyzeStep));
   const elapsedMinutes = Math.floor(analysisElapsedSeconds / 60);
   const elapsedSeconds = analysisElapsedSeconds % 60;
+  const etaMinutes = estimatedRemainingSeconds !== null ? Math.floor(estimatedRemainingSeconds / 60) : 0;
+  const etaSeconds = estimatedRemainingSeconds !== null ? estimatedRemainingSeconds % 60 : 0;
 
   if (loading || !user) {
     return <main className="auth-shell"><div className="auth-loading">Loading…</div></main>;
@@ -851,45 +1029,88 @@ export default function DashboardPage() {
               <p>Track, analyze, and revisit your medical history.</p>
             </div>
             <button className="primary-button" onClick={() => { void openStudyFlow(); }} type="button">
-              {history.length > 0 ? "Analyze New Report" : "Upload & Analyze"}
+              {(dashboardSummary?.total_reports ?? 0) > 0 ? "Analyze New Report" : "Upload & Analyze"}
             </button>
           </section>
 
           <section className="stats-row" aria-label="Dashboard summary">
             <article className="stat-card">
               <span>Total Reports</span>
-              <strong>{history.length}</strong>
-            </article>
-            <article className="stat-card">
-              <span>Last Analysis</span>
-              <strong>{lastAnalysisLabel}</strong>
+              <strong>{dashboardSummary?.total_reports ?? 0}</strong>
             </article>
             <article className="stat-card">
               <span>Health Alerts</span>
-              <strong>{alertsCount}</strong>
+              <strong>{dashboardSummary?.total_alerts ?? 0}</strong>
+            </article>
+            <article className="stat-card">
+              <span>Profiles Tracked</span>
+              <strong>{dashboardSummary?.profiles_tracked ?? 0}</strong>
             </article>
           </section>
 
           {historyLoading && <p className="muted-copy center-text">Loading your reports…</p>}
 
-          {history.length > 0 && (
-            <section className="history-section">
-              <h2>Past Analyses</h2>
-              <div className="history-list">
-                {history.map((item) => <HistoryCard key={item.id} item={item} onLoad={loadHistoryItem} />)}
-              </div>
+          {(dashboardSummary?.profiles?.length ?? 0) > 0 && (
+            <section className="profile-groups-section">
+              {dashboardSummary?.profiles.map((profile) => (
+                <div className="profile-group-block" key={profile.profile_id}>
+                  <div className="profile-group-head">
+                    <h2>{profile.full_name} - {relationshipLabel(profile.relationship)}</h2>
+                  </div>
+
+                  <div className="study-cards-grid">
+                    {profile.studies.map((study) => (
+                      <article className="study-dashboard-card" key={study.id}>
+                        <div className="study-card-top">
+                          <h3>{study.name}</h3>
+                          <span className={`study-alert-dot ${study.has_alerts ? "warn" : "ok"}`} />
+                        </div>
+                        <p>{study.report_count} reports • {fmtRange(study.range_start, study.range_end)}</p>
+                        {study.consistent_lab_name && (
+                          <p className="study-lab-chip">Lab: {study.consistent_lab_name}</p>
+                        )}
+                        <div className="study-card-actions">
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            disabled={viewLoadingProfileId === profile.profile_id}
+                            onClick={() => {
+                              console.log("View clicked profileId:", profile.profile_id);
+                              if (!profile.profile_id) {
+                                setErrorMessage("Unable to open profile view: missing profile id.");
+                                return;
+                              }
+                              setViewLoadingProfileId(profile.profile_id);
+                              router.push(`/dashboard/reports/${profile.profile_id}`);
+                            }}
+                          >
+                            {viewLoadingProfileId === profile.profile_id ? "Opening..." : "View"}
+                          </button>
+                          <button
+                            className="primary-button compact"
+                            type="button"
+                            onClick={() => startAddReportsShortcut(profile, study)}
+                          >
+                            Add Reports
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </section>
           )}
 
-          {!historyLoading && history.length === 0 && (
+          {!historyLoading && (dashboardSummary?.profiles?.length ?? 0) === 0 && (
             <div className="empty-state">
-              <h3>No reports yet</h3>
-              <p>Upload your medical PDF reports and the AI will extract and analyze all test data automatically.</p>
+              <h3>No studies yet</h3>
+              <p>Create your first profile study flow by clicking Analyze New Report.</p>
               <div className="feature-row">
-                <div className="feature-pill">PDF extraction</div>
-                <div className="feature-pill">Health trends</div>
-                <div className="feature-pill">AI assistant</div>
-                <div className="feature-pill">Excel export</div>
+                <div className="feature-pill">Profiles</div>
+                <div className="feature-pill">Study timelines</div>
+                <div className="feature-pill">AI trend tracking</div>
+                <div className="feature-pill">Alerts monitoring</div>
               </div>
             </div>
           )}
@@ -954,18 +1175,56 @@ export default function DashboardPage() {
                 <section className={`analysis-progress-panel ${analyzeStep === "error" ? "error" : ""}`}>
                   <div className="analysis-progress-head">
                     <h3>{analyzeStep === "error" ? "Analysis stopped" : "Analysis in progress"}</h3>
-                    {isAnalyzing && <span>{elapsedMinutes}m {elapsedSeconds}s</span>}
+                    <span>{elapsedMinutes}m {elapsedSeconds}s</span>
+                  </div>
+
+                  <div className="analysis-overall-progress">
+                    <div className="analysis-overall-meta">
+                      <strong>{processedFilesCount} of {fileProgress.length} files processed</strong>
+                      <span>
+                        {estimatedRemainingSeconds !== null
+                          ? `Estimated time remaining: ${etaMinutes}m ${etaSeconds}s`
+                          : "Estimating time remaining..."}
+                      </span>
+                    </div>
+                    <div className="analysis-overall-track" aria-hidden="true">
+                      <div
+                        className="analysis-overall-fill"
+                        style={{
+                          width: `${fileProgress.length > 0 ? Math.round((processedFilesCount / fileProgress.length) * 100) : 0}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="analysis-file-list" role="list">
+                    {fileProgress.map((item) => (
+                      <article className="analysis-file-item" role="listitem" key={item.file}>
+                        <div className="analysis-file-head">
+                          <strong>{item.file}</strong>
+                          <span className={`analysis-file-status ${item.status}`}>
+                            {item.status === "done" && "Done ✓"}
+                            {item.status === "failed" && "Failed ✗"}
+                            {item.status === "queued" && "Queued"}
+                            {item.status === "extracting" && "Extracting"}
+                            {item.status === "parsing" && "Parsing"}
+                          </span>
+                        </div>
+                        <div className="analysis-file-track" aria-hidden="true">
+                          <div className={`analysis-file-fill ${item.status}`} style={{ width: `${item.percent}%` }} />
+                        </div>
+                        {item.error && <p className="status-text error-text">{item.error}</p>}
+                      </article>
+                    ))}
                   </div>
 
                   <ul className="analysis-progress-list">
-                    {analyzeSteps.map((step, idx) => {
-                      const isDone = idx < activeStepIndex && analyzeStep !== "error";
-                      const isActive = isAnalyzing && idx === activeStepIndex;
-                      const isError = analyzeStep === "error" && idx === activeStepIndex;
+                    {analyzeSteps.map((step) => {
+                      const state = stageStates[step.id];
                       return (
                         <li
                           key={step.id}
-                          className={`progress-step ${isDone ? "done" : ""} ${isActive ? "active" : ""} ${isError ? "error" : ""}`.trim()}
+                          className={`progress-step ${state}`.trim()}
                         >
                           <span className="progress-dot" aria-hidden="true" />
                           <div>
@@ -976,6 +1235,10 @@ export default function DashboardPage() {
                       );
                     })}
                   </ul>
+
+                  {stageStates.processing === "active" && currentParsingFile && (
+                    <p className="analysis-current-file">Currently parsing: {currentParsingFile}</p>
+                  )}
 
                   <p className="analysis-progress-note">
                     Large report sets can take a few minutes. Keep this tab open until processing completes.
@@ -1065,18 +1328,55 @@ export default function DashboardPage() {
 
           <ClinicalChatPanel
             records={analysis.records}
-            chatHistory={chatHistory}
-            chatError={chatError}
-            isChatPending={isChatPending}
-            chatQuestion={chatQuestion}
-            onChangeQuestion={setChatQuestion}
-            onSubmit={() => {
-              startChatTransition(() => {
-                void submitChatQuestion();
-              });
-            }}
-            onQuickQuestion={(q) => handleQuickQuestion(q)}
           />
+
+          <section className="result-section standalone-chat-section">
+            <h2>Clinical Assistant</h2>
+            <p className="muted-copy">Ask about trends, abnormalities, and clinical context. Responses support markdown.</p>
+
+            <div className="standalone-chat-history" role="log" aria-live="polite">
+              {chatHistory.length === 0 && (
+                <div className="chat-bubble assistant muted">
+                  Ask your first question to begin clinical chat.
+                </div>
+              )}
+
+              {chatHistory.map((turn, index) => (
+                <div key={`${turn.role}-${index}`} className={`chat-bubble ${turn.role === "user" ? "user" : "assistant"}`}>
+                  <div
+                    className="chat-bubble-markdown"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(turn.content) }}
+                  />
+                </div>
+              ))}
+
+              {isChatPending && <div className="chat-bubble assistant muted">Analyzing clinical context...</div>}
+            </div>
+
+            {chatError && <p className="status-text error-text">Failed to get response: {chatError}</p>}
+
+            <form
+              className="chat-input-row standalone-chat-input"
+              onSubmit={(e) => {
+                e.preventDefault();
+                startChatTransition(() => {
+                  void submitChatQuestion();
+                });
+              }}
+            >
+              <input
+                className="text-input"
+                type="text"
+                placeholder="Ask about trends, abnormalities, and clinical context..."
+                disabled={isChatPending}
+                value={chatQuestion}
+                onChange={(e) => setChatQuestion(e.target.value)}
+              />
+              <button className="primary-button" type="submit" disabled={isChatPending || !chatQuestion.trim()}>
+                Send
+              </button>
+            </form>
+          </section>
 
           <section className="result-section">
             <h2>Test Result Visualizations</h2>

@@ -1,6 +1,9 @@
 import json
+import asyncio
+import threading
 import traceback
 from datetime import date
+from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
@@ -20,7 +23,6 @@ from .database import (
     get_study_by_id,
     get_study_report_date_range,
     get_db,
-    get_user_by_firebase_uid,
     get_user_analyses,
     list_profiles_for_owner,
     list_reports_for_study,
@@ -36,6 +38,9 @@ from .schemas import (
     ChatResponse,
     CreateProfileRequest,
     CreateStudyRequest,
+    DashboardProfileGroup,
+    DashboardStudyItem,
+    DashboardSummaryResponse,
     ExportPdfRequest,
     InsightsRequest,
     InsightsResponse,
@@ -116,15 +121,10 @@ def sync_user(
 
 def _require_authenticated_user(user: RequestUser, db: Session):
     if not user.authenticated:
-        if settings.require_auth:
-            raise HTTPException(status_code=401, detail="Authentication required.")
-        raise HTTPException(status_code=401, detail="Sign in required.")
+        raise HTTPException(status_code=401, detail="Authentication required.")
 
-    owner = get_user_by_firebase_uid(db, user.user_id)
-    if not owner:
-        # Auto-heal if sync wasn't called for some reason.
-        owner = upsert_user(db, user.user_id, user.email, None)
-    return owner
+    # Keep user row fresh and ensure default self profile exists.
+    return upsert_user(db, user.user_id, user.email, None)
 
 
 def _date_to_iso(value: date | None) -> str | None:
@@ -176,6 +176,17 @@ def _parse_report_date_flexible(value: str | None) -> date | None:
             except ValueError:
                 return None
     return None
+
+
+def _extract_alerts_count(report_row) -> int:
+    try:
+        payload = report_row.analysis_data or {}
+        concerns = payload.get("health_summary", {}).get("concerns", [])
+        if isinstance(concerns, list):
+            return len(concerns)
+    except Exception:
+        return 0
+    return 0
 
 
 # ── Analysis ───────────────────────────────────────────────────────────────────
@@ -320,6 +331,74 @@ def save_analysis_to_study(
         study_name=refreshed.name if refreshed else study.name,
     )
 
+
+@app.get(
+    f"{settings.api_prefix}/studies/dashboard",
+    response_model=DashboardSummaryResponse,
+)
+def studies_dashboard_summary(
+    user: RequestUser = Depends(get_request_user),
+    db: Session = Depends(get_db),
+) -> DashboardSummaryResponse:
+    owner = _require_authenticated_user(user, db)
+    profile_rows = list_profiles_for_owner(db, owner.id)
+
+    total_reports = 0
+    total_alerts = 0
+    groups: list[DashboardProfileGroup] = []
+
+    for profile in profile_rows:
+        studies = list_studies_for_profile(db, profile.id)
+        study_items: list[DashboardStudyItem] = []
+        for study in studies:
+            reports = list_reports_for_study(db, study.id)
+            report_count = len(reports)
+            total_reports += report_count
+
+            if reports:
+                range_start = reports[0].report_date.isoformat() if reports[0].report_date else None
+                range_end = reports[-1].report_date.isoformat() if reports[-1].report_date else None
+            else:
+                range_start = None
+                range_end = None
+
+            lab_values = sorted({(r.lab_name or "").strip() for r in reports if (r.lab_name or "").strip()})
+            consistent_lab_name = lab_values[0] if len(lab_values) == 1 else None
+
+            alerts_count = sum(_extract_alerts_count(report) for report in reports)
+            total_alerts += alerts_count
+
+            study_items.append(
+                DashboardStudyItem(
+                    id=study.id,
+                    name=study.name,
+                    description=study.description,
+                    report_count=report_count,
+                    range_start=range_start,
+                    range_end=range_end,
+                    consistent_lab_name=consistent_lab_name,
+                    has_alerts=alerts_count > 0,
+                    alerts_count=alerts_count,
+                    last_updated=study.updated_at.isoformat(),
+                )
+            )
+
+        groups.append(
+            DashboardProfileGroup(
+                profile_id=profile.id,
+                full_name=profile.full_name,
+                relationship=profile.relationship,
+                studies=study_items,
+            )
+        )
+
+    return DashboardSummaryResponse(
+        total_reports=total_reports,
+        total_alerts=total_alerts,
+        profiles_tracked=len(profile_rows),
+        profiles=groups,
+    )
+
 @app.post(f"{settings.api_prefix}/reports/analyze", response_model=AnalysisResponse)
 async def analyze_reports(
     pdf_files: list[UploadFile] | None = File(default=None),
@@ -327,6 +406,9 @@ async def analyze_reports(
     include_raw_texts: bool = Form(default=False),
     user: RequestUser = Depends(get_request_user),
 ) -> AnalysisResponse:
+    if not user.authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
     print(
         f"[ANALYZE] Request received: pdf_count={len(pdf_files or [])}, "
         f"has_existing_data={existing_data is not None}, user={user.user_id}"
@@ -370,6 +452,88 @@ async def analyze_reports(
     return AnalysisResponse(**result)
 
 
+@app.post(f"{settings.api_prefix}/reports/analyze/stream")
+async def analyze_reports_stream(
+    pdf_files: list[UploadFile] | None = File(default=None),
+    existing_data: UploadFile | None = File(default=None),
+    include_raw_texts: bool = Form(default=False),
+    user: RequestUser = Depends(get_request_user),
+) -> StreamingResponse:
+    if not user.authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    pdf_payloads: list[tuple[str, bytes]] = []
+    for upload in pdf_files or []:
+        pdf_payloads.append((upload.filename or "uploaded.pdf", await upload.read()))
+
+    existing_payload: tuple[str, bytes] | None = None
+    if existing_data is not None:
+        existing_payload = (
+            existing_data.filename or "medical-data.xlsx",
+            await existing_data.read(),
+        )
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    def emit(event: dict[str, Any]) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def worker() -> None:
+        try:
+            emit({"type": "stage", "step": "validating", "status": "active"})
+            if not pdf_payloads and not existing_payload:
+                raise ValueError("At least one PDF or an existing data file is required.")
+            emit({"type": "stage", "step": "validating", "status": "complete"})
+
+            emit({"type": "stage", "step": "uploading", "status": "active"})
+            emit({"type": "stage", "step": "uploading", "status": "complete"})
+
+            emit({"type": "stage", "step": "processing", "status": "active"})
+            result = service.analyze_reports(
+                pdf_files=pdf_payloads,
+                existing_data_file=existing_payload,
+                include_raw_texts=include_raw_texts,
+                user=user,
+                progress_callback=emit,
+            )
+            emit({"type": "stage", "step": "processing", "status": "complete"})
+
+            emit({"type": "stage", "step": "saving", "status": "active"})
+            emit({"type": "stage", "step": "saving", "status": "complete"})
+            emit({"type": "done", "result": result})
+        except RuntimeError as exc:
+            detail = str(exc)
+            if detail.startswith("RATE_LIMIT_EXCEEDED:"):
+                emit({"type": "error", "status": 429, "message": detail})
+                return
+            emit({"type": "error", "status": 500, "message": detail})
+        except ValueError as exc:
+            emit({"type": "error", "status": 400, "message": str(exc)})
+        except Exception as exc:
+            traceback.print_exc()
+            emit({"type": "error", "status": 500, "message": f"Analysis failed: {str(exc)}"})
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    async def event_stream():
+        while True:
+            event = await queue.get()
+            yield f"data: {json.dumps(event)}\n\n"
+            if event.get("type") in {"done", "error"}:
+                break
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.post(f"{settings.api_prefix}/reports/save", response_model=AnalysisHistoryItem)
 def save_report_analysis(
     payload: SaveAnalysisRequest,
@@ -377,15 +541,12 @@ def save_report_analysis(
     db: Session = Depends(get_db),
 ) -> AnalysisHistoryItem:
     """Save an analysis result to PostgreSQL for the authenticated user."""
-    if not user.authenticated:
-        if settings.require_auth:
-            raise HTTPException(status_code=401, detail="Authentication required to save reports.")
-        user = RequestUser(user_id="anonymous", email=None, authenticated=False)
+    owner = _require_authenticated_user(user, db)
 
     analysis_dict = payload.analysis.model_dump()
     row = save_analysis(
         db=db,
-        firebase_uid=user.user_id,
+        firebase_uid=owner.firebase_uid,
         patient_info=analysis_dict.get("patient_info", {}),
         analysis_data=analysis_dict,
         source_filenames=payload.source_filenames,
@@ -411,12 +572,9 @@ def list_report_history(
     db: Session = Depends(get_db),
 ) -> list[AnalysisHistoryItem]:
     """Return all past analyses for the authenticated user."""
-    if not user.authenticated:
-        if settings.require_auth:
-            return []
-        user = RequestUser(user_id="anonymous", email=None, authenticated=False)
+    owner = _require_authenticated_user(user, db)
 
-    rows = get_user_analyses(db, user.user_id)
+    rows = get_user_analyses(db, owner.firebase_uid)
     return [
         AnalysisHistoryItem(
             id=row.id,
@@ -443,12 +601,9 @@ def get_report_by_id(
     db: Session = Depends(get_db),
 ) -> AnalysisResponse:
     """Return the full AnalysisResponse for a previously saved report."""
-    if not user.authenticated:
-        if settings.require_auth:
-            raise HTTPException(status_code=401, detail="Authentication required.")
-        user = RequestUser(user_id="anonymous", email=None, authenticated=False)
+    owner = _require_authenticated_user(user, db)
 
-    row = get_analysis_by_id(db, analysis_id, user.user_id)
+    row = get_analysis_by_id(db, analysis_id, owner.firebase_uid)
     if not row:
         raise HTTPException(status_code=404, detail="Analysis not found.")
 
@@ -461,21 +616,30 @@ def get_report_by_id(
 @app.post(f"{settings.api_prefix}/reports/chat", response_model=ChatResponse)
 def chat_about_report(
     payload: ChatRequest,
-    _user: RequestUser = Depends(get_request_user),
+    user: RequestUser = Depends(get_request_user),
 ) -> ChatResponse:
-    answer = service.get_chat_response(
-        records=[record.model_dump() for record in payload.records],
-        question=payload.question,
-        history=[item.model_dump() for item in payload.history],
-    )
-    return ChatResponse(answer=answer)
+    if not user.authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    try:
+        answer = service.get_chat_response(
+            records=[record.model_dump() for record in payload.records],
+            question=payload.question,
+            history=[item.model_dump() for item in payload.history],
+        )
+        return ChatResponse(answer=answer)
+    except Exception as exc:
+        print(f"[CHAT] Failed: {exc}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Chat processing failed: {str(exc)}") from exc
 
 
 @app.post(f"{settings.api_prefix}/reports/insights", response_model=InsightsResponse)
 def get_report_insights(
     payload: InsightsRequest,
-    _user: RequestUser = Depends(get_request_user),
+    user: RequestUser = Depends(get_request_user),
 ) -> InsightsResponse:
+    if not user.authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required.")
     result = service.get_health_insights(
         records=[record.model_dump() for record in payload.records]
     )
@@ -485,8 +649,10 @@ def get_report_insights(
 @app.post(f"{settings.api_prefix}/reports/export/pdf")
 def export_pdf(
     payload: ExportPdfRequest,
-    _user: RequestUser = Depends(get_request_user),
+    user: RequestUser = Depends(get_request_user),
 ) -> StreamingResponse:
+    if not user.authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required.")
     pdf_bytes = service.export_pdf_report(
         records=[record.model_dump() for record in payload.records],
         patient_info=payload.patient_info.model_dump(),
@@ -501,8 +667,10 @@ def export_pdf(
 @app.post(f"{settings.api_prefix}/reports/export/excel")
 async def export_excel(
     payload: ExportPdfRequest,
-    _user: RequestUser = Depends(get_request_user),
+    user: RequestUser = Depends(get_request_user),
 ) -> StreamingResponse:
+    if not user.authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required.")
     from .services import dataframe_from_records
     excel_bytes = service.export_excel_report(
         records=[record.model_dump() for record in payload.records],

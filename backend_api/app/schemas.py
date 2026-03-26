@@ -160,3 +160,30 @@ class SaveStudyAnalysisResponse(BaseModel):
     added_reports: int
     total_reports: int
     study_name: str
+
+
+class DashboardStudyItem(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+    report_count: int
+    range_start: str | None
+    range_end: str | None
+    consistent_lab_name: str | None
+    has_alerts: bool
+    alerts_count: int
+    last_updated: str
+
+
+class DashboardProfileGroup(BaseModel):
+    profile_id: UUID
+    full_name: str
+    relationship: str
+    studies: list[DashboardStudyItem]
+
+
+class DashboardSummaryResponse(BaseModel):
+    total_reports: int
+    total_alerts: int
+    profiles_tracked: int
+    profiles: list[DashboardProfileGroup]

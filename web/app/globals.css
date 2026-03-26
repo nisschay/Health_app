@@ -1525,6 +1525,118 @@ h1 {
 
 .center-text { text-align: center; }
 
+.profile-groups-section {
+  margin-top: 1.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.profile-group-block {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  padding: 1rem;
+}
+
+.profile-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.7rem;
+}
+
+.profile-group-head h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.study-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.study-dashboard-card {
+  background: #171717;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg);
+  padding: 0.85rem;
+}
+
+.study-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.study-card-top h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.study-alert-dot {
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.study-alert-dot.warn {
+  background: #f59e0b;
+  box-shadow: 0 0 0 5px rgba(245, 158, 11, 0.2);
+}
+
+.study-alert-dot.ok {
+  background: #22c55e;
+  box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.2);
+}
+
+.study-dashboard-card p {
+  margin: 0.5rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.study-lab-chip {
+  margin-top: 0.45rem;
+  display: inline-flex;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  color: var(--accent);
+  font-size: 0.74rem;
+}
+
+.study-card-actions {
+  margin-top: 0.7rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.primary-button.compact {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 760px) {
+  .study-cards-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .study-card-actions {
+    flex-direction: column;
+  }
+
+  .study-card-actions .secondary-button,
+  .study-card-actions .primary-button {
+    width: 100%;
+  }
+}
+
 /* =========================================
    ANALYZE VIEW
    ========================================= */
@@ -1711,6 +1823,88 @@ h1 {
   font-size: 0.82rem;
 }
 
+.analysis-overall-progress {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.analysis-overall-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.analysis-overall-meta strong {
+  font-size: 0.86rem;
+  color: var(--text-primary);
+}
+
+.analysis-overall-meta span {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.analysis-overall-track,
+.analysis-file-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(87, 83, 78, 0.5);
+  overflow: hidden;
+}
+
+.analysis-overall-fill,
+.analysis-file-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #d97706, #f59e0b);
+  transition: width 250ms ease;
+}
+
+.analysis-file-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.analysis-file-item {
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: rgba(20, 18, 16, 0.8);
+  padding: 0.6rem 0.7rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.analysis-file-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.analysis-file-head strong {
+  font-size: 0.83rem;
+  color: var(--text-primary);
+}
+
+.analysis-file-status {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.analysis-file-status.done {
+  color: #84cc16;
+}
+
+.analysis-file-status.failed {
+  color: #ef4444;
+}
+
+.analysis-file-fill.failed {
+  background: linear-gradient(90deg, #dc2626, #ef4444);
+}
+
 .analysis-progress-list {
   list-style: none;
   margin: 0;
@@ -1750,16 +1944,18 @@ h1 {
 
 .progress-step.active .progress-dot {
   border-color: var(--accent);
-  background: var(--accent);
+  border-top-color: transparent;
+  background: transparent;
   box-shadow: 0 0 0 6px var(--accent-glow);
+  animation: spin 1s linear infinite;
 }
 
-.progress-step.done .progress-dot {
+.progress-step.complete .progress-dot {
   border-color: var(--success);
   background: var(--success);
 }
 
-.progress-step.done strong,
+.progress-step.complete strong,
 .progress-step.active strong {
   color: var(--text-primary);
 }
@@ -1771,6 +1967,17 @@ h1 {
 
 .progress-step.error strong {
   color: var(--danger);
+}
+
+.analysis-current-file {
+  font-size: 0.8rem;
+  color: #fbbf24;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .analysis-progress-note {
@@ -1979,6 +2186,28 @@ h1 {
   color: var(--text-primary);
   border-radius: var(--radius-md);
   padding: 0.58rem 0.72rem;
+}
+
+.mui-dob-field .MuiOutlinedInput-root {
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.mui-dob-field .MuiInputBase-input,
+.mui-dob-field .MuiSvgIcon-root {
+  color: var(--text-primary);
+}
+
+.mui-dob-field .MuiOutlinedInput-notchedOutline {
+  border-color: var(--border-default);
+}
+
+.mui-dob-field .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.mui-dob-field .MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline {
+  border-color: var(--accent);
 }
 
 .textarea {
@@ -2687,26 +2916,21 @@ h1 {
   gap: 0.45rem;
 }
 
-.clinical-findings-list {
-  border: 1px solid #2f2b27;
-  border-radius: 10px;
-  background: #171513;
-  max-height: 320px;
-  overflow-y: auto;
+.clinical-findings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
 }
 
 .clinical-finding-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr auto;
   gap: 0.7rem;
   padding: 0.65rem 0.75rem;
-  border-bottom: 1px solid #2a2622;
+  border: 1px solid #2a2622;
+  border-radius: 10px;
+  background: #171513;
   border-left: 3px solid #6b7280;
-}
-
-.clinical-finding-row:last-child {
-  border-bottom: none;
 }
 
 .clinical-finding-row.critical {
@@ -2725,6 +2949,19 @@ h1 {
   display: block;
   color: var(--text-primary);
   font-size: 0.86rem;
+}
+
+.clinical-finding-icon {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid #d97706;
+  color: #fbbf24;
+  margin-right: 0.35rem;
+  font-size: 0.68rem;
 }
 
 .clinical-finding-main p {
@@ -2826,6 +3063,46 @@ h1 {
   letter-spacing: 0.08em;
   color: var(--text-muted);
   margin-bottom: 0.45rem;
+}
+
+.standalone-chat-section {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.standalone-chat-history {
+  min-height: 300px;
+  max-height: 430px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: #141312;
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.standalone-chat-input {
+  margin-top: 0;
+}
+
+.chat-bubble-markdown h2,
+.chat-bubble-markdown h3,
+.chat-bubble-markdown h4 {
+  margin: 0.35rem 0;
+}
+
+.chat-bubble-markdown ul {
+  margin: 0.35rem 0 0.35rem 1rem;
+}
+
+.chat-bubble-markdown code {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.82em;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  padding: 0.05rem 0.3rem;
+  border-radius: 6px;
 }
 
 .range-indicator-block {
@@ -3184,6 +3461,14 @@ h1 {
 
   .clinical-panel-layout {
     grid-template-columns: 1fr;
+  }
+
+  .clinical-findings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .standalone-chat-history {
+    min-height: 240px;
   }
 
   .clinical-viz-sticky {
