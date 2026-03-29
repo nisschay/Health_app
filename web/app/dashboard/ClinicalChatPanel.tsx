@@ -32,6 +32,11 @@ type StructuredAssistant = {
   mostAffectedCategory: string;
 };
 
+function isAbnormalStatus(status: string | null | undefined): boolean {
+  const normalized = String(status ?? "").toLowerCase();
+  return normalized === "high" || normalized === "low" || normalized === "critical" || normalized === "positive" || normalized === "flagged" || normalized === "insufficient";
+}
+
 function parseRefRange(ref: string | null | undefined): { low: number | null; high: number | null } {
   if (!ref) return { low: null, high: null };
   const rangeMatch = ref.match(/([0-9.]+)\s*[-–]\s*([0-9.]+)/);
@@ -52,10 +57,7 @@ function parseAssistantResponse(content: string, records: MedicalRecord[]): Stru
   const summary = lines.slice(0, 2).join(" ") || "Clinical review generated based on available report data.";
 
   const abnormalRecords = records
-    .filter((record) => {
-      const status = String(record.Status ?? "").toLowerCase();
-      return status === "high" || status === "low" || status === "critical" || status === "positive" || status === "flagged" || status === "insufficient";
-    })
+    .filter((record) => isAbnormalStatus(record.Status))
     .sort((a, b) => {
       const rank = (status: string | null | undefined) => {
         const s = (status ?? "").toLowerCase();
@@ -171,7 +173,6 @@ export default function ClinicalChatPanel({
 }: {
   records: MedicalRecord[];
 }) {
-  const showDetails = true;
   const analysisData = useMemo(
     () => parseAssistantResponse("", records),
     [records]
@@ -187,164 +188,227 @@ export default function ClinicalChatPanel({
     [records, activeMetric]
   );
   const activeRange = parseRefRange(activeRecord?.Reference_Range ?? null);
+  const criticalCount = useMemo(
+    () => records.filter((row) => String(row.Status ?? "").toLowerCase() === "critical").length,
+    [records],
+  );
+  const stableCount = useMemo(
+    () => records.filter((row) => {
+      const normalized = String(row.Status ?? "").toLowerCase();
+      return normalized === "normal" || normalized === "negative";
+    }).length,
+    [records],
+  );
+  const alertRate = records.length > 0 ? Math.round((analysisData.totalAlerts / records.length) * 100) : 0;
+  const clinicalState = useMemo(() => {
+    if (criticalCount > 0) {
+      return {
+        tone: "critical",
+        label: "Attention Required",
+        note: `${criticalCount} critical findings need immediate review.`,
+      };
+    }
+    if (alertRate >= 30) {
+      return {
+        tone: "watch",
+        label: "Monitor Closely",
+        note: `${alertRate}% of results are outside reference status.`,
+      };
+    }
+    return {
+      tone: "stable",
+      label: "Generally Stable",
+      note: "No critical spikes detected in the current records.",
+    };
+  }, [alertRate, criticalCount]);
+  const trendNarrative = useMemo(() => {
+    if (!activeMetric || trendData.length < 2) {
+      return "Select a metric with multiple numeric points to view trend direction.";
+    }
+    const first = trendData[0]!.value;
+    const last = trendData[trendData.length - 1]!.value;
+    const delta = last - first;
+    const pct = first === 0 ? 0 : Math.round((delta / Math.abs(first)) * 100);
+
+    if (Math.abs(delta) < 0.01) {
+      return `${activeMetric} has remained stable across recorded dates.`;
+    }
+    if (delta > 0) {
+      return `${activeMetric} is trending upward (${pct}% change from earliest point).`;
+    }
+    return `${activeMetric} is trending downward (${Math.abs(pct)}% change from earliest point).`;
+  }, [activeMetric, trendData]);
 
   return (
-    <section className="result-section">
-      <h2>Clinical Intelligence Panel</h2>
-      <div className="clinical-panel-layout">
-        <div className="clinical-chat-column clinical-panel-card">
-          <div className="clinical-top-stats">
-            <article className="clinical-stat-card">
-              <div className="clinical-stat-head">
-                <span className="clinical-stat-icon" aria-hidden="true">!</span>
-                <span>Total Alerts</span>
-              </div>
-              <strong>{analysisData.totalAlerts}</strong>
-              <span className="status-pill bad">Needs Review</span>
-            </article>
+    <section className="result-section intelligence-section">
+      <div className="intelligence-header">
+        <div className="intelligence-title-wrap">
+          <span className="intelligence-kicker">Clinical Intelligence</span>
+          <h2>Clinical Intelligence Panel</h2>
+          <p>{analysisData.summary}</p>
+        </div>
+        <article className={`intelligence-state-card ${clinicalState.tone}`}>
+          <span className="intelligence-state-label">Current Assessment</span>
+          <strong>{clinicalState.label}</strong>
+          <p>{clinicalState.note}</p>
+        </article>
+      </div>
 
-            <article className="clinical-stat-card">
-              <div className="clinical-stat-head">
-                <span className="clinical-stat-icon" aria-hidden="true">C</span>
-                <span>Most Affected Category</span>
-              </div>
-              <strong>{analysisData.mostAffectedCategory}</strong>
-              <span className="status-pill warn">Top Concern</span>
-            </article>
-          </div>
+      <div className="intelligence-stat-strip">
+        <article className="intelligence-stat-card">
+          <span>Total Alerts</span>
+          <strong>{analysisData.totalAlerts}</strong>
+        </article>
+        <article className="intelligence-stat-card">
+          <span>Most Affected Category</span>
+          <strong>{analysisData.mostAffectedCategory}</strong>
+        </article>
+        <article className="intelligence-stat-card">
+          <span>Stable Results</span>
+          <strong>{stableCount}</strong>
+        </article>
+        <article className="intelligence-stat-card">
+          <span>Alert Rate</span>
+          <strong>{alertRate}%</strong>
+        </article>
+      </div>
 
-          <div className="clinical-summary-banner">
-            <span className="clinical-summary-icon" aria-hidden="true">i</span>
-            <p>{analysisData.summary}</p>
-          </div>
+      <div className="intelligence-grid">
+        <div className="intelligence-main-column">
+          <section className="intelligence-block">
+            <div className="intelligence-block-head">
+              <h3>Priority Findings</h3>
+              <span>{analysisData.keyFindings.length} flagged observations</span>
+            </div>
 
-          <div className="clinical-section-header-row">
-            <h3>Key Findings</h3>
-          </div>
-
-          {showDetails && (
-            <div className="clinical-findings-grid" role="list">
+            <div className="intelligence-findings-grid" role="list">
               {analysisData.keyFindings.length === 0 && (
-                <div className="clinical-finding-row" role="listitem">
-                  <div className="clinical-finding-main">
-                    <strong>No abnormal findings were detected in the current record set.</strong>
-                  </div>
+                <div className="intelligence-finding-card" role="listitem">
+                  <strong>No abnormal findings were detected in the current record set.</strong>
                 </div>
               )}
 
               {analysisData.keyFindings.map((finding, idx) => (
-                <div className={`clinical-finding-row ${findingTone(finding.status)}`} role="listitem" key={`${finding.testName}-${finding.date}-${idx}`}>
-                  <div className="clinical-finding-main">
-                    <span className="clinical-finding-icon" aria-hidden="true">!</span>
+                <div className={`intelligence-finding-card ${findingTone(finding.status)}`} role="listitem" key={`${finding.testName}-${finding.date}-${idx}`}>
+                  <div className="intelligence-finding-main">
                     <strong>{finding.testName}</strong>
                     <p>{finding.value}</p>
-                    <small>{finding.date} • Ref: {finding.reference}</small>
+                    <small>{finding.date} | Ref: {finding.reference}</small>
                   </div>
                   <span className={`status-pill ${badgeTone(finding.status)}`}>{finding.status}</span>
                 </div>
               ))}
             </div>
-          )}
+          </section>
 
-          {showDetails && (
-            <div className="clinical-structured-card">
-              <h4>Key Metrics</h4>
-              <div className="metric-chip-row">
-                {analysisData.metrics.length === 0 && <span className="muted-copy">No highlighted metrics.</span>}
-                {analysisData.metrics.map((metric, metricIndex) => (
-                  <button
-                    type="button"
-                    key={`${metric.testName}-${metric.status}-${metric.value}-${metricIndex}`}
-                    className={`metric-chip ${activeMetric === metric.testName ? "active" : ""} ${hoveredMetric === metric.testName ? "linked" : ""}`}
-                    onClick={() => setActiveMetric(metric.testName)}
-                    onMouseEnter={() => setHoveredMetric(metric.testName)}
-                    onMouseLeave={() => setHoveredMetric(null)}
-                  >
-                    <span>{metric.label}</span>
-                    <strong>{metric.value}</strong>
-                    <em className={`status-pill ${badgeTone(metric.status)}`}>{metric.status}</em>
-                  </button>
-                ))}
-              </div>
+          <section className="intelligence-block">
+            <div className="intelligence-block-head">
+              <h3>Priority Metrics</h3>
+              <span>Select a metric to update charts</span>
             </div>
-          )}
+            <div className="metric-chip-row">
+              {analysisData.metrics.length === 0 && <span className="muted-copy">No highlighted metrics.</span>}
+              {analysisData.metrics.map((metric, metricIndex) => (
+                <button
+                  type="button"
+                  key={`${metric.testName}-${metric.status}-${metric.value}-${metricIndex}`}
+                  className={`metric-chip ${activeMetric === metric.testName ? "active" : ""} ${hoveredMetric === metric.testName ? "linked" : ""}`}
+                  onClick={() => setActiveMetric(metric.testName)}
+                  onMouseEnter={() => setHoveredMetric(metric.testName)}
+                  onMouseLeave={() => setHoveredMetric(null)}
+                >
+                  <span>{metric.label}</span>
+                  <strong>{metric.value}</strong>
+                  <em className={`status-pill ${badgeTone(metric.status)}`}>{metric.status}</em>
+                </button>
+              ))}
+            </div>
+          </section>
 
-          {showDetails && analysisData.recommendations.length > 0 && (
-            <div className="clinical-structured-card">
-              <h4>Recommendations</h4>
+          <section className="intelligence-block intelligence-advice-grid">
+            <article>
+              <h3>Recommendations</h3>
               <ul>
                 {analysisData.recommendations.map((rec, i) => (
                   <li key={`rec-${i}`}>{rec}</li>
                 ))}
               </ul>
-            </div>
-          )}
-
+            </article>
+            <article>
+              <h3>Trend Note</h3>
+              <p>{trendNarrative}</p>
+              {analysisData.trends.length > 0 && (
+                <ul>
+                  {analysisData.trends.map((trend, i) => (
+                    <li key={`trend-${i}`}>{trend}</li>
+                  ))}
+                </ul>
+              )}
+            </article>
+          </section>
         </div>
 
-        <aside className="clinical-viz-column">
-          <div className="clinical-viz-sticky">
-            <div className="clinical-viz-card">
-              <h3>Trends</h3>
-              {trendData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={180}>
-                  <LineChart
-                    data={trendData}
-                    onMouseMove={() => {
-                      if (activeMetric) setHoveredMetric(activeMetric);
-                    }}
-                    onMouseLeave={() => setHoveredMetric(null)}
-                  >
-                    <CartesianGrid stroke="#3f3a34" strokeDasharray="3 3" />
-                    <XAxis dataKey="date" tick={{ fill: "#a8a29e", fontSize: 11 }} />
-                    <YAxis tick={{ fill: "#a8a29e", fontSize: 11 }} />
-                    <Tooltip />
-                    <Line dataKey="value" stroke="#d97706" strokeWidth={2} dot={{ r: 3, fill: "#d97706" }} />
-                    {activeRange.low !== null && <ReferenceLine y={activeRange.low} stroke="#78716c" strokeDasharray="4 4" />}
-                    {activeRange.high !== null && <ReferenceLine y={activeRange.high} stroke="#78716c" strokeDasharray="4 4" />}
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <p className="muted-copy">Select a metric with numeric history to view trend.</p>
-              )}
-            </div>
+        <aside className="intelligence-viz-column">
+          <div className="intelligence-viz-card">
+            <h3>Metric Trend</h3>
+            {trendData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart
+                  data={trendData}
+                  onMouseMove={() => {
+                    if (activeMetric) setHoveredMetric(activeMetric);
+                  }}
+                  onMouseLeave={() => setHoveredMetric(null)}
+                >
+                  <CartesianGrid stroke="#3f3a34" strokeDasharray="3 3" />
+                  <XAxis dataKey="date" tick={{ fill: "#a8a29e", fontSize: 11 }} />
+                  <YAxis tick={{ fill: "#a8a29e", fontSize: 11 }} />
+                  <Tooltip />
+                  <Line dataKey="value" stroke="#d97706" strokeWidth={2.5} dot={{ r: 3, fill: "#d97706" }} />
+                  {activeRange.low !== null && <ReferenceLine y={activeRange.low} stroke="#78716c" strokeDasharray="4 4" />}
+                  {activeRange.high !== null && <ReferenceLine y={activeRange.high} stroke="#78716c" strokeDasharray="4 4" />}
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="muted-copy">Select a metric with numeric history to view trend.</p>
+            )}
+          </div>
 
-            <div className="clinical-viz-card">
-              <h3>Category Comparison</h3>
-              {categoryData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={190}>
-                  <BarChart data={categoryData}>
-                    <CartesianGrid stroke="#3f3a34" strokeDasharray="3 3" />
-                    <XAxis dataKey="category" tick={{ fill: "#a8a29e", fontSize: 10 }} interval={0} angle={-22} textAnchor="end" height={65} />
-                    <YAxis tick={{ fill: "#a8a29e", fontSize: 11 }} />
-                    <Tooltip />
-                    <Bar dataKey="alerts" fill="#d97706" />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <p className="muted-copy">No abnormal category comparisons available.</p>
-              )}
-            </div>
+          <div className="intelligence-viz-card">
+            <h3>Category Comparison</h3>
+            {categoryData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={210}>
+                <BarChart data={categoryData}>
+                  <CartesianGrid stroke="#3f3a34" strokeDasharray="3 3" />
+                  <XAxis dataKey="category" tick={{ fill: "#a8a29e", fontSize: 10 }} interval={0} angle={-22} textAnchor="end" height={65} />
+                  <YAxis tick={{ fill: "#a8a29e", fontSize: 11 }} />
+                  <Tooltip />
+                  <Bar dataKey="alerts" fill="#d97706" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="muted-copy">No abnormal category comparisons available.</p>
+            )}
+          </div>
 
-            <div className="clinical-viz-card">
-              <h3>Range Indicator</h3>
-              {activeMetric ? (
-                <div className="range-indicator-block">
-                  <div className="range-indicator-head">
-                    <strong>{activeMetric}</strong>
-                    <span>{String(activeRecord?.Result ?? "N/A")}{activeRecord?.Unit ? ` ${activeRecord.Unit}` : ""}</span>
-                  </div>
-                  <div className="range-bar-track">
-                    <div className="range-bar-fill" />
-                  </div>
-                  <p className="muted-copy">
-                    Reference: {activeRecord?.Reference_Range ?? "N/A"}
-                  </p>
+          <div className="intelligence-viz-card">
+            <h3>Reference Context</h3>
+            {activeMetric ? (
+              <div className="range-indicator-block">
+                <div className="range-indicator-head">
+                  <strong>{activeMetric}</strong>
+                  <span>{String(activeRecord?.Result ?? "N/A")}{activeRecord?.Unit ? ` ${activeRecord.Unit}` : ""}</span>
                 </div>
-              ) : (
-                <p className="muted-copy">Pick a metric from chat cards to view reference range context.</p>
-              )}
-            </div>
+                <div className="range-bar-track">
+                  <div className="range-bar-fill" />
+                </div>
+                <p className="muted-copy">
+                  Reference: {activeRecord?.Reference_Range ?? "N/A"}
+                </p>
+              </div>
+            ) : (
+              <p className="muted-copy">Pick a metric from Priority Metrics to view range context.</p>
+            )}
           </div>
         </aside>
       </div>

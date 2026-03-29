@@ -33,6 +33,7 @@ import TrendChart from "./TrendChart";
 import AlertsByCategory from "./AlertsByCategory";
 import OrganizedDataTree from "./OrganizedDataTree";
 import ClinicalChatPanel from "./ClinicalChatPanel";
+import ClinicalAssistantChat from "./ClinicalAssistantChat";
 import { generateClinicalPdfReport } from "@/lib/pdf";
 
 type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
@@ -490,10 +491,6 @@ export default function DashboardPage() {
   });
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
-  const [chatQuestion, setChatQuestion] = useState("");
-  const [chatHistory, setChatHistory] = useState<ChatTurn[]>([]);
-  const [chatError, setChatError] = useState<string | null>(null);
-  const [isChatPending, startChatTransition] = useTransition();
   const [selectedBodySystem, setSelectedBodySystem] = useState<string>("all");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [selectedTest, setSelectedTest] = useState<string>("");
@@ -875,7 +872,6 @@ export default function DashboardPage() {
     try {
       const result = await runWithTokenRetry((token) => analyzeReportsStream(fd, token, handleAnalyzeStreamEvent));
       setAnalysis(result);
-      setChatHistory([]);
       setSelectedBodySystem("all");
       setSelectedCategory("all");
       setSelectedTest("");
@@ -931,7 +927,7 @@ export default function DashboardPage() {
       setStudyContext(null);
       setStudySuccessMessage(null);
       setResultStudyReportCount(null);
-      setAnalysis(result); setChatHistory([]); setSelectedBodySystem("all"); setSelectedCategory("all"); setSelectedTest(""); setView("result");
+      setAnalysis(result); setSelectedBodySystem("all"); setSelectedCategory("all"); setSelectedTest(""); setView("result");
     } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Failed to load."); }
   }
 
@@ -944,7 +940,6 @@ export default function DashboardPage() {
       setStudySuccessMessage(`Loaded combined analysis for ${studyName}.`);
       setResultStudyReportCount(reportCount);
       setAnalysis(result);
-      setChatHistory([]);
       setSelectedBodySystem("all");
       setSelectedCategory("all");
       setSelectedTest("");
@@ -954,50 +949,6 @@ export default function DashboardPage() {
     } finally {
       setViewLoadingStudyId(null);
     }
-  }
-
-  async function submitChatQuestion() {
-    if (!chatQuestion.trim() || !analysis) return;
-    setChatError(null);
-    const q = chatQuestion; setChatQuestion("");
-    const newHistory = [...chatHistory, { role: "user", content: q }];
-    console.log("Chat request context", {
-      reportRecords: analysis.records.length,
-      question: q,
-      historyCount: newHistory.length,
-    });
-    setChatHistory(newHistory);
-    try {
-      const resp = await runWithTokenRetry((token) => sendChatMessage(analysis.records, q, newHistory, token));
-      setChatHistory([...newHistory, { role: "assistant", content: resp.answer }]);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown chat error.";
-      setChatError(msg);
-    }
-  }
-
-  function handleQuickQuestion(q: string) {
-    startChatTransition(() => {
-      void (async () => {
-        if (!analysis) return;
-        setChatError(null);
-        const clean = q.replace(/^[^\s]+ /, "");
-        const newHistory = [...chatHistory, { role: "user", content: clean }];
-        console.log("Quick chat request context", {
-          reportRecords: analysis.records.length,
-          question: clean,
-          historyCount: newHistory.length,
-        });
-        setChatHistory(newHistory);
-        try {
-          const resp = await runWithTokenRetry((token) => sendChatMessage(analysis.records, clean, newHistory, token));
-          setChatHistory([...newHistory, { role: "assistant", content: resp.answer }]);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Unknown chat error.";
-          setChatError(msg);
-        }
-      })();
-    });
   }
 
   async function handleDownloadReport() {
@@ -1114,6 +1065,15 @@ export default function DashboardPage() {
   const elapsedSeconds = analysisElapsedSeconds % 60;
   const etaMinutes = estimatedRemainingSeconds !== null ? Math.floor(estimatedRemainingSeconds / 60) : 0;
   const etaSeconds = estimatedRemainingSeconds !== null ? estimatedRemainingSeconds % 60 : 0;
+  const overallProgressPercent = fileProgress.length > 0
+    ? Math.round((processedFilesCount / fileProgress.length) * 100)
+    : 0;
+  const assistantPrompts = [
+    "Which trends worsened over time?",
+    "What are the top risk findings right now?",
+    "Summarize the latest report changes.",
+    "What should I discuss with my doctor first?",
+  ];
 
   if (loading || !user) {
     return <main className="auth-shell"><div className="auth-loading">Loading…</div></main>;
@@ -1271,67 +1231,91 @@ export default function DashboardPage() {
               {(isAnalyzing || analyzeStep === "error") && (
                 <section className={`analysis-progress-panel ${analyzeStep === "error" ? "error" : ""}`}>
                   <div className="analysis-progress-head">
-                    <h3>{analyzeStep === "error" ? "Analysis stopped" : "Analysis in progress"}</h3>
-                    <span>{elapsedMinutes}m {elapsedSeconds}s</span>
-                  </div>
-
-                  <div className="analysis-overall-progress">
-                    <div className="analysis-overall-meta">
-                      <strong>{processedFilesCount} of {fileProgress.length} files processed</strong>
-                      <span>
-                        {estimatedRemainingSeconds !== null
-                          ? `Estimated time remaining: ${etaMinutes}m ${etaSeconds}s`
-                          : "Estimating time remaining..."}
-                      </span>
+                    <div>
+                      <span className="analysis-live-chip">Live Stream</span>
+                      <h3>{analyzeStep === "error" ? "Analysis interrupted" : "Processing reports"}</h3>
+                      <p className="analysis-progress-subcopy">
+                        Real-time progress is streamed from the backend analysis pipeline.
+                      </p>
                     </div>
-                    <div className="analysis-overall-track" aria-hidden="true">
-                      <div
-                        className="analysis-overall-fill"
-                        style={{
-                          width: `${fileProgress.length > 0 ? Math.round((processedFilesCount / fileProgress.length) * 100) : 0}%`,
-                        }}
-                      />
+                    <span className="analysis-clock-badge">{elapsedMinutes}m {elapsedSeconds}s elapsed</span>
+                  </div>
+
+                  <div className="analysis-progress-layout">
+                    <ol className="analysis-phase-list">
+                      {analyzeSteps.map((step, index) => {
+                        const state = stageStates[step.id];
+                        const stateLabel = state === "complete"
+                          ? "Complete"
+                          : state === "active"
+                            ? "In Progress"
+                            : state === "error"
+                              ? "Error"
+                              : "Pending";
+                        return (
+                          <li
+                            key={step.id}
+                            className={`analysis-phase-item ${state}`.trim()}
+                          >
+                            <span className="analysis-phase-node" aria-hidden="true">
+                              {state === "complete" ? "OK" : state === "active" ? "..." : index + 1}
+                            </span>
+                            <div className="analysis-phase-copy">
+                              <strong>{step.label}</strong>
+                              <p>{step.detail}</p>
+                            </div>
+                            <span className={`analysis-phase-state ${state}`}>{stateLabel}</span>
+                          </li>
+                        );
+                      })}
+                    </ol>
+
+                    <div className="analysis-progress-main">
+                      <div className="analysis-overall-progress">
+                        <div className="analysis-overall-meta">
+                          <strong>{processedFilesCount} of {fileProgress.length} files processed</strong>
+                          <span>{overallProgressPercent}% complete</span>
+                        </div>
+                        <div className="analysis-overall-track" aria-hidden="true">
+                          <div
+                            className="analysis-overall-fill"
+                            style={{ width: `${overallProgressPercent}%` }}
+                          />
+                        </div>
+                        <span className="analysis-eta-copy">
+                          {estimatedRemainingSeconds !== null
+                            ? `Estimated remaining time: ${etaMinutes}m ${etaSeconds}s`
+                            : "Calculating estimated completion time..."}
+                        </span>
+                      </div>
+
+                      <div className="analysis-file-list" role="list">
+                        {fileProgress.map((item) => (
+                          <article className="analysis-file-item" role="listitem" key={item.file}>
+                            <div className="analysis-file-head">
+                              <strong>{item.file}</strong>
+                              <span className={`analysis-file-status ${item.status}`}>
+                                {{
+                                  done: "Completed",
+                                  failed: "Failed",
+                                  queued: "Queued",
+                                  extracting: "Extracting",
+                                  parsing: "Parsing",
+                                }[item.status]}
+                              </span>
+                            </div>
+                            <div className="analysis-file-track" aria-hidden="true">
+                              <div className={`analysis-file-fill ${item.status}`} style={{ width: `${item.percent}%` }} />
+                            </div>
+                            <div className="analysis-file-meta">
+                              <span>{item.percent}%</span>
+                              {item.error && <span className="status-text error-text">{item.error}</span>}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
                     </div>
                   </div>
-
-                  <div className="analysis-file-list" role="list">
-                    {fileProgress.map((item) => (
-                      <article className="analysis-file-item" role="listitem" key={item.file}>
-                        <div className="analysis-file-head">
-                          <strong>{item.file}</strong>
-                          <span className={`analysis-file-status ${item.status}`}>
-                            {item.status === "done" && "Done ✓"}
-                            {item.status === "failed" && "Failed ✗"}
-                            {item.status === "queued" && "Queued"}
-                            {item.status === "extracting" && "Extracting"}
-                            {item.status === "parsing" && "Parsing"}
-                          </span>
-                        </div>
-                        <div className="analysis-file-track" aria-hidden="true">
-                          <div className={`analysis-file-fill ${item.status}`} style={{ width: `${item.percent}%` }} />
-                        </div>
-                        {item.error && <p className="status-text error-text">{item.error}</p>}
-                      </article>
-                    ))}
-                  </div>
-
-                  <ul className="analysis-progress-list">
-                    {analyzeSteps.map((step) => {
-                      const state = stageStates[step.id];
-                      return (
-                        <li
-                          key={step.id}
-                          className={`progress-step ${state}`.trim()}
-                        >
-                          <span className="progress-dot" aria-hidden="true" />
-                          <div>
-                            <strong>{step.label}</strong>
-                            <p>{step.detail}</p>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
 
                   {stageStates.processing === "active" && currentParsingFile && (
                     <p className="analysis-current-file">Currently parsing: {currentParsingFile}</p>
@@ -1430,53 +1414,8 @@ export default function DashboardPage() {
             records={analysis.records}
           />
 
-          <section className="result-section standalone-chat-section">
-            <h2>Clinical Assistant</h2>
-            <p className="muted-copy">Ask about trends, abnormalities, and clinical context. Responses support markdown.</p>
-
-            <div className="standalone-chat-history" role="log" aria-live="polite">
-              {chatHistory.length === 0 && (
-                <div className="chat-bubble assistant muted">
-                  Ask your first question to begin clinical chat.
-                </div>
-              )}
-
-              {chatHistory.map((turn, index) => (
-                <div key={`${turn.role}-${index}`} className={`chat-bubble ${turn.role === "user" ? "user" : "assistant"}`}>
-                  <div
-                    className="chat-bubble-markdown"
-                    dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(turn.content) }}
-                  />
-                </div>
-              ))}
-
-              {isChatPending && <div className="chat-bubble assistant muted">Analyzing clinical context...</div>}
-            </div>
-
-            {chatError && <p className="status-text error-text">Failed to get response: {chatError}</p>}
-
-            <form
-              className="chat-input-row standalone-chat-input"
-              onSubmit={(e) => {
-                e.preventDefault();
-                startChatTransition(() => {
-                  void submitChatQuestion();
-                });
-              }}
-            >
-              <input
-                className="text-input"
-                type="text"
-                placeholder="Ask about trends, abnormalities, and clinical context..."
-                disabled={isChatPending}
-                value={chatQuestion}
-                onChange={(e) => setChatQuestion(e.target.value)}
-              />
-              <button className="primary-button" type="submit" disabled={isChatPending || !chatQuestion.trim()}>
-                Send
-              </button>
-            </form>
-          </section>
+          <ClinicalAssistantChat records={analysis.records} runWithTokenRetry={runWithTokenRetry} />
+          
 
           <section className="result-section">
             <h2>Test Result Visualizations</h2>

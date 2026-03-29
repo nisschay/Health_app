@@ -56,15 +56,15 @@ class AnalysisResponse(BaseModel):
     reports_with_data: int | None = None
 
 
-class ChatTurn(BaseModel):
+class ChatMessage(BaseModel):
     role: str
     content: str
 
 
 class ChatRequest(BaseModel):
-    records: list[MedicalRecord]
-    question: str
-    history: list[ChatTurn] = Field(default_factory=list)
+    sessionId: str | None = None
+    reportContext: list[MedicalRecord] | dict[str, Any] | list[Any] | None = None
+    messages: list[ChatMessage] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
