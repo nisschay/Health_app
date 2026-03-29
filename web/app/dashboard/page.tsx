@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, useEffect, useCallback } from "react";
+import { useState, useTransition, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import dayjs from "dayjs";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
@@ -107,6 +107,13 @@ function relationshipLabel(value: string): string {
   const clean = (value || "").trim();
   if (!clean) return "Family";
   return clean.charAt(0).toUpperCase() + clean.slice(1);
+}
+
+function shouldRetryWithFreshToken(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /invalid firebase token|firebase token expired|firebase token revoked|firebase token project mismatch/i.test(
+    error.message,
+  );
 }
 
 function renderMarkdownToHtml(markdown: string): string {
@@ -266,6 +273,11 @@ function StudyFlowModal({
                 <span>Create profile and continue to first study setup</span>
               </button>
             </div>
+            {sortedProfiles.length === 0 && !loading && (
+              <p className="muted-copy">
+                We could not load your existing profiles yet. Try closing this dialog and reopening it after your session refreshes.
+              </p>
+            )}
           </section>
         )}
 
@@ -497,20 +509,61 @@ export default function DashboardPage() {
   const [newMemberOtherRelationship, setNewMemberOtherRelationship] = useState("");
   const [newMemberDob, setNewMemberDob] = useState("");
   const [viewLoadingProfileId, setViewLoadingProfileId] = useState<string | null>(null);
+  const reauthRedirectedRef = useRef(false);
+
+  const forceReauth = useCallback(async (): Promise<never> => {
+    if (!reauthRedirectedRef.current) {
+      reauthRedirectedRef.current = true;
+      try {
+        await logout();
+      } catch {
+        // Ignore logout failures and still push user to login for re-auth.
+      }
+      router.replace("/login");
+    }
+    throw new Error("Your session is no longer valid. Please sign in again.");
+  }, [logout, router]);
+
+  const runWithTokenRetry = useCallback(async <T,>(operation: (token: string) => Promise<T>): Promise<T> => {
+    const token = await getToken();
+    if (!token) {
+      return forceReauth();
+    }
+
+    try {
+      return await operation(token);
+    } catch (error) {
+      if (!shouldRetryWithFreshToken(error)) {
+        throw error;
+      }
+
+      const refreshedToken = await getToken(true);
+      if (!refreshedToken) {
+        return forceReauth();
+      }
+
+      try {
+        return await operation(refreshedToken);
+      } catch (retryError) {
+        if (shouldRetryWithFreshToken(retryError)) {
+          return forceReauth();
+        }
+        throw retryError;
+      }
+    }
+  }, [forceReauth, getToken]);
 
   const loadDashboardData = useCallback(async () => {
-    const token = await getToken();
-    if (!token) return;
     setHistoryLoading(true);
     try {
-      const [items, summary] = await Promise.all([
+      const [items, summary] = await runWithTokenRetry((token) => Promise.all([
         fetchReportHistory(token),
         fetchStudiesDashboard(token),
-      ]);
+      ]));
       setHistory(items);
       setDashboardSummary(summary);
     } catch { /* non-critical */ } finally { setHistoryLoading(false); }
-  }, [getToken]);
+  }, [runWithTokenRetry]);
 
   useEffect(() => { if (user) loadDashboardData(); }, [user, loadDashboardData]);
 
@@ -534,12 +587,19 @@ export default function DashboardPage() {
     resetStudyFlow();
     setFlowLoading(true);
     try {
-      const token = await getToken();
-      if (!token) {
-        setFlowError("Please sign in again to continue.");
-        return;
+      let rows = await runWithTokenRetry((token) => fetchProfiles(token));
+      if (!rows.some((item) => item.relationship.trim().toLowerCase() === "self")) {
+        const fallbackName = (user?.displayName || user?.email?.split("@")[0] || "My Profile").trim() || "My Profile";
+        try {
+          const createdSelf = await runWithTokenRetry((token) => createProfile({
+            full_name: fallbackName,
+            relationship: "self",
+          }, token));
+          rows = [...rows, createdSelf];
+        } catch {
+          // If self profile bootstrap fails, continue with fetched profiles.
+        }
       }
-      const rows = await fetchProfiles(token);
       setProfiles(rows);
     } catch (err) {
       setFlowError(err instanceof Error ? err.message : "Unable to load profiles.");
@@ -555,12 +615,7 @@ export default function DashboardPage() {
     setFlowError(null);
     setFlowLoading(true);
     try {
-      const token = await getToken();
-      if (!token) {
-        setFlowError("Please sign in again to continue.");
-        return;
-      }
-      const studies = await fetchStudiesForProfile(profile.id, token);
+      const studies = await runWithTokenRetry((token) => fetchStudiesForProfile(profile.id, token));
       setProfileStudies(studies);
       if (studies.length > 0) {
         setStudyFlowStep("what");
@@ -628,19 +683,14 @@ export default function DashboardPage() {
     setFlowLoading(true);
     setFlowError(null);
     try {
-      const token = await getToken();
-      if (!token) {
-        setFlowError("Please sign in again to continue.");
-        return;
-      }
-      const created = await createStudy(
+      const created = await runWithTokenRetry((token) => createStudy(
         {
           profile_id: selectedProfile.id,
           name: newStudyName.trim(),
           description: newStudyDescription.trim() || undefined,
         },
         token,
-      );
+      ));
       proceedToAnalyze({
         profile: selectedProfile,
         study: created,
@@ -669,19 +719,14 @@ export default function DashboardPage() {
     setFlowLoading(true);
     setFlowError(null);
     try {
-      const token = await getToken();
-      if (!token) {
-        setFlowError("Please sign in again to continue.");
-        return;
-      }
-      const created = await createProfile(
+      const created = await runWithTokenRetry((token) => createProfile(
         {
           full_name: newMemberName.trim(),
           relationship,
           date_of_birth: newMemberDob || undefined,
         },
         token,
-      );
+      ));
       setProfiles((prev) => [...prev, created]);
       setSelectedProfile(created);
       setProfileStudies([]);
@@ -804,14 +849,6 @@ export default function DashboardPage() {
       saving: "pending",
     });
 
-    const token = await getToken();
-    if (!token) {
-      setErrorMessage("Authentication required. Please sign in again.");
-      setIsAnalyzing(false);
-      setAnalyzeStep("error");
-      return;
-    }
-
     if (pdfFiles.length === 0) {
       setErrorMessage("Please select at least one PDF file.");
       setIsAnalyzing(false);
@@ -828,7 +865,7 @@ export default function DashboardPage() {
     if (existingDataFile) fd.append("existing_data", existingDataFile);
 
     try {
-      const result = await analyzeReportsStream(fd, token, handleAnalyzeStreamEvent);
+      const result = await runWithTokenRetry((token) => analyzeReportsStream(fd, token, handleAnalyzeStreamEvent));
       setAnalysis(result);
       setChatHistory([]);
       setSelectedBodySystem("all");
@@ -840,14 +877,19 @@ export default function DashboardPage() {
       setSaveStatus("saving");
       try {
         if (studyContext) {
-          const saved = await saveStudyAnalysis(studyContext.study.id, result, pdfFiles.map((f) => f.name), token);
+          const saved = await runWithTokenRetry((token) => saveStudyAnalysis(
+            studyContext.study.id,
+            result,
+            pdfFiles.map((f) => f.name),
+            token,
+          ));
           setStudySuccessMessage(
             studyContext.mode === "existing"
               ? `${saved.added_reports} new reports added to ${saved.study_name}. Dashboard updated with new trends.`
               : `New study ${saved.study_name} created for ${studyContext.profile.full_name}.`,
           );
         } else {
-          await saveAnalysis(result, pdfFiles.map((f) => f.name), token);
+          await runWithTokenRetry((token) => saveAnalysis(result, pdfFiles.map((f) => f.name), token));
           setStudySuccessMessage(null);
         }
         setSaveStatus("saved");
@@ -874,10 +916,8 @@ export default function DashboardPage() {
   }
 
   async function loadHistoryItem(id: number) {
-    const token = await getToken();
-    if (!token) return;
     try {
-      const result = await fetchReportById(id, token);
+      const result = await runWithTokenRetry((token) => fetchReportById(id, token));
       setStudyContext(null);
       setStudySuccessMessage(null);
       setAnalysis(result); setChatHistory([]); setSelectedBodySystem("all"); setSelectedCategory("all"); setSelectedTest(""); setView("result");
@@ -888,7 +928,6 @@ export default function DashboardPage() {
     if (!chatQuestion.trim() || !analysis) return;
     setChatError(null);
     const q = chatQuestion; setChatQuestion("");
-    const token = await getToken();
     const newHistory = [...chatHistory, { role: "user", content: q }];
     console.log("Chat request context", {
       reportRecords: analysis.records.length,
@@ -897,7 +936,7 @@ export default function DashboardPage() {
     });
     setChatHistory(newHistory);
     try {
-      const resp = await sendChatMessage(analysis.records, q, newHistory, token ?? undefined);
+      const resp = await runWithTokenRetry((token) => sendChatMessage(analysis.records, q, newHistory, token));
       setChatHistory([...newHistory, { role: "assistant", content: resp.answer }]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown chat error.";
@@ -910,7 +949,6 @@ export default function DashboardPage() {
       void (async () => {
         if (!analysis) return;
         setChatError(null);
-        const token = await getToken();
         const clean = q.replace(/^[^\s]+ /, "");
         const newHistory = [...chatHistory, { role: "user", content: clean }];
         console.log("Quick chat request context", {
@@ -920,7 +958,7 @@ export default function DashboardPage() {
         });
         setChatHistory(newHistory);
         try {
-          const resp = await sendChatMessage(analysis.records, clean, newHistory, token ?? undefined);
+          const resp = await runWithTokenRetry((token) => sendChatMessage(analysis.records, clean, newHistory, token));
           setChatHistory([...newHistory, { role: "assistant", content: resp.answer }]);
         } catch (err) {
           const msg = err instanceof Error ? err.message : "Unknown chat error.";
@@ -946,8 +984,7 @@ export default function DashboardPage() {
     if (!analysis) return;
     setIsExporting("excel");
     try {
-      const token = await getToken();
-      const blob = await exportExcel(analysis.records, analysis.patient_info, token ?? undefined);
+      const blob = await runWithTokenRetry((token) => exportExcel(analysis.records, analysis.patient_info, token));
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url;
       a.download = `medical-data-${analysis.patient_info.name || "patient"}.xlsx`; a.click();

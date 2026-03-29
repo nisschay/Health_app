@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_DIR="$ROOT_DIR/.run"
+RUN_HISTORY_DIR="$RUN_DIR/history"
 BACKEND_LOG="$RUN_DIR/backend.log"
 FRONTEND_LOG="$RUN_DIR/frontend.log"
 BACKEND_PID_FILE="$RUN_DIR/backend.pid"
@@ -92,10 +93,23 @@ kill_conflicting_port_process() {
 }
 
 mkdir -p "$RUN_DIR"
-touch "$BACKEND_LOG" "$FRONTEND_LOG"
+mkdir -p "$RUN_HISTORY_DIR"
+
+rotate_log() {
+  local file="$1"
+  local label="$2"
+  if [[ -f "$file" ]] && [[ -s "$file" ]]; then
+    local ts
+    ts="$(date '+%Y%m%d_%H%M%S')"
+    mv "$file" "$RUN_HISTORY_DIR/${label}_${ts}.log"
+  fi
+  : >"$file"
+}
 
 kill_conflicting_port_process 8000 "Backend" "$BACKEND_PID_FILE"
 kill_conflicting_port_process 3000 "Frontend" "$FRONTEND_PID_FILE"
+
+touch "$BACKEND_LOG" "$FRONTEND_LOG"
 
 log_event "$BACKEND_LOG" "start.sh invoked"
 log_event "$FRONTEND_LOG" "start.sh invoked"
@@ -104,6 +118,9 @@ if [[ -f "$BACKEND_PID_FILE" ]] && kill -0 "$(cat "$BACKEND_PID_FILE")" 2>/dev/n
   echo "Backend already running on http://localhost:8000 (PID $(cat "$BACKEND_PID_FILE"))"
   log_event "$BACKEND_LOG" "Backend already running with PID $(cat "$BACKEND_PID_FILE")"
 else
+  rotate_log "$BACKEND_LOG" "backend"
+  log_event "$BACKEND_LOG" "New log session started"
+  log_event "$BACKEND_LOG" "start.sh invoked"
   source "$ROOT_DIR/.venv/bin/activate"
   cd "$ROOT_DIR"
   nohup stdbuf -oL -eL uvicorn backend_api.app.main:app --host 0.0.0.0 --port 8000 >>"$BACKEND_LOG" 2>&1 &
@@ -116,6 +133,9 @@ if [[ -f "$FRONTEND_PID_FILE" ]] && kill -0 "$(cat "$FRONTEND_PID_FILE")" 2>/dev
   echo "Frontend already running on http://localhost:3000 (PID $(cat "$FRONTEND_PID_FILE"))"
   log_event "$FRONTEND_LOG" "Frontend already running with PID $(cat "$FRONTEND_PID_FILE")"
 else
+  rotate_log "$FRONTEND_LOG" "frontend"
+  log_event "$FRONTEND_LOG" "New log session started"
+  log_event "$FRONTEND_LOG" "start.sh invoked"
   nohup npm --prefix "$ROOT_DIR/web" run dev -- -H 0.0.0.0 -p 3000 >>"$FRONTEND_LOG" 2>&1 &
   echo $! >"$FRONTEND_PID_FILE"
   echo "Started frontend on http://localhost:3000 (PID $(cat "$FRONTEND_PID_FILE"))"

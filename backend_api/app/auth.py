@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from functools import lru_cache
+import logging
 from pathlib import Path
 
 from fastapi import Header, HTTPException, status
@@ -14,6 +15,9 @@ except ImportError:  # pragma: no cover - optional dependency in local setup
     firebase_admin = None
     firebase_auth = None
     credentials = None
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -78,12 +82,56 @@ def get_request_user(authorization: str | None = Header(default=None)) -> Reques
         )
 
     try:
-        decoded_token = firebase_auth.verify_id_token(token)
-    except Exception as exc:  # pragma: no cover - depends on firebase runtime
+        decoded_token = firebase_auth.verify_id_token(token, clock_skew_seconds=60)
+    except firebase_auth.ExpiredIdTokenError as exc:  # pragma: no cover - depends on firebase runtime
+        logger.warning("Firebase token expired: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Firebase token.",
+            detail="Firebase token expired. Please sign in again.",
         ) from exc
+    except firebase_auth.RevokedIdTokenError as exc:  # pragma: no cover - depends on firebase runtime
+        logger.warning("Firebase token revoked: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Firebase token revoked. Please sign in again.",
+        ) from exc
+    except firebase_auth.InvalidIdTokenError as exc:  # pragma: no cover - depends on firebase runtime
+        logger.warning("Firebase token invalid: %s", exc)
+        raw_message = str(exc)
+        if "Token used too early" in raw_message or "clock is set correctly" in raw_message:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Firebase token rejected due to system clock mismatch. Sync your system time, then sign in again.",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Firebase token. Please refresh your session.",
+        ) from exc
+    except firebase_auth.CertificateFetchError as exc:  # pragma: no cover - depends on firebase runtime
+        logger.warning("Firebase certificate fetch failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to validate Firebase token right now. Please retry.",
+        ) from exc
+    except Exception as exc:  # pragma: no cover - depends on firebase runtime
+        logger.warning("Firebase token verification failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Firebase token. Please refresh your session.",
+        ) from exc
+
+    expected_project = (settings.firebase_project_id or "").strip()
+    token_project = str(decoded_token.get("aud") or "").strip()
+    if expected_project and token_project and token_project != expected_project:
+        logger.warning(
+            "Firebase token project mismatch: expected=%s token_aud=%s",
+            expected_project,
+            token_project,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Firebase token project mismatch. Please sign out and sign in again.",
+        )
 
     return RequestUser(
         user_id=decoded_token["uid"],

@@ -44,6 +44,7 @@ from .schemas import (
     ExportPdfRequest,
     InsightsRequest,
     InsightsResponse,
+    PatientInfo,
     ProfileResponse,
     RequestUserModel,
     SaveAnalysisRequest,
@@ -397,6 +398,72 @@ def studies_dashboard_summary(
         total_alerts=total_alerts,
         profiles_tracked=len(profile_rows),
         profiles=groups,
+    )
+
+
+@app.get(
+    f"{settings.api_prefix}/studies/{{study_id}}/combined-report",
+    response_model=AnalysisResponse,
+)
+def get_combined_study_report(
+    study_id: UUID,
+    user: RequestUser = Depends(get_request_user),
+    db: Session = Depends(get_db),
+) -> AnalysisResponse:
+    owner = _require_authenticated_user(user, db)
+    study = get_study_by_id(db, study_id)
+    if not study:
+        raise HTTPException(status_code=404, detail="Study not found.")
+
+    profile = get_profile_by_id(db, study.profile_id)
+    if not profile or profile.account_owner_id != owner.id:
+        raise HTTPException(status_code=403, detail="You do not have access to this study.")
+
+    reports = list_reports_for_study(db, study_id)
+    if not reports:
+        raise HTTPException(status_code=404, detail="No reports found for this study.")
+
+    combined_records: list[dict[str, Any]] = []
+    latest_payload: dict[str, Any] = {}
+    for report in reports:
+        payload = report.analysis_data or {}
+        if isinstance(payload, dict):
+            latest_payload = payload
+            rows = payload.get("records", [])
+            if isinstance(rows, list):
+                combined_records.extend([row for row in rows if isinstance(row, dict)])
+
+    insights = service.get_health_insights(records=combined_records) if combined_records else {
+        "health_summary": {"overall_score": 0, "category_scores": {}, "concerns": []},
+        "body_systems": [],
+    }
+
+    payload_patient_info = latest_payload.get("patient_info", {}) if isinstance(latest_payload, dict) else {}
+    if not isinstance(payload_patient_info, dict):
+        payload_patient_info = {}
+
+    first_report = reports[0] if reports else None
+    resolved_patient_info = PatientInfo(
+        name=str(payload_patient_info.get("name") or profile.full_name or "N/A"),
+        age=str(payload_patient_info.get("age") or (first_report.patient_age if first_report else None) or "N/A"),
+        gender=str(payload_patient_info.get("gender") or (first_report.patient_gender if first_report else None) or "N/A"),
+        patient_id=str(payload_patient_info.get("patient_id") or user.user_id or "N/A"),
+        date=str(payload_patient_info.get("date") or (reports[-1].report_date.isoformat() if reports and reports[-1].report_date else "N/A")),
+        lab_name=str(payload_patient_info.get("lab_name") or (first_report.lab_name if first_report else None) or "N/A"),
+    )
+
+    return AnalysisResponse(
+        user=RequestUserModel(
+            user_id=user.user_id,
+            email=user.email,
+            authenticated=user.authenticated,
+        ),
+        patient_info=resolved_patient_info,
+        total_records=len(combined_records),
+        records=combined_records,
+        health_summary=insights.get("health_summary", {"overall_score": 0, "category_scores": {}, "concerns": []}),
+        body_systems=insights.get("body_systems", []),
+        raw_texts=[],
     )
 
 @app.post(f"{settings.api_prefix}/reports/analyze", response_model=AnalysisResponse)
