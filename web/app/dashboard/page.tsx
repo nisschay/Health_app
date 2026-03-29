@@ -22,6 +22,7 @@ import {
   sendChatMessage,
   fetchStudiesForProfile,
   fetchStudiesDashboard,
+  fetchStudyCombinedReport,
   fetchReportHistory,
   fetchReportById,
   saveAnalysis,
@@ -107,6 +108,12 @@ function relationshipLabel(value: string): string {
   const clean = (value || "").trim();
   if (!clean) return "Family";
   return clean.charAt(0).toUpperCase() + clean.slice(1);
+}
+
+function normalizeSourceFileName(value: string | null | undefined): string {
+  if (!value) return "";
+  const normalized = value.replace(/\\/g, "/").split("/").pop() ?? value;
+  return normalized.trim().toLowerCase();
 }
 
 function shouldRetryWithFreshToken(error: unknown): boolean {
@@ -508,7 +515,8 @@ export default function DashboardPage() {
   const [newMemberRelationship, setNewMemberRelationship] = useState("father");
   const [newMemberOtherRelationship, setNewMemberOtherRelationship] = useState("");
   const [newMemberDob, setNewMemberDob] = useState("");
-  const [viewLoadingProfileId, setViewLoadingProfileId] = useState<string | null>(null);
+  const [viewLoadingStudyId, setViewLoadingStudyId] = useState<string | null>(null);
+  const [resultStudyReportCount, setResultStudyReportCount] = useState<number | null>(null);
   const reauthRedirectedRef = useRef(false);
 
   const forceReauth = useCallback(async (): Promise<never> => {
@@ -888,9 +896,11 @@ export default function DashboardPage() {
               ? `${saved.added_reports} new reports added to ${saved.study_name}. Dashboard updated with new trends.`
               : `New study ${saved.study_name} created for ${studyContext.profile.full_name}.`,
           );
+          setResultStudyReportCount(saved.total_reports);
         } else {
           await runWithTokenRetry((token) => saveAnalysis(result, pdfFiles.map((f) => f.name), token));
           setStudySuccessMessage(null);
+          setResultStudyReportCount(null);
         }
         setSaveStatus("saved");
         loadDashboardData();
@@ -920,8 +930,30 @@ export default function DashboardPage() {
       const result = await runWithTokenRetry((token) => fetchReportById(id, token));
       setStudyContext(null);
       setStudySuccessMessage(null);
+      setResultStudyReportCount(null);
       setAnalysis(result); setChatHistory([]); setSelectedBodySystem("all"); setSelectedCategory("all"); setSelectedTest(""); setView("result");
     } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Failed to load."); }
+  }
+
+  async function openStudyCombinedAnalysis(studyId: string, studyName: string, reportCount: number) {
+    setErrorMessage(null);
+    setViewLoadingStudyId(studyId);
+    try {
+      const result = await runWithTokenRetry((token) => fetchStudyCombinedReport(studyId, token));
+      setStudyContext(null);
+      setStudySuccessMessage(`Loaded combined analysis for ${studyName}.`);
+      setResultStudyReportCount(reportCount);
+      setAnalysis(result);
+      setChatHistory([]);
+      setSelectedBodySystem("all");
+      setSelectedCategory("all");
+      setSelectedTest("");
+      setView("result");
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Failed to open study analysis.");
+    } finally {
+      setViewLoadingStudyId(null);
+    }
   }
 
   async function submitChatQuestion() {
@@ -999,6 +1031,11 @@ export default function DashboardPage() {
   const filteredByCategory = selectedCategory === "all" ? filteredBySystem : filteredBySystem.filter((r) => r.Test_Category === selectedCategory);
   const allTests = Array.from(new Set(filteredByCategory.map((r) => r.Test_Name ?? "").filter(Boolean))).sort();
   const selectedTestData = selectedTest ? filteredByCategory.filter((r) => r.Test_Name === selectedTest) : [];
+  const sourceReportCount = new Set(
+    records
+      .map((record) => (record.Source_Filename ?? "").trim())
+      .filter((name) => name.length > 0),
+  ).size;
   const normalCount = records.filter((record) => {
     const normalized = record.Status?.toLowerCase();
     return normalized === "normal" || normalized === "negative";
@@ -1020,6 +1057,35 @@ export default function DashboardPage() {
   const trendByDate = Array.from(trendByDateMap.entries())
     .map(([date, values]) => ({ date, ...values }))
     .sort((a, b) => parseMedicalDate(a.date) - parseMedicalDate(b.date));
+  const reportsIncludedCount = resultStudyReportCount ?? (sourceReportCount > 0 ? sourceReportCount : trendByDate.length);
+  const combinedReportFileNames = analysis?.combined_report_file_names ?? [];
+  const reportTrendRows = combinedReportFileNames.length > 0
+    ? combinedReportFileNames.map((fileName, index) => {
+        const normalizedFileName = normalizeSourceFileName(fileName);
+        const matchedRows = records.filter(
+          (record) => normalizeSourceFileName(record.Source_Filename) === normalizedFileName,
+        );
+        const concerning = matchedRows.filter((row) => isConcerningStatus(row.Status)).length;
+        const good = matchedRows.filter((row) => {
+          const normalized = row.Status?.toLowerCase();
+          return normalized === "normal" || normalized === "negative";
+        }).length;
+        return {
+          id: `${fileName}-${index}`,
+          label: fileName,
+          total: matchedRows.length,
+          concerning,
+          good,
+        };
+      })
+    : trendByDate.map((point) => ({
+        id: point.date,
+        label: point.date,
+        total: point.total,
+        concerning: point.concerning,
+        good: point.good,
+      }));
+  const reportsWithDataCount = analysis?.reports_with_data ?? sourceReportCount;
 
   useEffect(() => {
     setSelectedCategory("all");
@@ -1085,6 +1151,8 @@ export default function DashboardPage() {
             </article>
           </section>
 
+          {errorMessage && <p className="status-text error-text">{errorMessage}</p>}
+
           {historyLoading && <p className="muted-copy center-text">Loading your reports…</p>}
 
           {(dashboardSummary?.profiles?.length ?? 0) > 0 && (
@@ -1110,18 +1178,10 @@ export default function DashboardPage() {
                           <button
                             className="secondary-button"
                             type="button"
-                            disabled={viewLoadingProfileId === profile.profile_id}
-                            onClick={() => {
-                              console.log("View clicked profileId:", profile.profile_id);
-                              if (!profile.profile_id) {
-                                setErrorMessage("Unable to open profile view: missing profile id.");
-                                return;
-                              }
-                              setViewLoadingProfileId(profile.profile_id);
-                              router.push(`/dashboard/reports/${profile.profile_id}`);
-                            }}
+                            disabled={viewLoadingStudyId === study.id}
+                            onClick={() => { void openStudyCombinedAnalysis(study.id, study.name, study.report_count); }}
                           >
-                            {viewLoadingProfileId === profile.profile_id ? "Opening..." : "View"}
+                            {viewLoadingStudyId === study.id ? "Opening..." : "View"}
                           </button>
                           <button
                             className="primary-button compact"
@@ -1328,7 +1388,7 @@ export default function DashboardPage() {
 
           <section className="result-section">
             <h2>Trend Snapshot</h2>
-            <p className="muted-copy">Quick view of stable vs concerning patterns across report dates.</p>
+            <p className="muted-copy">Quick view of stable vs concerning patterns across included reports and report dates.</p>
 
             <div className="trend-summary-grid">
               <article className="trend-stat good">
@@ -1340,21 +1400,24 @@ export default function DashboardPage() {
                 <strong>{concerningCount}</strong>
               </article>
               <article className="trend-stat muted">
-                <span>Report Dates</span>
-                <strong>{trendByDate.length}</strong>
+                <span>Reports Included</span>
+                <strong>{reportsIncludedCount}</strong>
               </article>
             </div>
 
+            <p className="muted-copy">Unique report dates in trend view: {trendByDate.length}</p>
+            <p className="muted-copy">Reports with parsed test rows: {reportsWithDataCount}/{reportsIncludedCount}</p>
+
             <div className="trend-mini-chart">
-              {trendByDate.map((point) => {
+              {reportTrendRows.map((point) => {
                 const concerningPct = point.total > 0 ? Math.round((point.concerning / point.total) * 100) : 0;
                 const goodPct = point.total > 0 ? Math.round((point.good / point.total) * 100) : 0;
                 return (
-                  <div className="trend-mini-row" key={point.date}>
-                    <span className="trend-mini-date">{point.date}</span>
-                    <div className="trend-mini-bars" aria-label={`Concerning ${concerningPct}% and stable ${goodPct}% on ${point.date}`}>
-                      <div className="trend-mini-bar bad" style={{ width: `${Math.max(4, concerningPct)}%` }} />
-                      <div className="trend-mini-bar good" style={{ width: `${Math.max(4, goodPct)}%` }} />
+                  <div className="trend-mini-row" key={point.id}>
+                    <span className="trend-mini-date">{point.label}</span>
+                    <div className="trend-mini-bars" aria-label={`Concerning ${concerningPct}% and stable ${goodPct}% for ${point.label}`}>
+                      <div className="trend-mini-bar bad" style={{ width: `${point.total > 0 ? Math.max(4, concerningPct) : 0}%` }} />
+                      <div className="trend-mini-bar good" style={{ width: `${point.total > 0 ? Math.max(4, goodPct) : 0}%` }} />
                     </div>
                     <span className="trend-mini-meta">{point.concerning}/{point.total} alerts</span>
                   </div>

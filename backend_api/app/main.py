@@ -3,6 +3,7 @@ import asyncio
 import threading
 import traceback
 from datetime import date
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -179,6 +180,71 @@ def _parse_report_date_flexible(value: str | None) -> date | None:
     return None
 
 
+def _normalize_filename(value: str | None) -> str:
+    if value is None:
+        return ""
+    return Path(value).name.strip().lower()
+
+
+def _extract_source_filename(record: dict[str, Any]) -> str | None:
+    for key in ("Source_Filename", "source_filename", "sourceFileName", "Source Filename"):
+        value = record.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _slice_records_for_report(
+    rows: list[Any],
+    report_file_name: str | None,
+    *,
+    fallback_to_all: bool,
+) -> list[dict[str, Any]]:
+    valid_rows = [row for row in rows if isinstance(row, dict)]
+    if not valid_rows:
+        return []
+
+    target_name = _normalize_filename(report_file_name)
+    if not target_name:
+        return valid_rows
+
+    matched = [
+        row
+        for row in valid_rows
+        if _normalize_filename(_extract_source_filename(row)) == target_name
+    ]
+    if matched:
+        return matched
+
+    return valid_rows if fallback_to_all else []
+
+
+def _infer_report_date_from_records(rows: list[dict[str, Any]]) -> date | None:
+    for row in rows:
+        raw_date = row.get("Test_Date") or row.get("date")
+        if raw_date is None:
+            continue
+        parsed = _parse_report_date_flexible(str(raw_date))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _dedupe_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for row in rows:
+        signature = json.dumps(row, sort_keys=True, default=str)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(row)
+    return deduped
+
+
 def _extract_alerts_count(report_row) -> int:
     try:
         payload = report_row.analysis_data or {}
@@ -309,17 +375,44 @@ def save_analysis_to_study(
 
     source_filenames = payload.source_filenames or ["uploaded-report.pdf"]
     urls = payload.source_file_urls or []
+    analysis_records = analysis_dict.get("records", []) if isinstance(analysis_dict, dict) else []
+    has_record_sources = isinstance(analysis_records, list) and any(
+        isinstance(row, dict) and _extract_source_filename(row)
+        for row in analysis_records
+    )
+
     added = 0
     for idx, name in enumerate(source_filenames):
         file_url = urls[idx] if idx < len(urls) and urls[idx] else f"uploaded://{name}"
+
+        if isinstance(analysis_records, list) and analysis_records:
+            if has_record_sources:
+                scoped_records = _slice_records_for_report(
+                    analysis_records,
+                    name,
+                    fallback_to_all=len(source_filenames) == 1,
+                )
+            else:
+                scoped_records = [row for row in analysis_records if isinstance(row, dict)]
+        else:
+            scoped_records = []
+
+        scoped_analysis = dict(analysis_dict)
+        if isinstance(analysis_records, list):
+            # Always scope records per report when list payload exists, including empty slices.
+            scoped_analysis["records"] = scoped_records
+            scoped_analysis["total_records"] = len(scoped_records)
+
+        scoped_report_date = _infer_report_date_from_records(scoped_records) or report_date
+
         create_report(
             db=db,
             study_id=study_id,
             file_name=name,
             file_url=file_url,
-            report_date=report_date,
+            report_date=scoped_report_date,
             lab_name=patient_info.get("lab_name"),
-            analysis_data=analysis_dict,
+            analysis_data=scoped_analysis,
         )
         added += 1
 
@@ -423,7 +516,9 @@ def get_combined_study_report(
     if not reports:
         raise HTTPException(status_code=404, detail="No reports found for this study.")
 
+    report_file_names = [report.file_name for report in reports]
     combined_records: list[dict[str, Any]] = []
+    reports_with_data = 0
     latest_payload: dict[str, Any] = {}
     for report in reports:
         payload = report.analysis_data or {}
@@ -431,7 +526,20 @@ def get_combined_study_report(
             latest_payload = payload
             rows = payload.get("records", [])
             if isinstance(rows, list):
-                combined_records.extend([row for row in rows if isinstance(row, dict)])
+                has_source_rows = any(
+                    isinstance(row, dict) and _extract_source_filename(row)
+                    for row in rows
+                )
+                scoped_rows = _slice_records_for_report(
+                    rows,
+                    report.file_name,
+                    fallback_to_all=not has_source_rows,
+                )
+                if scoped_rows:
+                    reports_with_data += 1
+                combined_records.extend(scoped_rows)
+
+    combined_records = _dedupe_records(combined_records)
 
     insights = service.get_health_insights(records=combined_records) if combined_records else {
         "health_summary": {"overall_score": 0, "category_scores": {}, "concerns": []},
@@ -464,6 +572,8 @@ def get_combined_study_report(
         health_summary=insights.get("health_summary", {"overall_score": 0, "category_scores": {}, "concerns": []}),
         body_systems=insights.get("body_systems", []),
         raw_texts=[],
+        combined_report_file_names=report_file_names,
+        reports_with_data=reports_with_data,
     )
 
 @app.post(f"{settings.api_prefix}/reports/analyze", response_model=AnalysisResponse)

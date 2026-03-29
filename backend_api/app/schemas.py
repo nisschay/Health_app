@@ -52,6 +52,8 @@ class AnalysisResponse(BaseModel):
     health_summary: dict[str, Any]
     body_systems: list[dict[str, Any]]
     raw_texts: list[RawTextPreview] = Field(default_factory=list)
+    combined_report_file_names: list[str] = Field(default_factory=list)
+    reports_with_data: int | None = None
 
 
 class ChatTurn(BaseModel):

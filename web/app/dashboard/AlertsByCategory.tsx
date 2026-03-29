@@ -50,8 +50,8 @@ export default function AlertsByCategory({ concerns }: { concerns: AnalysisConce
 
               {isOpen && (
                 <div className="alert-category-body">
-                  {category.tests.map((test) => (
-                    <div className="alert-test-row" key={`${category.category}-${test.testName}-${test.date}`}>
+                  {category.tests.map((test, index) => (
+                    <div className="alert-test-row" key={`${category.category}-${test.testName}-${test.date}-${index}`}>
                       <div>
                         <strong>{test.testName}</strong>
                         <span>{test.date} • Ref: {test.reference || "N/A"}</span>

@@ -25,6 +25,15 @@ def _as_list(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _as_int(value: str | None, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     api_prefix: str = "/api/v1"
@@ -33,6 +42,10 @@ class Settings:
     require_auth: bool = _as_bool(os.getenv("API_REQUIRE_AUTH"), default=False)
     firebase_credentials_path: str | None = os.getenv("FIREBASE_CREDENTIALS_PATH")
     firebase_project_id: str | None = os.getenv("FIREBASE_PROJECT_ID")
+    firebase_clock_skew_seconds: int = min(
+        60,
+        max(0, _as_int(os.getenv("FIREBASE_CLOCK_SKEW_SECONDS"), default=60)),
+    )
     cors_origins: list[str] = field(default_factory=lambda: _as_list(os.getenv("API_CORS_ORIGINS")))
 
 

@@ -4,9 +4,11 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from pathlib import Path
 from datetime import date, datetime
 from typing import Any
 
+from dotenv import load_dotenv
 from sqlalchemy import (
     Column,
     Date,
@@ -22,10 +24,17 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://medical_user:medical_pass@localhost:5432/medical_project",
-)
+# Keep DB URL loading consistent with app config so persistence target is stable.
+_APP_DIR = Path(__file__).resolve().parent
+_ROOT_ENV_PATH = _APP_DIR.parent.parent / ".env"
+_LOCAL_ENV_PATH = _APP_DIR.parent / ".env"
+load_dotenv(dotenv_path=_ROOT_ENV_PATH)
+load_dotenv(dotenv_path=_LOCAL_ENV_PATH)
+
+DEFAULT_DATABASE_URL = "postgresql://medical_user:medical_pass@localhost:5432/medical_project"
+DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
+if os.getenv("DATABASE_URL") is None:
+    print("[WARN] DATABASE_URL not set; using local default PostgreSQL URL.")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

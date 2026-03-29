@@ -82,7 +82,10 @@ def get_request_user(authorization: str | None = Header(default=None)) -> Reques
         )
 
     try:
-        decoded_token = firebase_auth.verify_id_token(token, clock_skew_seconds=60)
+        decoded_token = firebase_auth.verify_id_token(
+            token,
+            clock_skew_seconds=settings.firebase_clock_skew_seconds,
+        )
     except firebase_auth.ExpiredIdTokenError as exc:  # pragma: no cover - depends on firebase runtime
         logger.warning("Firebase token expired: %s", exc)
         raise HTTPException(
