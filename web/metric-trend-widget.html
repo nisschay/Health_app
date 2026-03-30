@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Metric Trend Widget</title>
+    <style>
+      :root {
+        --bg: #111;
+        --accent: #ef9f27;
+        --text-secondary: #666;
+        --text-muted: #888;
+        --grid: rgba(255, 255, 255, 0.05);
+        --axis-border: #333;
+        --card-radius: 10px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #111;
+        color: #ccc;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+
+      body.embedded {
+        min-height: 0;
+        padding: 0;
+        display: block;
+        background: #111;
+      }
+
+      body.embedded .chart-wrap {
+        width: 100%;
+        max-width: none;
+      }
+
+      .chart-wrap {
+        width: min(920px, 100%);
+        background: var(--bg);
+        border-radius: var(--card-radius);
+        padding: 20px 20px 12px;
+        position: relative;
+      }
+
+      .header-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin-bottom: 14px;
+      }
+
+      .metric-label {
+        color: #ccc;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        line-height: 1;
+      }
+
+      .legend-strip {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 14px;
+      }
+
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        line-height: 1;
+        white-space: nowrap;
+      }
+
+      .legend-item.alert {
+        color: var(--accent);
+      }
+
+      .legend-item.hint {
+        color: var(--text-muted);
+      }
+
+      .legend-dot-faded {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+        opacity: 0.35;
+      }
+
+      .chart-area {
+        position: relative;
+        height: 260px;
+      }
+
+      .footer-bar {
+        border-top: 1px solid #2a2a2a;
+        margin-top: 12px;
+        padding-top: 9px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+      }
+
+      .footer-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+
+      .footer-note {
+        color: var(--text-secondary);
+      }
+
+      .footer-peak {
+        color: var(--accent);
+      }
+
+      #tooltip {
+        position: absolute;
+        pointer-events: none;
+        display: none;
+        background: #1a1a1a;
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        padding: 8px 12px;
+        z-index: 10;
+      }
+
+      .tt-date {
+        color: var(--accent);
+        font-size: 11px;
+        margin: 0 0 4px;
+      }
+
+      .tt-val {
+        color: #fff;
+        font-size: 13px;
+        font-weight: 500;
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="chart-wrap">
+      <div class="header-row">
+        <div class="metric-label">METRIC TREND</div>
+
+        <div class="legend-strip">
+          <div class="legend-item alert">
+            <svg width="28" height="12" viewBox="0 0 28 12" aria-hidden="true" focusable="false">
+              <line x1="1" y1="6" x2="27" y2="6" stroke="#EF9F27" stroke-width="2" />
+              <circle cx="14" cy="6" r="4" fill="#EF9F27" />
+            </svg>
+            <span>Alert Count</span>
+          </div>
+
+          <div class="legend-item hint">
+            <span class="legend-dot-faded" aria-hidden="true"></span>
+            <span>Hover for details</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-area">
+        <canvas id="metricTrendChart"></canvas>
+      </div>
+
+      <div class="footer-bar">
+        <span class="footer-dot" aria-hidden="true"></span>
+        <span class="footer-note">Each point = monthly alert count snapshot</span>
+        <span class="footer-peak">Peak: 11 alerts (Mar-Apr 2024)</span>
+      </div>
+
+      <div id="tooltip" aria-hidden="true">
+        <p class="tt-date"></p>
+        <p class="tt-val"></p>
+      </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const isEmbedded = window.self !== window.top || params.get("embed") === "1";
+      if (isEmbedded) {
+        document.body.classList.add("embedded");
+      }
+
+      const labels = [
+        "01-12-2022",
+        "01-04-2023",
+        "03-04-2024",
+        "01-10-2024",
+        "07-02-2025",
+        "12-12-2025",
+      ];
+
+      const values = [9, 3, 11, 5, 3, 3];
+
+      const chartWrap = document.querySelector(".chart-wrap");
+      const canvas = document.getElementById("metricTrendChart");
+      const tooltip = document.getElementById("tooltip");
+      const ttDate = tooltip.querySelector(".tt-date");
+      const ttVal = tooltip.querySelector(".tt-val");
+
+      function hideTooltip() {
+        tooltip.style.display = "none";
+      }
+
+      const ctx = canvas.getContext("2d");
+
+      new Chart(ctx, {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            {
+              data: values,
+              borderColor: "#EF9F27",
+              backgroundColor: "rgba(239,159,39,0.08)",
+              pointBackgroundColor: "#EF9F27",
+              pointBorderColor: "#111",
+              pointBorderWidth: 2,
+              pointRadius: 6,
+              pointHoverRadius: 9,
+              tension: 0.1,
+              fill: true,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: "nearest",
+            intersect: false,
+          },
+          plugins: {
+            legend: {
+              display: false,
+            },
+            tooltip: {
+              enabled: false,
+            },
+          },
+          scales: {
+            x: {
+              ticks: {
+                color: "#666",
+                font: {
+                  size: 11,
+                },
+                maxRotation: 30,
+              },
+              grid: {
+                color: "rgba(255,255,255,0.05)",
+              },
+              border: {
+                color: "#333",
+              },
+            },
+            y: {
+              min: 0,
+              max: 13,
+              ticks: {
+                stepSize: 3,
+                color: "#666",
+                font: {
+                  size: 11,
+                },
+              },
+              grid: {
+                color: "rgba(255,255,255,0.05)",
+              },
+              border: {
+                color: "#333",
+              },
+            },
+          },
+          onHover: (event, activeElements, chart) => {
+            if (!activeElements.length) {
+              hideTooltip();
+              return;
+            }
+
+            const activePoint = activeElements[0];
+            const index = activePoint.index;
+            const point = chart.getDatasetMeta(0).data[index];
+            if (!point) {
+              hideTooltip();
+              return;
+            }
+
+            ttDate.textContent = labels[index];
+            ttVal.textContent = `Alert Count : ${values[index]} alerts`;
+
+            const canvasRect = chart.canvas.getBoundingClientRect();
+            const wrapRect = chartWrap.getBoundingClientRect();
+            const left = point.x + (canvasRect.left - wrapRect.left);
+            const top = point.y + (canvasRect.top - wrapRect.top);
+
+            tooltip.style.left = `${left + 14}px`;
+            tooltip.style.top = `${top - 10}px`;
+            tooltip.style.display = "block";
+          },
+        },
+      });
+
+      canvas.addEventListener("mouseleave", hideTooltip);
+    </script>
+  </body>
+</html>

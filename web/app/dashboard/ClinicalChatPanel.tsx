@@ -6,8 +6,6 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -709,17 +707,14 @@ export default function ClinicalChatPanel({
           <div className="intelligence-viz-card">
             <h3>Metric Trend</h3>
             {trendData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={220}>
-                <LineChart
-                  data={trendData}
-                >
-                  <CartesianGrid stroke="#3f3a34" strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fill: "#a8a29e", fontSize: 11 }} />
-                  <YAxis allowDecimals={false} tick={{ fill: "#a8a29e", fontSize: 11 }} />
-                  <Tooltip formatter={(value) => [`${String(value ?? 0)} alerts`, "Alert Count"]} />
-                  <Line dataKey="alertCount" stroke="#d97706" strokeWidth={2.5} dot={{ r: 3, fill: "#d97706" }} />
-                </LineChart>
-              </ResponsiveContainer>
+              <div className="metric-trend-embed">
+                <iframe
+                  title="Metric Trend"
+                  src="/metric-trend-widget.html?embed=1"
+                  className="metric-trend-iframe"
+                  loading="lazy"
+                />
+              </div>
             ) : (
               <p className="muted-copy">No report-date alert trend is available yet.</p>
             )}

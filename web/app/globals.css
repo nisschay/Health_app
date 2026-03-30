@@ -3663,6 +3663,22 @@ h1 {
   border-color: var(--accent);
 }
 
+.metric-trend-embed {
+  width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #111;
+  border: 1px solid #1f1f1f;
+}
+
+.metric-trend-iframe {
+  display: block;
+  width: 100%;
+  height: 392px;
+  border: 0;
+  background: #111;
+}
+
 .category-chart-scroll {
   width: 100%;
 }
