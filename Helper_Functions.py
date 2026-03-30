@@ -10,10 +10,121 @@ import plotly.graph_objs as go
 import google.generativeai as genai
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI, TEST_NAME_MAPPING, UNIT_MAPPING, STATUS_MAPPING
 from unify_test_names import unify_test_names
-from Helper_Functions import *
+try:
+    from backend_api.app.normalization import canonicalize_category, normalize_test_name
+except Exception:
+    # Streamlit-only fallback when backend package imports are unavailable.
+    def canonicalize_category(raw):
+        text = str(raw).strip() if raw is not None else ""
+        return text.title() if text else "Other"
+
+    def normalize_test_name(raw):
+        text = str(raw).strip() if raw is not None else ""
+        return text.title() if text else "Unknown Test"
 import sys
 import os
 from collections import Counter
+import hashlib
+import copy
+import logging
+
+try:
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+except Exception:  # pragma: no cover - streamlit internals can vary
+    get_script_run_ctx = None
+
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
+logging.getLogger("streamlit").setLevel(logging.ERROR)
+
+
+gemini_model_extraction = None
+gemini_model_chat = None
+_last_extraction_error = ""
+_analysis_cache: dict[str, dict] = {}
+_analysis_cache_max_items = 128
+_active_extraction_model_name = ""
+_active_chat_model_name = ""
+
+
+def _model_candidates_from_env(var_name: str, default: str) -> list[str]:
+    raw = os.getenv(var_name, default)
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+EXTRACTION_MODEL_CANDIDATES = _model_candidates_from_env(
+    "GEMINI_EXTRACTION_MODELS",
+    "gemini-1.5-flash,gemini-2.5-flash",
+)
+CHAT_MODEL_CANDIDATES = _model_candidates_from_env(
+    "GEMINI_CHAT_MODELS",
+    "gemini-1.5-flash,gemini-2.5-flash",
+)
+
+
+def _has_streamlit_context() -> bool:
+    if get_script_run_ctx is None:
+        return False
+    try:
+        return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+
+def _ui_warn(message: str) -> None:
+    """Show warning in Streamlit UI when available, otherwise log to stdout."""
+    if _has_streamlit_context():
+        st.warning(message)
+    else:
+        print(f"[WARN] {message}")
+
+
+def _ui_error(message: str) -> None:
+    """Show error in Streamlit UI when available, otherwise log to stdout."""
+    if _has_streamlit_context():
+        st.error(message)
+    else:
+        print(f"[ERROR] {message}")
+
+
+def _ui_debug_text(label: str, value: str, height: int = 150) -> None:
+    """Optional debug output that is safe outside Streamlit execution context."""
+    if _has_streamlit_context():
+        st.text_area(label, value, height=height)
+    else:
+        print(f"[DEBUG] {label}: {value[:500]}")
+
+
+def get_last_extraction_error() -> str:
+    return _last_extraction_error
+
+
+def _is_rate_limit_error(error_text: str) -> bool:
+    lowered = (error_text or "").lower()
+    return "429" in lowered or "quota exceeded" in lowered or "rate limit" in lowered
+
+
+def _extract_retry_delay(error_text: str) -> str | None:
+    if not error_text:
+        return None
+    match_sec = re.search(r"retry in\s+([\d\.]+)s", error_text, flags=re.IGNORECASE)
+    if match_sec:
+        return f"{match_sec.group(1)}s"
+    match_ms = re.search(r"retry in\s+([\d\.]+)ms", error_text, flags=re.IGNORECASE)
+    if match_ms:
+        return f"{match_ms.group(1)}ms"
+    return None
+
+
+def _cache_get(cache_key: str):
+    cached = _analysis_cache.get(cache_key)
+    return copy.deepcopy(cached) if cached is not None else None
+
+
+def _cache_set(cache_key: str, payload: dict) -> None:
+    if len(_analysis_cache) >= _analysis_cache_max_items:
+        oldest_key = next(iter(_analysis_cache))
+        _analysis_cache.pop(oldest_key, None)
+    _analysis_cache[cache_key] = copy.deepcopy(payload)
 
 
 
@@ -128,38 +239,98 @@ def extract_text_from_pdf(file_content):
     try:
         pdf_file = io.BytesIO(file_content)
         pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text = ""
+        text_parts = []
         for page_num, page in enumerate(pdf_reader.pages):
             page_text = page.extract_text()
             if page_text:
-                text += f"\n--- Page {page_num+1} ---\n{page_text}"
+                text_parts.append(f"\n--- Page {page_num+1} ---\n{page_text}")
+        text = "".join(text_parts)
         if not text.strip():
-            st.warning("Warning: No text extracted from PDF. PDF might be image-based or empty.")
+            _ui_warn("No text extracted from PDF. The PDF may be image-based or empty.")
         return text
     except Exception as e:
-        st.error(f"Error reading PDF: {str(e)}")
+        _ui_error(f"Error reading PDF: {str(e)}")
         return None
 
 def init_gemini_models(api_key_for_gemini):
-    global gemini_model_extraction, gemini_model_chat
+    global gemini_model_extraction, gemini_model_chat, _active_extraction_model_name, _active_chat_model_name
     try:
         if not api_key_for_gemini:
-            st.error("Gemini API Key is missing. Cannot initialize models.")
+            _ui_error("Gemini API key is missing. Cannot initialize models.")
             return False
         
         genai.configure(api_key=api_key_for_gemini)
-        
-       
-        # Note: gemini-3.0-flash is the latest available model as of Dec 2025
-        gemini_model_extraction = genai.GenerativeModel('gemini-2.5-flash')
-        gemini_model_chat = genai.GenerativeModel('gemini-2.5-flash')
-        
-        return True
-    except Exception as e:
-        st.error(f"Error configuring Gemini: {e}. Please ensure your API key is correct and valid.")
+
+        last_error = None
+        for model_name in EXTRACTION_MODEL_CANDIDATES:
+            try:
+                gemini_model_extraction = genai.GenerativeModel(model_name)
+                _active_extraction_model_name = model_name
+                break
+            except Exception as model_exc:
+                last_error = model_exc
+                continue
+
+        if gemini_model_extraction is None:
+            _ui_error(f"Could not initialize Gemini extraction model: {last_error}")
+            gemini_model_chat = None
+            return False
+
+        chat_last_error = None
+        for model_name in CHAT_MODEL_CANDIDATES:
+            try:
+                gemini_model_chat = genai.GenerativeModel(model_name)
+                _active_chat_model_name = model_name
+                return True
+            except Exception as model_exc:
+                chat_last_error = model_exc
+                continue
+
+        _ui_error(f"Could not initialize Gemini chat model: {chat_last_error}")
         gemini_model_extraction = None
         gemini_model_chat = None
+        _active_extraction_model_name = ""
+        _active_chat_model_name = ""
         return False
+        
+    except Exception as e:
+        _ui_error(f"Error configuring Gemini: {e}. Please ensure your API key is correct and valid.")
+        gemini_model_extraction = None
+        gemini_model_chat = None
+        _active_extraction_model_name = ""
+        _active_chat_model_name = ""
+        return False
+
+
+def _extract_first_json_object(response_text: str) -> str | None:
+    """Extract the first balanced JSON object from model text output."""
+    start_index = response_text.find('{')
+    if start_index == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start_index, len(response_text)):
+        ch = response_text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return response_text[start_index:i + 1]
+    return None
 
 
 def extract_patient_info_from_normalized_data(df):
@@ -250,13 +421,26 @@ def auto_detect_and_process(df, filename, new_patient_info_list):
 
 def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     global gemini_model_extraction
+    global _last_extraction_error
+    global _active_extraction_model_name
+    _last_extraction_error = ""
     if not gemini_model_extraction and not init_gemini_models(api_key_for_gemini):
-        st.error("Gemini extraction model not initialized. API key might be missing or invalid.")
+        _last_extraction_error = "Gemini extraction model not initialized. API key may be invalid or missing."
+        _ui_error(_last_extraction_error)
         return None
 
     if not text_content or not text_content.strip():
-        st.warning("No text provided to analyze.")
+        _last_extraction_error = "No extractable text was provided to Gemini."
+        _ui_warn(_last_extraction_error)
         return None
+
+    # Keep prompt size bounded to reduce timeout/limit failures on very large PDFs.
+    max_chars = 120000
+    bounded_text = text_content[:max_chars]
+    cache_key = hashlib.md5(bounded_text.encode("utf-8", errors="ignore")).hexdigest()
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     prompt = f"""
     Analyze this medical test report. Extract all patient information and test results.
@@ -276,7 +460,11 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     - Unit of measurement (e.g., "g/dL", "cells/µL")
     - Reference Range (e.g., "13.0 - 17.0", "< 5.0", "Negative")
     - Status (interpret as "Low", "Normal", "High", "Critical", "Positive", "Negative", or "N/A" if not applicable or clearly stated. If not stated, use "N/A")
-    - Category (e.g., "Haematology", "Liver Function Test", "Kidney Function Test", "Lipid Profile", "Thyroid Profile", "Urinalysis". Infer if not explicitly stated.)
+        - Category (infer if not explicitly stated) and ALWAYS use only one of these canonical category names:
+            Haematology, Lipid Profile, Liver Function, Kidney Function, Diabetes & Glucose,
+            Thyroid Function, Vitamins & Minerals, Hormones, Cardiac Markers, Immunology,
+            Urinalysis, Inflammation, Proteins, Other.
+        - For synonymous test names (e.g., SGOT/AST/Aspartate Aminotransferase), keep one consistent clinical name.
 
     Return the data in this exact JSON format:
     {{
@@ -305,36 +493,102 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
 
     Medical Report Text:
     ---
-    {text_content}
+    {bounded_text}
     ---
     """
     try:
-        response = gemini_model_extraction.generate_content(prompt)
-        response_text = response.text
+        response_text = ""
+        last_exception = None
+        models_to_try = []
+        if _active_extraction_model_name:
+            models_to_try.append(_active_extraction_model_name)
+        for model_name in EXTRACTION_MODEL_CANDIDATES:
+            if model_name not in models_to_try:
+                models_to_try.append(model_name)
+
+        for model_name in models_to_try:
+            if model_name != _active_extraction_model_name:
+                try:
+                    gemini_model_extraction = genai.GenerativeModel(model_name)
+                    _active_extraction_model_name = model_name
+                except Exception as model_exc:
+                    last_exception = model_exc
+                    continue
+
+            try:
+                response = gemini_model_extraction.generate_content(
+                    prompt,
+                    generation_config={"response_mime_type": "application/json"},
+                )
+                response_text = getattr(response, "text", "") or ""
+                if not response_text and getattr(response, "candidates", None):
+                    parts = []
+                    for candidate in response.candidates:
+                        content = getattr(candidate, "content", None)
+                        if not content:
+                            continue
+                        for part in getattr(content, "parts", []) or []:
+                            part_text = getattr(part, "text", None)
+                            if part_text:
+                                parts.append(part_text)
+                    response_text = "\n".join(parts)
+                if response_text:
+                    break
+            except Exception as call_exc:
+                last_exception = call_exc
+                if _is_rate_limit_error(str(call_exc)):
+                    continue
+                # Fallback call without structured output hint.
+                try:
+                    response = gemini_model_extraction.generate_content(prompt)
+                    response_text = getattr(response, "text", "") or ""
+                    if response_text:
+                        break
+                except Exception as fallback_exc:
+                    last_exception = fallback_exc
+                continue
+
+        if not response_text:
+            if last_exception and _is_rate_limit_error(str(last_exception)):
+                retry_delay = _extract_retry_delay(str(last_exception))
+                _last_extraction_error = (
+                    f"Rate limit reached for Gemini extraction ({_active_extraction_model_name or 'configured models'})."
+                    + (f" Retry after {retry_delay}." if retry_delay else "")
+                )
+                _ui_error(_last_extraction_error)
+                return None
+            raise RuntimeError(f"Gemini returned empty response. Last error: {last_exception}")
         
         match_json_block = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
         if match_json_block:
             json_str = match_json_block.group(1)
         else:
-            start_index = response_text.find('{')
-            end_index = response_text.rfind('}')
-            if start_index != -1 and end_index > start_index:
-                json_str = response_text[start_index : end_index+1]
-            else:
-                st.error("Could not find a clear JSON block in Gemini API response.")
-                st.text_area("Gemini API Response (text):", response_text, height=150)
+            json_str = _extract_first_json_object(response_text)
+            if not json_str:
+                _last_extraction_error = "Gemini response did not contain valid JSON output."
+                _ui_error(_last_extraction_error)
+                _ui_debug_text("Gemini API Response (text)", response_text, height=150)
                 return None
         
-        return json.loads(json_str)
+        parsed = json.loads(json_str)
+        if not isinstance(parsed, dict) or "test_results" not in parsed:
+            _last_extraction_error = "Gemini JSON did not include required field 'test_results'."
+            _ui_error(_last_extraction_error)
+            _ui_debug_text("Gemini JSON payload", json_str, height=150)
+            return None
+        _cache_set(cache_key, parsed)
+        return parsed
     except json.JSONDecodeError as json_e:
-        st.error(f"Error decoding JSON from Gemini response: {json_e}")
-        st.text_area("Problematic JSON string:", json_str, height=150)
-        st.text_area("Full Gemini Response (text):", response_text, height=150)
+        _last_extraction_error = f"JSON parse error from Gemini response: {json_e}"
+        _ui_error(_last_extraction_error)
+        _ui_debug_text("Problematic JSON string", json_str, height=150)
+        _ui_debug_text("Full Gemini Response (text)", response_text, height=150)
         return None
     except Exception as e:
-        st.error(f"Error analyzing report with Gemini: {str(e)}")
+        _last_extraction_error = f"Gemini extraction exception: {str(e)}"
+        _ui_error(_last_extraction_error)
         if "API key not valid" in str(e) or "PERMISSION_DENIED" in str(e):
-            st.error("Please ensure your Gemini API key is correct and has the necessary permissions.")
+            _ui_error("Please ensure your Gemini API key is correct and has the necessary permissions.")
         return None
 
 def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF"):
@@ -352,6 +606,8 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
 
     all_rows = []
     for test_result in ai_results_json.get('test_results', []):
+        raw_category = standardize_value(test_result.get('category', 'N/A'), {}, default_case='title')
+        raw_test_name = standardize_value(test_result.get('test_name', 'UnknownTest'), TEST_NAME_MAPPING, default_case='title')
         row = {
             'Source_Filename': source_filename,
             'Patient_ID': patient_info_dict.get('patient_id', 'N/A'),
@@ -360,9 +616,9 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
             'Gender': patient_info_dict.get('gender', 'N/A'),
             'Test_Date': parsed_date,
             'Lab_Name': patient_info_dict.get('lab_name', 'N/A'),
-            'Test_Category': standardize_value(test_result.get('category', 'N/A'), {}, default_case='title'),
+            'Test_Category': canonicalize_category(raw_category),
             'Original_Test_Name': test_result.get('test_name', 'UnknownTest'),
-            'Test_Name': standardize_value(test_result.get('test_name', 'UnknownTest'), TEST_NAME_MAPPING, default_case='title'),
+            'Test_Name': normalize_test_name(raw_test_name),
             'Result': test_result.get('result', ''),
             'Unit': standardize_value(test_result.get('unit', ''), UNIT_MAPPING, default_case='original'),
             'Reference_Range': test_result.get('reference_range', ''),
@@ -471,17 +727,33 @@ def consolidate_patient_info(patient_info_list):
     }
 
 def get_chatbot_response(report_df_for_prompt, user_question, chat_history_for_prompt, api_key_for_gemini):
-    global gemini_model_chat
+    global gemini_model_chat, _active_chat_model_name
     if not gemini_model_chat and not init_gemini_models(api_key_for_gemini):
         return "Chatbot model not initialized. API key might be missing or invalid."
     if report_df_for_prompt.empty:
         return "No report data available to answer questions. Please analyze a report first."
-    
-    df_string = report_df_for_prompt[['Test_Date', 'Test_Category', 'Test_Name', 'Result', 'Unit', 'Reference_Range', 'Status']].to_string(index=False, max_rows=50)
+
+    expected_cols = [
+        'Test_Date',
+        'Test_Category',
+        'Test_Name',
+        'Result',
+        'Unit',
+        'Reference_Range',
+        'Status',
+    ]
+    safe_df = report_df_for_prompt.copy()
+    for col in expected_cols:
+        if col not in safe_df.columns:
+            safe_df[col] = "N/A"
+    df_string = safe_df[expected_cols].to_string(index=False, max_rows=50)
     
     history_context = ""
     for entry in chat_history_for_prompt[-5:]:
-        history_context += f"{entry['role'].capitalize()}: {entry['content']}\n"
+        role = str(entry.get("role", "user")).capitalize()
+        content = str(entry.get("content", "")).strip()
+        if content:
+            history_context += f"{role}: {content}\n"
 
     prompt = f"""You are a medical report assistant, so try to be precise.
 Based on the provided medical test results and chat history, answer the user's question.
@@ -508,12 +780,57 @@ User Question: {user_question}
 
 Assistant Response (please use bullet points):
 """
-    try:
-        response = gemini_model_chat.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        st.error(f"Error getting chatbot response from Gemini: {str(e)}")
-        return "Sorry, I encountered an error trying to respond."
+
+    def _response_text_from_model_response(model_response):
+        text = (getattr(model_response, "text", "") or "").strip()
+        if text:
+            return text
+
+        parts = []
+        for candidate in getattr(model_response, "candidates", []) or []:
+            content = getattr(candidate, "content", None)
+            if not content:
+                continue
+            for part in getattr(content, "parts", []) or []:
+                part_text = getattr(part, "text", None)
+                if part_text:
+                    parts.append(part_text)
+
+        return "\n".join(parts).strip()
+
+    model_names_to_try = []
+    if _active_chat_model_name:
+        model_names_to_try.append(_active_chat_model_name)
+    for model_name in CHAT_MODEL_CANDIDATES:
+        if model_name not in model_names_to_try:
+            model_names_to_try.append(model_name)
+
+    last_error_text = ""
+    for model_name in model_names_to_try:
+        try:
+            if model_name != _active_chat_model_name:
+                gemini_model_chat = genai.GenerativeModel(model_name)
+                _active_chat_model_name = model_name
+
+            response = gemini_model_chat.generate_content(prompt)
+            response_text = _response_text_from_model_response(response)
+            if response_text:
+                return response_text
+            last_error_text = "Gemini chat returned an empty response."
+            continue
+        except Exception as e:
+            last_error_text = str(e)
+            if _is_rate_limit_error(last_error_text):
+                retry_delay = _extract_retry_delay(last_error_text)
+                return (
+                    "Gemini chat rate limit reached. "
+                    + (f"Please retry after {retry_delay}." if retry_delay else "Please try again shortly.")
+                )
+            continue
+
+    if last_error_text:
+        _ui_error(f"Error getting chatbot response from Gemini: {last_error_text}")
+    return "Sorry, I encountered an error trying to respond."
 
 def parse_reference_range(ref_range_str):
     if not isinstance(ref_range_str, str) or ref_range_str.lower() == 'n/a' or not ref_range_str.strip():
@@ -1240,18 +1557,14 @@ def combine_duplicate_tests(df):
     test_cat_counts = df.groupby(['Test_Name', 'Test_Category'])['Test_Date'].nunique().reset_index().rename(columns={'Test_Date': 'date_count'})
     test_cat_total = df.groupby(['Test_Name', 'Test_Category']).size().reset_index(name='row_count')
     merged = pd.merge(test_cat_counts, test_cat_total, on=['Test_Name', 'Test_Category'])
-    
-    def pick_category(subdf):
-        max_dates = subdf['date_count'].max()
-        date_winners = subdf[subdf['date_count'] == max_dates]
-        if len(date_winners) == 1:
-            return date_winners.iloc[0]['Test_Category']
-        max_rows = date_winners['row_count'].max()
-        row_winners = date_winners[date_winners['row_count'] == max_rows]
-        return row_winners.iloc[0]['Test_Category']
 
-    best_cats = merged.groupby('Test_Name').apply(pick_category).reset_index()
-    best_cats.columns = ['Test_Name', 'Best_Test_Category']
+    # Pick best category per test by max distinct dates, then max rows, then stable name order.
+    ranked = merged.sort_values(
+        by=['Test_Name', 'date_count', 'row_count', 'Test_Category'],
+        ascending=[True, False, False, True],
+    )
+    best_cats = ranked.drop_duplicates(subset=['Test_Name'])[['Test_Name', 'Test_Category']]
+    best_cats = best_cats.rename(columns={'Test_Category': 'Best_Test_Category'})
     df = pd.merge(df, best_cats, on='Test_Name', how='left')
     df['Test_Category'] = df['Best_Test_Category']
     df = df.drop(columns=['Best_Test_Category'])

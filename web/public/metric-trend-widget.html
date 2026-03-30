@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Metric Trend Widget</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #111;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      }
+
+      .wrap {
+        width: 100%;
+        background: #111;
+        border-radius: 8px;
+        padding: 12px 14px 10px;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .header {
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .title {
+        color: #aaa;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        line-height: 1;
+      }
+
+      .legend {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        line-height: 1;
+        white-space: nowrap;
+      }
+
+      .legend-item.alert {
+        color: #ef9f27;
+        font-size: 10px;
+      }
+
+      .legend-item.hint {
+        color: #666;
+        font-size: 10px;
+      }
+
+      .legend-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #ef9f27;
+        opacity: 0.35;
+      }
+
+      .canvas-wrap {
+        position: relative;
+        height: 200px;
+        overflow: hidden;
+      }
+
+      #tt {
+        position: absolute;
+        display: none;
+        pointer-events: none;
+        background: #1a1a1a;
+        border: 1px solid #ef9f27;
+        border-radius: 5px;
+        padding: 5px 9px;
+        z-index: 3;
+      }
+
+      #tt-d {
+        margin: 0 0 2px;
+        color: #ef9f27;
+        font-size: 10px;
+        line-height: 1.2;
+      }
+
+      #tt-v {
+        margin: 0;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1.2;
+      }
+
+      .footer {
+        border-top: 1px solid #222;
+        padding-top: 7px;
+        margin-top: 8px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+      }
+
+      .footer-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #ef9f27;
+      }
+
+      .footer-note {
+        color: #555;
+        font-size: 10px;
+        line-height: 1;
+      }
+
+      .footer-peak {
+        color: #ef9f27;
+        font-size: 10px;
+        font-weight: 500;
+        line-height: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="header">
+        <div class="title">METRIC TREND</div>
+
+        <div class="legend">
+          <div class="legend-item alert">
+            <svg width="24" height="10" viewBox="0 0 24 10" aria-hidden="true" focusable="false">
+              <line x1="1" y1="5" x2="23" y2="5" stroke="#EF9F27" stroke-width="1.5" />
+              <circle cx="12" cy="5" r="3" fill="#EF9F27" />
+            </svg>
+            <span>Alert Count</span>
+          </div>
+
+          <div class="legend-item hint">
+            <span class="legend-dot" aria-hidden="true"></span>
+            <span>Hover point</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="metricChart"></canvas>
+
+        <div id="tt" aria-hidden="true">
+          <p id="tt-d"></p>
+          <p id="tt-v"></p>
+        </div>
+      </div>
+
+      <div class="footer">
+        <span class="footer-dot" aria-hidden="true"></span>
+        <span class="footer-note">Monthly alert snapshots</span>
+        <span class="footer-peak">Peak: 11 alerts (Mar 2024)</span>
+      </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <script>
+      const displayLabels = ["Dec'22", "Apr'23", "Apr'24", "Oct'24", "Feb'25", "Dec'25"];
+      const fullDateLabels = [
+        "01-12-2022",
+        "01-04-2023",
+        "03-04-2024",
+        "01-10-2024",
+        "07-02-2025",
+        "12-12-2025",
+      ];
+      const values = [9, 3, 11, 5, 3, 3];
+
+      const wrap = document.querySelector('.wrap');
+      const tt = document.getElementById('tt');
+      const ttDate = document.getElementById('tt-d');
+      const ttVal = document.getElementById('tt-v');
+
+      function hideTooltip() {
+        tt.style.display = 'none';
+      }
+
+      const chart = new Chart(document.getElementById('metricChart').getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: displayLabels,
+          datasets: [
+            {
+              data: values,
+              borderColor: '#EF9F27',
+              backgroundColor: 'rgba(239,159,39,0.07)',
+              fill: true,
+              pointBackgroundColor: '#EF9F27',
+              pointBorderColor: '#111',
+              pointBorderWidth: 2,
+              pointRadius: 5,
+              pointHoverRadius: 7,
+              tension: 0.15,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          layout: {
+            padding: {
+              top: 4,
+              right: 4,
+              bottom: 0,
+              left: 0,
+            },
+          },
+          interaction: {
+            mode: 'nearest',
+            intersect: true,
+          },
+          plugins: {
+            legend: {
+              display: false,
+            },
+            tooltip: {
+              enabled: false,
+            },
+          },
+          scales: {
+            x: {
+              ticks: {
+                color: '#555',
+                autoSkip: false,
+                maxRotation: 0,
+                minRotation: 0,
+                font: {
+                  size: 9,
+                },
+              },
+              grid: {
+                color: 'rgba(255,255,255,0.04)',
+              },
+              border: {
+                color: '#2a2a2a',
+              },
+            },
+            y: {
+              min: 0,
+              max: 12,
+              ticks: {
+                stepSize: 3,
+                color: '#555',
+                font: {
+                  size: 9,
+                },
+              },
+              grid: {
+                color: 'rgba(255,255,255,0.04)',
+              },
+              border: {
+                color: '#2a2a2a',
+              },
+            },
+          },
+          onHover: (event, activeEls, chartRef) => {
+            if (!activeEls.length) {
+              hideTooltip();
+              return;
+            }
+
+            const pointIndex = activeEls[0].index;
+            const point = chartRef.getDatasetMeta(0).data[pointIndex];
+            if (!point) {
+              hideTooltip();
+              return;
+            }
+
+            ttDate.textContent = fullDateLabels[pointIndex];
+            ttVal.textContent = `${values[pointIndex]} alerts`;
+            tt.style.display = 'block';
+
+            const wrapRect = wrap.getBoundingClientRect();
+            const canvasRect = chartRef.canvas.getBoundingClientRect();
+
+            let left = point.x + (canvasRect.left - wrapRect.left) - tt.offsetWidth / 2;
+            const top = point.y + (canvasRect.top - wrapRect.top) - tt.offsetHeight - 8;
+
+            left = Math.max(0, left);
+
+            const maxLeft = wrap.clientWidth - tt.offsetWidth;
+            if (left > maxLeft) {
+              left = maxLeft;
+            }
+
+            tt.style.left = `${left}px`;
+            tt.style.top = `${Math.max(0, top)}px`;
+          },
+        },
+      });
+
+      chart.canvas.addEventListener('mouseleave', hideTooltip);
+      window.addEventListener('blur', hideTooltip);
+    </script>
+  </body>
+</html>

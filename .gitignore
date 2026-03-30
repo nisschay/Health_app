@@ -1,13 +1,16 @@
-# Python
+# =========================================
+# Root Git Ignore (single source of truth)
+# =========================================
+
+# Python artifacts
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-env/
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -20,24 +23,38 @@ var/
 .installed.cfg
 *.egg
 
-# Streamlit secrets
-.streamlit/secrets.toml
-.streamlit/
-
-# Virtual Environment
+# Virtual environments
+env/
 venv/
 ENV/
 .venv/
 
-# IDE
+# Tooling and editor files
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Notebook and test caches
+.ipynb_checkpoints/
+.pytest_cache/
 
-# Local development
+# Local/runtime files
 .env
 *.log
+.run/
+
+# Frontend build artifacts
+node_modules/
+.next/
+web/node_modules/
+web/.next/
+
+# Streamlit local files
+.streamlit/
+
+# Secrets
+serviceAccountKey.json
+
+.next/
+web/.next-dev/
