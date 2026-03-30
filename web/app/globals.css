@@ -1403,10 +1403,10 @@ h1 {
    ========================================= */
 
 .home-shell {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 1.5rem 1.75rem 2.25rem;
   width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 1.5rem 24px 2.25rem;
 }
 
 .dashboard-header {
@@ -1697,13 +1697,15 @@ h1 {
 
 .analyze-shell {
   display: flex;
-  justify-content: center;
-  padding: 3rem 1.5rem;
+  justify-content: flex-start;
+  width: 100%;
+  margin: 0;
+  padding: 3rem 24px;
 }
 
 .analyze-card {
   width: 100%;
-  max-width: 680px;
+  max-width: none;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-md);
@@ -2414,10 +2416,10 @@ h1 {
    ========================================= */
 
 .result-shell {
-  width: min(1360px, calc(100vw - 2.5rem));
-  max-width: 1360px;
-  margin: 0 auto;
-  padding: 2.75rem 1.75rem 4rem;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 2.75rem 24px 4rem;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -2454,6 +2456,8 @@ h1 {
 }
 
 .result-section {
+  width: 100%;
+  max-width: none;
   padding: 2rem;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
@@ -4132,8 +4136,8 @@ h1 {
   }
 
   .result-shell {
-    width: calc(100vw - 1.2rem);
-    padding: 1.8rem 0.65rem 2.8rem;
+    width: 100%;
+    padding: 1.8rem 24px 2.8rem;
   }
 
   .result-section {
