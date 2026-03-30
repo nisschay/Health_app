@@ -10,6 +10,17 @@ import plotly.graph_objs as go
 import google.generativeai as genai
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI, TEST_NAME_MAPPING, UNIT_MAPPING, STATUS_MAPPING
 from unify_test_names import unify_test_names
+try:
+    from backend_api.app.normalization import canonicalize_category, normalize_test_name
+except Exception:
+    # Streamlit-only fallback when backend package imports are unavailable.
+    def canonicalize_category(raw):
+        text = str(raw).strip() if raw is not None else ""
+        return text.title() if text else "Other"
+
+    def normalize_test_name(raw):
+        text = str(raw).strip() if raw is not None else ""
+        return text.title() if text else "Unknown Test"
 import sys
 import os
 from collections import Counter
@@ -449,7 +460,11 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     - Unit of measurement (e.g., "g/dL", "cells/µL")
     - Reference Range (e.g., "13.0 - 17.0", "< 5.0", "Negative")
     - Status (interpret as "Low", "Normal", "High", "Critical", "Positive", "Negative", or "N/A" if not applicable or clearly stated. If not stated, use "N/A")
-    - Category (e.g., "Haematology", "Liver Function Test", "Kidney Function Test", "Lipid Profile", "Thyroid Profile", "Urinalysis". Infer if not explicitly stated.)
+        - Category (infer if not explicitly stated) and ALWAYS use only one of these canonical category names:
+            Haematology, Lipid Profile, Liver Function, Kidney Function, Diabetes & Glucose,
+            Thyroid Function, Vitamins & Minerals, Hormones, Cardiac Markers, Immunology,
+            Urinalysis, Inflammation, Proteins, Other.
+        - For synonymous test names (e.g., SGOT/AST/Aspartate Aminotransferase), keep one consistent clinical name.
 
     Return the data in this exact JSON format:
     {{
@@ -591,6 +606,8 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
 
     all_rows = []
     for test_result in ai_results_json.get('test_results', []):
+        raw_category = standardize_value(test_result.get('category', 'N/A'), {}, default_case='title')
+        raw_test_name = standardize_value(test_result.get('test_name', 'UnknownTest'), TEST_NAME_MAPPING, default_case='title')
         row = {
             'Source_Filename': source_filename,
             'Patient_ID': patient_info_dict.get('patient_id', 'N/A'),
@@ -599,9 +616,9 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
             'Gender': patient_info_dict.get('gender', 'N/A'),
             'Test_Date': parsed_date,
             'Lab_Name': patient_info_dict.get('lab_name', 'N/A'),
-            'Test_Category': standardize_value(test_result.get('category', 'N/A'), {}, default_case='title'),
+            'Test_Category': canonicalize_category(raw_category),
             'Original_Test_Name': test_result.get('test_name', 'UnknownTest'),
-            'Test_Name': standardize_value(test_result.get('test_name', 'UnknownTest'), TEST_NAME_MAPPING, default_case='title'),
+            'Test_Name': normalize_test_name(raw_test_name),
             'Result': test_result.get('result', ''),
             'Unit': standardize_value(test_result.get('unit', ''), UNIT_MAPPING, default_case='original'),
             'Reference_Range': test_result.get('reference_range', ''),

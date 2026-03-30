@@ -27,6 +27,7 @@ from unify_test_names import unify_test_names
 
 from .auth import RequestUser
 from .config import settings
+from .normalization import normalize_dataframe, normalize_records
 
 
 def _is_rate_limit_reason(reason: str) -> bool:
@@ -62,6 +63,8 @@ def dataframe_from_records(records: list[dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(records)
     if df.empty:
         return df
+
+    df = normalize_dataframe(df)
 
     if "Result" in df.columns:
         df["Result_Numeric"] = pd.to_numeric(df["Result"], errors="coerce")
@@ -274,6 +277,7 @@ class MedicalAnalysisService:
 
         combined_raw_df = unify_test_names(combined_raw_df)
         combined_raw_df = combine_duplicate_tests(combined_raw_df)
+        combined_raw_df = normalize_dataframe(combined_raw_df)
 
         health_summary = calculate_health_score(combined_raw_df)
         body_systems = get_body_system_analysis(combined_raw_df)
@@ -299,7 +303,7 @@ class MedicalAnalysisService:
         return get_chatbot_response(report_df, question, history, api_key)
 
     def get_health_insights(self, records: list[dict[str, Any]]) -> dict[str, Any]:
-        report_df = dataframe_from_records(records)
+        report_df = dataframe_from_records(normalize_records(records))
         return {
             "health_summary": calculate_health_score(report_df),
             "body_systems": get_body_system_analysis(report_df),

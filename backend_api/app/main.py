@@ -32,6 +32,7 @@ from .database import (
     save_analysis,
     upsert_user,
 )
+from .normalization import normalize_records
 from .schemas import (
     AnalysisHistoryItem,
     AnalysisResponse,
@@ -256,6 +257,29 @@ def _extract_alerts_count(report_row) -> int:
     return 0
 
 
+def _empty_insights() -> dict[str, Any]:
+    return {
+        "health_summary": {"overall_score": 0, "category_scores": {}, "concerns": []},
+        "body_systems": [],
+    }
+
+
+def _normalize_analysis_payload(analysis_payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(analysis_payload)
+    raw_records = normalized.get("records", [])
+    rows = raw_records if isinstance(raw_records, list) else []
+    normalized_records = normalize_records([row for row in rows if isinstance(row, dict)])
+
+    normalized["records"] = normalized_records
+    normalized["total_records"] = len(normalized_records)
+
+    insights = service.get_health_insights(normalized_records) if normalized_records else _empty_insights()
+    normalized["health_summary"] = insights.get("health_summary", _empty_insights()["health_summary"])
+    normalized["body_systems"] = insights.get("body_systems", [])
+
+    return normalized
+
+
 # ── Analysis ───────────────────────────────────────────────────────────────────
 
 @app.get(f"{settings.api_prefix}/studies/profiles", response_model=list[ProfileResponse])
@@ -366,7 +390,7 @@ def save_analysis_to_study(
     if not profile or profile.account_owner_id != owner.id:
         raise HTTPException(status_code=403, detail="You do not have access to this study.")
 
-    analysis_dict = payload.analysis.model_dump()
+    analysis_dict = _normalize_analysis_payload(payload.analysis.model_dump())
     patient_info = analysis_dict.get("patient_info", {})
     report_date = _parse_report_date_flexible(patient_info.get("date"))
     if report_date is None:
@@ -539,12 +563,9 @@ def get_combined_study_report(
                     reports_with_data += 1
                 combined_records.extend(scoped_rows)
 
-    combined_records = _dedupe_records(combined_records)
+    combined_records = normalize_records(_dedupe_records(combined_records))
 
-    insights = service.get_health_insights(records=combined_records) if combined_records else {
-        "health_summary": {"overall_score": 0, "category_scores": {}, "concerns": []},
-        "body_systems": [],
-    }
+    insights = service.get_health_insights(records=combined_records) if combined_records else _empty_insights()
 
     payload_patient_info = latest_payload.get("patient_info", {}) if isinstance(latest_payload, dict) else {}
     if not isinstance(payload_patient_info, dict):
@@ -609,6 +630,7 @@ async def analyze_reports(
             include_raw_texts=include_raw_texts,
             user=user,
         )
+        result = _normalize_analysis_payload(result)
     except RuntimeError as exc:
         detail = str(exc)
         if detail.startswith("RATE_LIMIT_EXCEEDED:"):
@@ -674,6 +696,7 @@ async def analyze_reports_stream(
                 user=user,
                 progress_callback=emit,
             )
+            result = _normalize_analysis_payload(result)
             emit({"type": "stage", "step": "processing", "status": "complete"})
 
             emit({"type": "stage", "step": "saving", "status": "active"})
@@ -720,7 +743,7 @@ def save_report_analysis(
     """Save an analysis result to PostgreSQL for the authenticated user."""
     owner = _require_authenticated_user(user, db)
 
-    analysis_dict = payload.analysis.model_dump()
+    analysis_dict = _normalize_analysis_payload(payload.analysis.model_dump())
     row = save_analysis(
         db=db,
         firebase_uid=owner.firebase_uid,
@@ -784,7 +807,7 @@ def get_report_by_id(
     if not row:
         raise HTTPException(status_code=404, detail="Analysis not found.")
 
-    data = json.loads(row.analysis_json)
+    data = _normalize_analysis_payload(json.loads(row.analysis_json))
     return AnalysisResponse(**data)
 
 

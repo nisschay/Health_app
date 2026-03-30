@@ -3183,6 +3183,15 @@ h1 {
   color: var(--text-primary);
 }
 
+.finding-caption {
+  display: block;
+  margin-top: 0.16rem;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #57534e;
+}
+
 .intelligence-finding-main p {
   margin: 0.2rem 0 0;
   font-size: 0.8rem;
@@ -3190,11 +3199,52 @@ h1 {
   font-family: "JetBrains Mono", "Fira Code", monospace;
 }
 
+.finding-latest {
+  display: block;
+  margin-top: 0.22rem;
+  font-size: 11px;
+}
+
+.finding-latest.good {
+  color: #65a058;
+}
+
+.finding-latest.warn {
+  color: #fbbf24;
+}
+
 .intelligence-finding-main small {
   display: block;
   margin-top: 0.2rem;
   font-size: 0.74rem;
   color: var(--text-muted);
+}
+
+.finding-footer {
+  margin-top: 0.22rem;
+}
+
+.finding-streak {
+  font-size: 11px;
+  color: #78716c;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.finding-streak.streak-amber {
+  color: #d97706;
+}
+
+.finding-streak.streak-good {
+  color: #65a058;
+}
+
+.streak-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #d97706;
 }
 
 .intelligence-advice-grid {
@@ -3622,10 +3672,65 @@ h1 {
   font-size: 0.72rem;
 }
 
+.metric-chip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.metric-chip-name {
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.metric-trend-icon {
+  flex-shrink: 0;
+}
+
+.metric-trend-icon.improving {
+  color: #65a058;
+}
+
+.metric-trend-icon.worsening {
+  color: #dc2626;
+}
+
+.metric-trend-icon.stable {
+  color: #78716c;
+}
+
 .metric-chip strong {
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 0.8rem;
   color: var(--text-primary);
+}
+
+.metric-chip-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.metric-chip-delta {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 11px;
+  color: #78716c;
+}
+
+.metric-chip-delta.improving {
+  color: #65a058;
+}
+
+.metric-chip-delta.worsening {
+  color: #dc2626;
+}
+
+.metric-chip-readings {
+  font-size: 11px;
+  color: #57534e;
 }
 
 .metric-chip em {
@@ -3638,6 +3743,10 @@ h1 {
 .metric-chip.linked,
 .metric-chip:hover {
   border-color: var(--accent);
+}
+
+.category-chart-scroll {
+  width: 100%;
 }
 
 .clinical-ask-ai {

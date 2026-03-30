@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Minus, TrendingDown, TrendingUp } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -14,99 +15,398 @@ import {
 } from "recharts";
 import type { MedicalRecord } from "@/lib/api";
 import { parseMedicalDate } from "@/lib/clinical";
+import { canonicalizeCategory } from "@/lib/categoryMap";
+import { normalizeTestName } from "@/lib/testNameMap";
+
+type FindingSeverity = "HIGH" | "BORDERLINE" | "NORMAL";
+type MetricTrend = "improving" | "worsening" | "stable" | "insufficient_data";
+
+type FindingEntry = {
+  testName: string;
+  category: string;
+  valueText: string;
+  valueNumeric: number | null;
+  unit: string;
+  referenceRange: string;
+  status: string;
+  severity: FindingSeverity;
+  deviationPercent: number;
+  reportDate: string;
+  timestamp: number;
+  source: MedicalRecord;
+};
+
+type PriorityFinding = {
+  name: string;
+  displayValue: string;
+  unit: string;
+  referenceRange: string;
+  severity: FindingSeverity;
+  statusLabel: string;
+  tone: "critical" | "low" | "normal";
+  worstDate: string;
+  latestValue: string;
+  latestDate: string;
+  latestSeverity: FindingSeverity;
+  totalReports: number;
+  abnormalCount: number;
+  streak: number;
+  score: number;
+};
+
+type PriorityMetric = {
+  name: string;
+  latestValue: string;
+  latestValueNumeric: number | null;
+  latestUnit: string;
+  latestDate: string;
+  latestStatus: string;
+  latestSeverity: FindingSeverity;
+  trend: MetricTrend;
+  trendDelta: number | null;
+  reportCount: number;
+  lowerIsBetter: boolean;
+  latestEntry: FindingEntry;
+};
 
 type StructuredAssistant = {
   summary: string;
-  keyFindings: Array<{
-    testName: string;
-    status: string;
-    date: string;
-    reference: string;
-    value: string;
-  }>;
-  metrics: Array<{ label: string; value: string; status: string; testName: string }>;
+  keyFindings: PriorityFinding[];
+  metrics: PriorityMetric[];
   trends: string[];
   recommendations: string[];
   totalAlerts: number;
   mostAffectedCategory: string;
 };
 
-function isAbnormalStatus(status: string | null | undefined): boolean {
-  const normalized = String(status ?? "").toLowerCase();
-  return normalized === "high" || normalized === "low" || normalized === "critical" || normalized === "positive" || normalized === "flagged" || normalized === "insufficient";
+const LOWER_IS_BETTER_KEYS = [
+  "ldl",
+  "triglycerides",
+  "glucose",
+  "hba1c",
+  "sgot",
+  "sgpt",
+  "creatinine",
+  "urea",
+  "fastingbloodglucose",
+  "glycatedhaemoglobinhba1c",
+  "aspartateaminotransferasesgotast",
+  "alanineaminotransferasesgptalt",
+  "serumcreatinine",
+  "bloodureanitrogenbun",
+];
+
+function normalizeStatus(status: string | null | undefined): string {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  if (!normalized || normalized === "n/a" || normalized === "na") return "N/A";
+  if (normalized.includes("critical")) return "Critical";
+  if (normalized.includes("insufficient")) return "Insufficient";
+  if (normalized.includes("borderline")) return "Borderline";
+  if (normalized.includes("positive")) return "Positive";
+  if (normalized.includes("negative")) return "Negative";
+  if (normalized.includes("flag")) return "Flagged";
+  if (normalized.includes("high")) return "High";
+  if (normalized.includes("low")) return "Low";
+  if (normalized.includes("normal") || normalized.includes("within")) return "Normal";
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
-function parseAssistantResponse(content: string, records: MedicalRecord[]): StructuredAssistant {
-  const lines = content
-    .split("\n")
-    .map((line) => line.replace(/^[-*]\s*/, "").trim())
-    .filter(Boolean);
+function toSeverity(status: string): FindingSeverity {
+  const normalized = normalizeStatus(status).toLowerCase();
+  if (normalized === "critical" || normalized === "high" || normalized === "positive" || normalized === "flagged") {
+    return "HIGH";
+  }
+  if (normalized === "low" || normalized === "insufficient" || normalized === "borderline") {
+    return "BORDERLINE";
+  }
+  return "NORMAL";
+}
 
-  const summary = lines.slice(0, 2).join(" ") || "Clinical review generated based on available report data.";
+function isAbnormalStatus(status: string | null | undefined): boolean {
+  return toSeverity(String(status ?? "")) !== "NORMAL";
+}
 
-  const abnormalRecords = records
-    .filter((record) => isAbnormalStatus(record.Status))
-    .sort((a, b) => {
-      const rank = (status: string | null | undefined) => {
-        const s = (status ?? "").toLowerCase();
-        if (s === "critical") return 0;
-        if (s === "high" || s === "positive" || s === "flagged") return 1;
-        if (s === "low" || s === "insufficient") return 2;
-        return 3;
+function toTimestamp(dateText: string | null | undefined): number {
+  const parsed = parseMedicalDate(dateText ?? "");
+  return parsed === Number.MAX_SAFE_INTEGER ? -1 : parsed;
+}
+
+function parseNumeric(value: string | number | null | undefined): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (value === null || value === undefined) return null;
+  const parsed = Number.parseFloat(String(value).replace(/,/g, "").trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseRefRange(ref: string | null | undefined): { low: number | null; high: number | null } {
+  if (!ref) return { low: null, high: null };
+  const value = String(ref);
+  const rangeMatch = value.match(/([0-9.]+)\s*[-–]\s*([0-9.]+)/);
+  if (rangeMatch) {
+    return { low: Number.parseFloat(rangeMatch[1]), high: Number.parseFloat(rangeMatch[2]) };
+  }
+  const ltMatch = value.match(/[<≤]\s*([0-9.]+)/);
+  if (ltMatch) {
+    return { low: null, high: Number.parseFloat(ltMatch[1]) };
+  }
+  const gtMatch = value.match(/[>≥]\s*([0-9.]+)/);
+  if (gtMatch) {
+    return { low: Number.parseFloat(gtMatch[1]), high: null };
+  }
+  return { low: null, high: null };
+}
+
+function calculateDeviationPercent(
+  valueNumeric: number | null,
+  referenceRange: string | null | undefined,
+  severity: FindingSeverity,
+): number {
+  if (valueNumeric === null) {
+    if (severity === "HIGH") return 20;
+    if (severity === "BORDERLINE") return 8;
+    return 0;
+  }
+
+  const ref = parseRefRange(referenceRange);
+  if (ref.low !== null && ref.high !== null) {
+    if (valueNumeric < ref.low && ref.low !== 0) return Math.round(((ref.low - valueNumeric) / Math.abs(ref.low)) * 100);
+    if (valueNumeric > ref.high && ref.high !== 0) return Math.round(((valueNumeric - ref.high) / Math.abs(ref.high)) * 100);
+    return 0;
+  }
+  if (ref.high !== null && valueNumeric > ref.high && ref.high !== 0) {
+    return Math.round(((valueNumeric - ref.high) / Math.abs(ref.high)) * 100);
+  }
+  if (ref.low !== null && valueNumeric < ref.low && ref.low !== 0) {
+    return Math.round(((ref.low - valueNumeric) / Math.abs(ref.low)) * 100);
+  }
+
+  if (severity === "HIGH") return 20;
+  if (severity === "BORDERLINE") return 8;
+  return 0;
+}
+
+function formatValue(value: string | number | null | undefined, unit: string | null | undefined): string {
+  const text = value === null || value === undefined || String(value).trim() === "" ? "N/A" : String(value);
+  const unitText = unit ? ` ${unit}` : "";
+  return `${text}${unitText}`.trim();
+}
+
+function matchKey(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isLowerBetterMetric(testName: string): boolean {
+  const key = matchKey(testName);
+  return LOWER_IS_BETTER_KEYS.some((candidate) => key.includes(candidate));
+}
+
+function buildFindingEntries(records: MedicalRecord[]): FindingEntry[] {
+  return records
+    .map((record) => {
+      const testName = normalizeTestName(record.Test_Name ?? record.Original_Test_Name ?? "Unknown Test");
+      const status = normalizeStatus(record.Status);
+      const severity = toSeverity(status);
+      const valueNumeric = parseNumeric(record.Result_Numeric ?? record.Result);
+      const deviationPercent = calculateDeviationPercent(valueNumeric, record.Reference_Range, severity);
+
+      return {
+        testName,
+        category: canonicalizeCategory(record.Test_Category),
+        valueText: formatValue(record.Result, record.Unit),
+        valueNumeric,
+        unit: record.Unit ?? "",
+        referenceRange: record.Reference_Range ?? "N/A",
+        status,
+        severity,
+        deviationPercent,
+        reportDate: record.Test_Date ?? "Unknown",
+        timestamp: toTimestamp(record.Test_Date),
+        source: record,
       };
-      return rank(a.Status) - rank(b.Status);
-    });
+    })
+    .filter((entry) => entry.testName && entry.testName !== "Unknown Test");
+}
 
-  const keyFindings = abnormalRecords.slice(0, 8).map((record) => ({
-    testName: record.Test_Name ?? "Unknown Test",
-    status: record.Status ?? "N/A",
-    date: record.Test_Date ?? "Unknown",
-    reference: record.Reference_Range ?? "N/A",
-    value: `${String(record.Result ?? "N/A")}${record.Unit ? ` ${record.Unit}` : ""}`,
-  }));
+function severityRank(severity: FindingSeverity): number {
+  if (severity === "HIGH") return 3;
+  if (severity === "BORDERLINE") return 2;
+  return 1;
+}
 
-  const categoryMap = new Map<string, number>();
-  for (const record of abnormalRecords) {
-    const category = record.Test_Category?.trim() || "Uncategorized";
-    categoryMap.set(category, (categoryMap.get(category) ?? 0) + 1);
+function toneForSeverity(severity: FindingSeverity): "critical" | "low" | "normal" {
+  if (severity === "HIGH") return "critical";
+  if (severity === "BORDERLINE") return "low";
+  return "normal";
+}
+
+function buildPriorityFindings(entries: FindingEntry[]): PriorityFinding[] {
+  const grouped = new Map<string, FindingEntry[]>();
+  for (const entry of entries) {
+    if (!grouped.has(entry.testName)) {
+      grouped.set(entry.testName, []);
+    }
+    grouped.get(entry.testName)!.push(entry);
   }
 
-  const mostAffectedCategory = Array.from(categoryMap.entries())
-    .sort((a, b) => b[1] - a[1])[0]?.[0] ?? "No category alerts";
+  const scored = Array.from(grouped.entries()).map(([name, groupEntries]) => {
+    const sortedByDate = [...groupEntries].sort((a, b) => b.timestamp - a.timestamp);
+    const abnormalEntries = groupEntries.filter((entry) => entry.severity !== "NORMAL");
+    const latestEntry = sortedByDate[0]!;
 
-  const recommendations = lines
-    .filter((line) => /recommend|follow|monitor|discuss|repeat|consult/i.test(line))
-    .slice(0, 3);
+    const mostDeviant = [...groupEntries].sort((a, b) => {
+      if (b.deviationPercent !== a.deviationPercent) return b.deviationPercent - a.deviationPercent;
+      return severityRank(b.severity) - severityRank(a.severity);
+    })[0]!;
 
-  const trends = lines
-    .filter((line) => /trend|increase|decrease|stable|over time/i.test(line))
-    .slice(0, 3);
+    let streak = 0;
+    for (const entry of sortedByDate) {
+      if (entry.severity !== "NORMAL") streak += 1;
+      else break;
+    }
 
-  const metrics: Array<{ label: string; value: string; status: string; testName: string }> = [];
-  const seenMetricTests = new Set<string>();
-  for (const record of records) {
-    if (!record.Test_Name || record.Test_Name === "N/A") continue;
-    if (seenMetricTests.has(record.Test_Name)) continue;
-    const status = String(record.Status ?? "");
-    if (!status || status.toLowerCase() === "normal" || status.toLowerCase() === "negative") continue;
-    seenMetricTests.add(record.Test_Name);
-    metrics.push({
-      label: record.Test_Name,
-      testName: record.Test_Name,
-      value: `${String(record.Result ?? "N/A")}${record.Unit ? ` ${record.Unit}` : ""}`,
-      status,
-    });
-    if (metrics.length >= 5) break;
+    const severityScore = mostDeviant.severity === "HIGH" ? 100 : mostDeviant.severity === "BORDERLINE" ? 50 : 10;
+    const score = severityScore + streak * 25 + mostDeviant.deviationPercent;
+
+    return {
+      name,
+      displayValue: mostDeviant.valueText,
+      unit: mostDeviant.unit,
+      referenceRange: mostDeviant.referenceRange,
+      severity: mostDeviant.severity,
+      statusLabel: mostDeviant.status,
+      tone: toneForSeverity(mostDeviant.severity),
+      worstDate: mostDeviant.reportDate,
+      latestValue: latestEntry.valueText,
+      latestDate: latestEntry.reportDate,
+      latestSeverity: latestEntry.severity,
+      totalReports: groupEntries.length,
+      abnormalCount: abnormalEntries.length,
+      streak,
+      score,
+    } satisfies PriorityFinding;
+  });
+
+  return scored
+    .filter((finding) => finding.abnormalCount > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+}
+
+function trendThreshold(referenceRange: string, baseline: number): number {
+  const ref = parseRefRange(referenceRange);
+  if (ref.low !== null && ref.high !== null) {
+    const width = Math.abs(ref.high - ref.low);
+    if (width > 0) return width * 0.05;
   }
+  if (ref.high !== null && ref.high !== 0) return Math.abs(ref.high) * 0.05;
+  if (ref.low !== null && ref.low !== 0) return Math.abs(ref.low) * 0.05;
+  return Math.max(Math.abs(baseline) * 0.05, 0.5);
+}
+
+function buildPriorityMetrics(entries: FindingEntry[]): PriorityMetric[] {
+  const grouped = new Map<string, FindingEntry[]>();
+  for (const entry of entries) {
+    if (!grouped.has(entry.testName)) {
+      grouped.set(entry.testName, []);
+    }
+    grouped.get(entry.testName)!.push(entry);
+  }
+
+  const metrics = Array.from(grouped.entries()).map(([name, groupEntries]) => {
+    const sortedByDate = [...groupEntries].sort((a, b) => b.timestamp - a.timestamp);
+    const latestEntry = sortedByDate[0]!;
+    const previousEntry = sortedByDate[1];
+    const lowerIsBetter = isLowerBetterMetric(name);
+
+    let trend: MetricTrend = "insufficient_data";
+    let trendDelta: number | null = null;
+
+    if (latestEntry.valueNumeric !== null && previousEntry && previousEntry.valueNumeric !== null) {
+      trendDelta = Number((latestEntry.valueNumeric - previousEntry.valueNumeric).toFixed(2));
+      const threshold = trendThreshold(latestEntry.referenceRange, previousEntry.valueNumeric);
+      if (Math.abs(trendDelta) <= threshold) {
+        trend = "stable";
+      } else if (lowerIsBetter) {
+        trend = trendDelta < 0 ? "improving" : "worsening";
+      } else {
+        trend = trendDelta > 0 ? "improving" : "worsening";
+      }
+    }
+
+    return {
+      name,
+      latestValue: latestEntry.valueText,
+      latestValueNumeric: latestEntry.valueNumeric,
+      latestUnit: latestEntry.unit,
+      latestDate: latestEntry.reportDate,
+      latestStatus: latestEntry.status,
+      latestSeverity: latestEntry.severity,
+      trend,
+      trendDelta,
+      reportCount: groupEntries.length,
+      lowerIsBetter,
+      latestEntry,
+    } satisfies PriorityMetric;
+  });
+
+  return metrics
+    .sort((a, b) => {
+      const abnormalA = a.latestSeverity !== "NORMAL" ? 1 : 0;
+      const abnormalB = b.latestSeverity !== "NORMAL" ? 1 : 0;
+      if (abnormalA !== abnormalB) return abnormalB - abnormalA;
+
+      const worseningA = a.trend === "worsening" ? 1 : 0;
+      const worseningB = b.trend === "worsening" ? 1 : 0;
+      if (worseningA !== worseningB) return worseningB - worseningA;
+
+      return b.reportCount - a.reportCount;
+    })
+    .slice(0, 6);
+}
+
+function buildStructuredAssistant(records: MedicalRecord[]): StructuredAssistant {
+  const entries = buildFindingEntries(records);
+  const findings = buildPriorityFindings(entries);
+  const metrics = buildPriorityMetrics(entries);
+  const totalAlerts = entries.filter((entry) => entry.severity !== "NORMAL").length;
+
+  const categoryAlerts = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.severity === "NORMAL") continue;
+    categoryAlerts.set(entry.category, (categoryAlerts.get(entry.category) ?? 0) + 1);
+  }
+
+  const mostAffectedCategory = Array.from(categoryAlerts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "No category alerts";
+  const uniqueDates = new Set(entries.map((entry) => entry.reportDate)).size;
+
+  const recommendations = [
+    findings.some((finding) => finding.streak >= 2)
+      ? "Persistent abnormalities detected across consecutive reports - prioritize clinician review."
+      : "No sustained multi-report abnormal streaks detected in top findings.",
+    metrics.some((metric) => metric.trend === "worsening")
+      ? "Some key metrics are worsening compared with the previous reading."
+      : "Most tracked metrics are stable or improving versus previous readings.",
+    "Use the latest and worst values together to separate current state from historical risk.",
+  ];
+
+  const trends = [
+    findings.some((finding) => finding.streak >= 2)
+      ? "At least one high-priority marker remains abnormal across consecutive reports."
+      : "No major persistent abnormal streak among the top-ranked findings.",
+    metrics.some((metric) => metric.trend === "worsening")
+      ? "Worsening movement is present in priority metrics."
+      : "Priority metrics show stable or improving movement.",
+  ];
 
   return {
-    summary,
-    keyFindings,
+    summary: `Cross-report review generated from ${records.length} records across ${uniqueDates} report dates.`,
+    keyFindings: findings,
     metrics,
     trends,
-    recommendations:
-      recommendations.length > 0 ? recommendations : ["Discuss flagged trends with your clinician for interpretation."],
-    totalAlerts: abnormalRecords.length,
+    recommendations,
+    totalAlerts,
     mostAffectedCategory,
   };
 }
@@ -132,31 +432,62 @@ function alertTrendByReportDate(records: MedicalRecord[]) {
 function categoryComparison(records: MedicalRecord[]) {
   const map = new Map<string, number>();
   for (const record of records) {
-    const status = String(record.Status ?? "").toLowerCase();
-    if (status === "normal" || status === "negative" || !status) continue;
-    const category = record.Test_Category?.trim() || "Uncategorized";
+    if (!isAbnormalStatus(record.Status)) continue;
+    const category = canonicalizeCategory(record.Test_Category);
     map.set(category, (map.get(category) ?? 0) + 1);
   }
   return Array.from(map.entries())
     .map(([category, alerts]) => ({ category, alerts }))
-    .sort((a, b) => b.alerts - a.alerts)
-    .slice(0, 6);
+    .sort((a, b) => b.alerts - a.alerts);
 }
 
 function badgeTone(status: string) {
-  const s = status.toLowerCase();
+  const s = normalizeStatus(status).toLowerCase();
   if (s === "critical") return "bad";
   if (s === "high" || s === "positive" || s === "flagged") return "warn";
-  if (s === "low") return "muted";
+  if (s === "low" || s === "insufficient" || s === "borderline") return "muted";
   if (s === "normal" || s === "negative") return "good";
   return "muted";
 }
 
-function findingTone(status: string) {
-  const s = status.toLowerCase();
-  if (s === "critical" || s === "high" || s === "positive" || s === "flagged") return "critical";
-  if (s === "low" || s === "insufficient") return "low";
-  return "normal";
+function deltaClass(metric: PriorityMetric): string {
+  if (metric.trend === "improving") return "improving";
+  if (metric.trend === "worsening") return "worsening";
+  return "stable";
+}
+
+function deltaText(metric: PriorityMetric): string {
+  if (metric.trend === "insufficient_data" || metric.trendDelta === null) return "insufficient data";
+  const sign = metric.trendDelta >= 0 ? "+" : "";
+  return `${sign}${metric.trendDelta.toFixed(1)} from last`;
+}
+
+function CategoryTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div
+      style={{
+        background: "#292524",
+        border: "1px solid #44403c",
+        borderRadius: "8px",
+        padding: "8px 12px",
+        fontFamily: "DM Sans",
+      }}
+    >
+      <p style={{ fontSize: 12, color: "#78716c", margin: 0, marginBottom: 4 }}>{label}</p>
+      <p
+        style={{
+          margin: 0,
+          fontSize: 14,
+          fontFamily: "JetBrains Mono",
+          color: "#fbbf24",
+          fontWeight: 600,
+        }}
+      >
+        {payload[0]?.value ?? 0} alerts
+      </p>
+    </div>
+  );
 }
 
 export default function ClinicalChatPanel({
@@ -164,25 +495,13 @@ export default function ClinicalChatPanel({
 }: {
   records: MedicalRecord[];
 }) {
-  const analysisData = useMemo(
-    () => parseAssistantResponse("", records),
-    [records]
-  );
+  const analysisData = useMemo(() => buildStructuredAssistant(records), [records]);
 
-  const [activeMetric, setActiveMetric] = useState<string | null>(analysisData.metrics[0]?.testName ?? null);
-  const [hoveredMetric, setHoveredMetric] = useState<string | null>(null);
+  const [activeMetric, setActiveMetric] = useState<string | null>(analysisData.metrics[0]?.name ?? null);
 
   const trendData = useMemo(() => alertTrendByReportDate(records), [records]);
   const categoryData = useMemo(() => categoryComparison(records), [records]);
-  const activeRecord = useMemo(
-    () => {
-      if (!activeMetric) return undefined;
-      return [...records]
-        .filter((row) => row.Test_Name === activeMetric)
-        .sort((a, b) => parseMedicalDate(b.Test_Date) - parseMedicalDate(a.Test_Date))[0];
-    },
-    [records, activeMetric]
-  );
+  const activeMetricData = useMemo(() => analysisData.metrics.find((metric) => metric.name === activeMetric), [analysisData.metrics, activeMetric]);
   const criticalCount = useMemo(
     () => records.filter((row) => String(row.Status ?? "").toLowerCase() === "critical").length,
     [records],
@@ -195,6 +514,17 @@ export default function ClinicalChatPanel({
     [records],
   );
   const alertRate = records.length > 0 ? Math.round((analysisData.totalAlerts / records.length) * 100) : 0;
+
+  useEffect(() => {
+    if (analysisData.metrics.length === 0) {
+      setActiveMetric(null);
+      return;
+    }
+    if (!activeMetric || !analysisData.metrics.some((metric) => metric.name === activeMetric)) {
+      setActiveMetric(analysisData.metrics[0]!.name);
+    }
+  }, [analysisData.metrics, activeMetric]);
+
   const clinicalState = useMemo(() => {
     if (criticalCount > 0) {
       return {
@@ -236,6 +566,8 @@ export default function ClinicalChatPanel({
     }
     return `Alert burden is decreasing over time (${Math.abs(pct)}% change from the earliest report date).`;
   }, [trendData]);
+
+  const categoryChartMinWidth = Math.max(420, categoryData.length * 72);
 
   return (
     <section className="result-section intelligence-section">
@@ -287,13 +619,31 @@ export default function ClinicalChatPanel({
               )}
 
               {analysisData.keyFindings.map((finding, idx) => (
-                <div className={`intelligence-finding-card ${findingTone(finding.status)}`} role="listitem" key={`${finding.testName}-${finding.date}-${idx}`}>
+                <div className={`intelligence-finding-card ${finding.tone}`} role="listitem" key={`${finding.name}-${finding.worstDate}-${idx}`}>
                   <div className="intelligence-finding-main">
-                    <strong>{finding.testName}</strong>
-                    <p>{finding.value}</p>
-                    <small>{finding.date} | Ref: {finding.reference}</small>
+                    <strong>{finding.name}</strong>
+                    <span className="finding-caption">WORST RECORDED</span>
+                    <p>{finding.displayValue} · {finding.worstDate}</p>
+                    {finding.latestDate !== finding.worstDate && (
+                      <small className={`finding-latest ${finding.latestSeverity === "NORMAL" ? "good" : "warn"}`}>
+                        Latest: {finding.latestValue} · {finding.latestDate}
+                      </small>
+                    )}
+                    <small>Ref: {finding.referenceRange}</small>
+                    <div className="finding-footer">
+                      {finding.streak >= 2 ? (
+                        <span className="finding-streak streak-amber">
+                          <span className="streak-dot" />
+                          {finding.streak}x consecutive
+                        </span>
+                      ) : finding.streak === 1 ? (
+                        <span className="finding-streak">{finding.abnormalCount} of {finding.totalReports} reports flagged</span>
+                      ) : (
+                        <span className="finding-streak streak-good">Currently normal</span>
+                      )}
+                    </div>
                   </div>
-                  <span className={`status-pill ${badgeTone(finding.status)}`}>{finding.status}</span>
+                  <span className={`status-pill ${badgeTone(finding.statusLabel)}`}>{finding.statusLabel}</span>
                 </div>
               ))}
             </div>
@@ -302,22 +652,31 @@ export default function ClinicalChatPanel({
           <section className="intelligence-block">
             <div className="intelligence-block-head">
               <h3>Priority Metrics</h3>
-              <span>Select a metric to update charts</span>
+              <span>Latest values ranked by risk and trend</span>
             </div>
             <div className="metric-chip-row">
               {analysisData.metrics.length === 0 && <span className="muted-copy">No highlighted metrics.</span>}
               {analysisData.metrics.map((metric, metricIndex) => (
                 <button
                   type="button"
-                  key={`${metric.testName}-${metric.status}-${metric.value}-${metricIndex}`}
-                  className={`metric-chip ${activeMetric === metric.testName ? "active" : ""} ${hoveredMetric === metric.testName ? "linked" : ""}`}
-                  onClick={() => setActiveMetric(metric.testName)}
-                  onMouseEnter={() => setHoveredMetric(metric.testName)}
-                  onMouseLeave={() => setHoveredMetric(null)}
+                  key={`${metric.name}-${metric.latestDate}-${metricIndex}`}
+                  className={`metric-chip ${activeMetric === metric.name ? "active" : ""}`}
+                  onClick={() => setActiveMetric(metric.name)}
                 >
-                  <span>{metric.label}</span>
-                  <strong>{metric.value}</strong>
-                  <em className={`status-pill ${badgeTone(metric.status)}`}>{metric.status}</em>
+                  <div className="metric-chip-head">
+                    <span className="metric-chip-name">{metric.name}</span>
+                    {metric.trend !== "insufficient_data" && metric.trend === "stable" && <Minus size={14} className="metric-trend-icon stable" />}
+                    {metric.trend === "improving" && metric.lowerIsBetter && <TrendingDown size={14} className="metric-trend-icon improving" />}
+                    {metric.trend === "improving" && !metric.lowerIsBetter && <TrendingUp size={14} className="metric-trend-icon improving" />}
+                    {metric.trend === "worsening" && metric.lowerIsBetter && <TrendingUp size={14} className="metric-trend-icon worsening" />}
+                    {metric.trend === "worsening" && !metric.lowerIsBetter && <TrendingDown size={14} className="metric-trend-icon worsening" />}
+                  </div>
+                  <strong>{metric.latestValue}</strong>
+                  <div className="metric-chip-status-row">
+                    <em className={`status-pill ${badgeTone(metric.latestStatus)}`}>{metric.latestStatus}</em>
+                    <span className={`metric-chip-delta ${deltaClass(metric)}`}>{deltaText(metric)}</span>
+                  </div>
+                  <small className="metric-chip-readings">{metric.reportCount} readings</small>
                 </button>
               ))}
             </div>
@@ -353,10 +712,6 @@ export default function ClinicalChatPanel({
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart
                   data={trendData}
-                  onMouseMove={() => {
-                    if (activeMetric) setHoveredMetric(activeMetric);
-                  }}
-                  onMouseLeave={() => setHoveredMetric(null)}
                 >
                   <CartesianGrid stroke="#3f3a34" strokeDasharray="3 3" />
                   <XAxis dataKey="date" tick={{ fill: "#a8a29e", fontSize: 11 }} />
@@ -373,15 +728,29 @@ export default function ClinicalChatPanel({
           <div className="intelligence-viz-card">
             <h3>Category Comparison</h3>
             {categoryData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={210}>
-                <BarChart data={categoryData}>
-                  <CartesianGrid stroke="#3f3a34" strokeDasharray="3 3" />
-                  <XAxis dataKey="category" tick={{ fill: "#a8a29e", fontSize: 10 }} interval={0} angle={-22} textAnchor="end" height={65} />
-                  <YAxis tick={{ fill: "#a8a29e", fontSize: 11 }} />
-                  <Tooltip />
-                  <Bar dataKey="alerts" fill="#d97706" radius={[6, 6, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              <div className="category-chart-scroll" style={{ overflowX: categoryData.length > 6 ? "auto" : "visible" }}>
+                <div style={{ minWidth: categoryData.length > 6 ? `${categoryChartMinWidth}px` : "100%", height: "210px" }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={categoryData}>
+                      <CartesianGrid stroke="#3f3a34" strokeDasharray="3 3" />
+                      <XAxis
+                        dataKey="category"
+                        tick={{ fill: "#78716c", fontSize: 11, fontFamily: "DM Sans" }}
+                        tickLine={false}
+                        axisLine={false}
+                        interval={0}
+                        angle={-35}
+                        textAnchor="end"
+                        height={60}
+                        tickFormatter={(value: string) => value.length > 10 ? `${value.slice(0, 10)}...` : value}
+                      />
+                      <YAxis tick={{ fill: "#a8a29e", fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <Tooltip content={<CategoryTooltip />} cursor={{ fill: "#ffffff08" }} />
+                      <Bar dataKey="alerts" fill="#d97706" radius={[4, 4, 0, 0]} activeBar={{ fill: "#fbbf24" }} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
             ) : (
               <p className="muted-copy">No abnormal category comparisons available.</p>
             )}
@@ -389,17 +758,17 @@ export default function ClinicalChatPanel({
 
           <div className="intelligence-viz-card">
             <h3>Reference Context</h3>
-            {activeMetric ? (
+            {activeMetricData ? (
               <div className="range-indicator-block">
                 <div className="range-indicator-head">
-                  <strong>{activeMetric}</strong>
-                  <span>{String(activeRecord?.Result ?? "N/A")}{activeRecord?.Unit ? ` ${activeRecord.Unit}` : ""}</span>
+                  <strong>{activeMetricData.name}</strong>
+                  <span>{activeMetricData.latestValue}</span>
                 </div>
                 <div className="range-bar-track">
                   <div className="range-bar-fill" />
                 </div>
                 <p className="muted-copy">
-                  Reference: {activeRecord?.Reference_Range ?? "N/A"}
+                  Reference: {activeMetricData.latestEntry.referenceRange || "N/A"}
                 </p>
               </div>
             ) : (

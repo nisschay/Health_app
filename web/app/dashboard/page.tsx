@@ -34,6 +34,7 @@ import AlertsByCategory from "./AlertsByCategory";
 import OrganizedDataTree from "./OrganizedDataTree";
 import ClinicalChatPanel from "./ClinicalChatPanel";
 import { generateClinicalPdfReport } from "@/lib/pdf";
+import { CANONICAL_CATEGORIES, canonicalizeCategory } from "@/lib/categoryMap";
 
 type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
 type StudyAction = "add-existing" | "start-new";
@@ -1113,10 +1114,11 @@ export default function DashboardPage() {
   }
 
   const records = analysis?.records ?? [];
-  const allBodySystems = Array.from(new Set(records.map((r) => r.Test_Category?.split("/")[0]?.trim() ?? "Other").filter(Boolean))).sort();
-  const filteredBySystem = selectedBodySystem === "all" ? records : records.filter((r) => (r.Test_Category ?? "").split("/")[0]?.trim() === selectedBodySystem);
-  const allCategories = Array.from(new Set(filteredBySystem.map((r) => r.Test_Category ?? "Other").filter(Boolean))).sort();
-  const filteredByCategory = selectedCategory === "all" ? filteredBySystem : filteredBySystem.filter((r) => r.Test_Category === selectedCategory);
+  const categoryOf = (record: AnalysisResponse["records"][number]) => canonicalizeCategory(record.Test_Category);
+  const allBodySystems = CANONICAL_CATEGORIES.filter((category) => records.some((record) => categoryOf(record) === category));
+  const filteredBySystem = selectedBodySystem === "all" ? records : records.filter((record) => categoryOf(record) === selectedBodySystem);
+  const allCategories = CANONICAL_CATEGORIES.filter((category) => filteredBySystem.some((record) => categoryOf(record) === category));
+  const filteredByCategory = selectedCategory === "all" ? filteredBySystem : filteredBySystem.filter((record) => categoryOf(record) === selectedCategory);
   const allTests = Array.from(new Set(filteredByCategory.map((r) => r.Test_Name ?? "").filter(Boolean))).sort();
   const selectedTestData = selectedTest ? filteredByCategory.filter((r) => r.Test_Name === selectedTest) : [];
   const sourceReportCount = new Set(
