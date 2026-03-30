@@ -59,8 +59,19 @@ export default function ClinicalAssistantChat({
 
     startTransition(async () => {
       try {
+        const analysisId = sessionId ?? `session-${Date.now()}`;
         const resp = await runWithTokenRetry((token) =>
-          sendChatMessage(records, updatedHistory, sessionId, token)
+          sendChatMessage(
+            {
+              analysisId,
+              reportContext: {
+                records,
+              },
+              history: updatedHistory,
+              question: newQuestion,
+            },
+            token,
+          )
         );
         setChatHistory((prev) => [...prev, { role: "assistant", content: resp.answer }]);
       } catch (err) {

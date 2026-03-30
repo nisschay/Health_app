@@ -735,6 +735,60 @@ h1 {
   color: white;
 }
 
+.chat-bubble.system {
+  margin-right: auto;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fecaca;
+}
+
+.chat-bubble.loading {
+  width: fit-content;
+  min-width: 72px;
+}
+
+.chat-typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chat-typing-dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #fbbf24;
+  opacity: 0.3;
+  animation: chat-typing-pulse 1.1s ease-in-out infinite;
+}
+
+.chat-typing-dots span:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.chat-typing-dots span:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
+.chat-system-message {
+  margin: 0;
+  line-height: 1.5;
+}
+
+@keyframes chat-typing-pulse {
+  0%,
+  80%,
+  100% {
+    transform: scale(0.8);
+    opacity: 0.3;
+  }
+
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
 .chat-bubble.muted {
   background: var(--bg-secondary);
   color: var(--text-muted);
@@ -4073,297 +4127,4 @@ h1 {
   .auth-card {
     padding: 2rem 1.5rem;
   }
-}
-
-/* REDESIGN 3 — Clinical Assistant Chatbot */
-
-.clinical-chat-section {
-  width: 100%;
-  margin-top: 1rem;
-  margin-bottom: 1rem;
-  background: var(--surface-surface, #0c0a09);
-  border: 1px solid var(--border-subtle, #292524);
-  border-radius: 12px;
-  display: flex;
-  flex-direction: column;
-}
-
-.clinical-chat-header {
-  padding: 20px 24px;
-  border-bottom: 1px solid #292524;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.clinical-chat-title-group {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.clinical-chat-title-text h2 {
-  font-family: 'DM Sans', sans-serif;
-  font-weight: 600;
-  font-size: 18px;
-  color: #fef3c7;
-  margin: 0;
-  line-height: 1.2;
-}
-
-.clinical-chat-title-text p {
-  font-size: 12px;
-  color: #57534e;
-  margin: 4px 0 0 0;
-}
-
-.pulse-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background-color: #65a058;
-  animation: pulseGreen 1.5s infinite;
-}
-
-@keyframes pulseGreen {
-  0% { box-shadow: 0 0 0 0 rgba(101, 160, 88, 0.4); }
-  70% { box-shadow: 0 0 0 6px rgba(101, 160, 88, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(101, 160, 88, 0); }
-}
-
-.clinical-chat-context-chip {
-  background: #1c1917;
-  border: 1px solid #292524;
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 11px;
-  color: #d4b483;
-}
-
-.clinical-chat-context-chip strong {
-  color: #fbbf24;
-  font-weight: bold;
-}
-
-.clinical-chat-messages-area {
-  padding: 20px 24px;
-  min-height: 320px;
-  max-height: 500px;
-  overflow-y: scroll;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  scrollbar-width: thin;
-  scrollbar-color: #44403c transparent;
-}
-
-.clinical-chat-messages-area::-webkit-scrollbar {
-  width: 4px;
-}
-.clinical-chat-messages-area::-webkit-scrollbar-thumb {
-  background-color: #44403c;
-  border-radius: 4px;
-}
-.clinical-chat-messages-area::-webkit-scrollbar-thumb:hover {
-  background-color: #d97706;
-}
-
-.clinical-chat-empty {
-  margin: auto;
-  color: #57534e;
-  font-size: 14px;
-}
-
-.clinical-chat-row {
-  display: flex;
-  gap: 10px;
-  width: 100%;
-}
-.clinical-chat-row.user {
-  flex-direction: row-reverse;
-}
-
-.clinical-chat-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 600;
-  flex-shrink: 0;
-  border: 1px solid transparent;
-}
-
-.clinical-chat-row.assistant .clinical-chat-avatar,
-.clinical-chat-row.system .clinical-chat-avatar {
-  background: #2d1f08;
-  color: #d97706;
-  border-color: #44403c;
-}
-
-.clinical-chat-row.user .clinical-chat-avatar {
-  background: #d97706;
-  color: #0c0a09;
-}
-
-.clinical-chat-bubble {
-  max-width: 78%;
-  font-size: 14px;
-  line-height: 1.6;
-  padding: 12px 16px;
-  word-break: break-word;
-}
-
-.clinical-chat-row.assistant .clinical-chat-bubble {
-  background: #1c1917;
-  border: 1px solid #292524;
-  color: #d4b483;
-  border-radius: 4px 12px 12px 12px;
-}
-
-.clinical-chat-row.user .clinical-chat-bubble {
-  background: #2d1f08;
-  border: 1px solid #44403c;
-  color: #fef3c7;
-  border-radius: 12px 4px 12px 12px;
-}
-
-.clinical-chat-row.system .clinical-chat-bubble .chat-system-error {
-  background: #2d1010;
-  border: 1px solid #dc2626;
-  color: #fca5a5;
-  border-radius: 4px 12px 12px 12px;
-  padding: 12px 16px;
-}
-
-.clinical-chat-bubble code {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
-  border-radius: 3px;
-  padding: 2px 4px;
-}
-
-/* User wants elevated values #dc2626 and normal #65a058 if they appear in text. We can try to approximate or let the markdown style it if needed. The prompt says : Lab values inside AI responses: JetBrains Mono 13px elevated=red normal=green */
-.clinical-chat-row.assistant .clinical-chat-bubble code {
-  color: #65a058;
-  background: rgba(101, 160, 88, 0.1);
-}
-
-.clinical-chat-timestamp {
-  font-size: 10px;
-  color: #57534e;
-  margin-top: 6px;
-  text-align: right;
-}
-
-.clinical-chat-bubble.typing {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 12px 16px;
-  height: 44px;
-}
-
-.clinical-chat-bubble.typing .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: #57534e;
-  animation: typingBounce 1.2s infinite ease-in-out;
-}
-
-.clinical-chat-bubble.typing .dot:nth-child(1) { animation-delay: 0s; }
-.clinical-chat-bubble.typing .dot:nth-child(2) { animation-delay: 0.2s; }
-.clinical-chat-bubble.typing .dot:nth-child(3) { animation-delay: 0.4s; }
-
-@keyframes typingBounce {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-4px); }
-}
-
-.clinical-chat-bottom-area {
-  display: flex;
-  flex-direction: column;
-}
-
-.clinical-chat-suggestions {
-  display: flex;
-  gap: 10px;
-  padding: 0 24px 14px;
-  overflow-x: auto;
-}
-
-.clinical-chat-chip {
-  background: #1c1917;
-  border: 1px solid #44403c;
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 12px;
-  color: #a8a29e;
-  cursor: pointer;
-  transition: all 0.2s;
-  white-space: nowrap;
-}
-
-.clinical-chat-chip:hover {
-  border-color: #d97706;
-  color: #fbbf24;
-}
-
-.clinical-chat-input-row {
-  padding: 14px 24px 20px;
-  border-top: 1px solid #292524;
-  display: flex;
-  gap: 12px;
-  align-items: flex-end;
-}
-
-.clinical-chat-textarea {
-  flex: 1;
-  background: #1c1917;
-  border: 1px solid #44403c;
-  border-radius: 10px;
-  padding: 12px 14px;
-  color: #fef3c7;
-  font-size: 14px;
-  resize: none;
-  font-family: inherit;
-  min-height: 46px;
-  max-height: 120px;
-  overflow-y: auto;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-.clinical-chat-textarea::placeholder {
-  color: #57534e;
-}
-
-.clinical-chat-textarea:focus {
-  outline: none;
-  border-color: #d97706;
-  box-shadow: 0 0 0 3px #fbbf2418;
-}
-
-.clinical-chat-send-btn {
-  background: #d97706;
-  color: #0c0a09;
-  font-family: 'DM Sans', sans-serif;
-  font-weight: 600;
-  border-radius: 10px;
-  height: 44px;
-  padding: 0 18px;
-  border: none;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.clinical-chat-send-btn:hover:not(:disabled) {
-  background: #b45309;
-}
-
-.clinical-chat-send-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }

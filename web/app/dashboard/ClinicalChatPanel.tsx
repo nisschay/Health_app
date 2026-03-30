@@ -7,7 +7,6 @@ import {
   CartesianGrid,
   Line,
   LineChart,
-  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -35,17 +34,6 @@ type StructuredAssistant = {
 function isAbnormalStatus(status: string | null | undefined): boolean {
   const normalized = String(status ?? "").toLowerCase();
   return normalized === "high" || normalized === "low" || normalized === "critical" || normalized === "positive" || normalized === "flagged" || normalized === "insufficient";
-}
-
-function parseRefRange(ref: string | null | undefined): { low: number | null; high: number | null } {
-  if (!ref) return { low: null, high: null };
-  const rangeMatch = ref.match(/([0-9.]+)\s*[-–]\s*([0-9.]+)/);
-  if (rangeMatch) return { low: parseFloat(rangeMatch[1]), high: parseFloat(rangeMatch[2]) };
-  const ltMatch = ref.match(/[<≤]\s*([0-9.]+)/);
-  if (ltMatch) return { low: null, high: parseFloat(ltMatch[1]) };
-  const gtMatch = ref.match(/[>≥]\s*([0-9.]+)/);
-  if (gtMatch) return { low: parseFloat(gtMatch[1]), high: null };
-  return { low: null, high: null };
 }
 
 function parseAssistantResponse(content: string, records: MedicalRecord[]): StructuredAssistant {
@@ -123,19 +111,22 @@ function parseAssistantResponse(content: string, records: MedicalRecord[]): Stru
   };
 }
 
-function numericTrendForMetric(records: MedicalRecord[], metric: string | null) {
-  if (!metric) return [] as Array<{ date: string; value: number }>;
-  return records
-    .filter((r) => r.Test_Name === metric)
-    .map((r) => {
-      const numeric = typeof r.Result_Numeric === "number" ? r.Result_Numeric : Number.parseFloat(String(r.Result ?? ""));
-      return {
-        date: r.Test_Date ?? "Unknown",
-        value: Number.isNaN(numeric) ? NaN : numeric,
-      };
-    })
-    .filter((row) => Number.isFinite(row.value))
-    .sort((a, b) => parseMedicalDate(a.date) - parseMedicalDate(b.date));
+function alertTrendByReportDate(records: MedicalRecord[]) {
+  const byDate = new Map<string, { date: string; alertCount: number; totalCount: number }>();
+
+  for (const record of records) {
+    const date = String(record.Test_Date ?? "Unknown").trim() || "Unknown";
+    if (!byDate.has(date)) {
+      byDate.set(date, { date, alertCount: 0, totalCount: 0 });
+    }
+    const bucket = byDate.get(date)!;
+    bucket.totalCount += 1;
+    if (isAbnormalStatus(record.Status)) {
+      bucket.alertCount += 1;
+    }
+  }
+
+  return Array.from(byDate.values()).sort((a, b) => parseMedicalDate(a.date) - parseMedicalDate(b.date));
 }
 
 function categoryComparison(records: MedicalRecord[]) {
@@ -181,13 +172,17 @@ export default function ClinicalChatPanel({
   const [activeMetric, setActiveMetric] = useState<string | null>(analysisData.metrics[0]?.testName ?? null);
   const [hoveredMetric, setHoveredMetric] = useState<string | null>(null);
 
-  const trendData = useMemo(() => numericTrendForMetric(records, activeMetric), [records, activeMetric]);
+  const trendData = useMemo(() => alertTrendByReportDate(records), [records]);
   const categoryData = useMemo(() => categoryComparison(records), [records]);
   const activeRecord = useMemo(
-    () => records.find((row) => row.Test_Name === activeMetric),
+    () => {
+      if (!activeMetric) return undefined;
+      return [...records]
+        .filter((row) => row.Test_Name === activeMetric)
+        .sort((a, b) => parseMedicalDate(b.Test_Date) - parseMedicalDate(a.Test_Date))[0];
+    },
     [records, activeMetric]
   );
-  const activeRange = parseRefRange(activeRecord?.Reference_Range ?? null);
   const criticalCount = useMemo(
     () => records.filter((row) => String(row.Status ?? "").toLowerCase() === "critical").length,
     [records],
@@ -222,22 +217,25 @@ export default function ClinicalChatPanel({
     };
   }, [alertRate, criticalCount]);
   const trendNarrative = useMemo(() => {
-    if (!activeMetric || trendData.length < 2) {
-      return "Select a metric with multiple numeric points to view trend direction.";
+    if (trendData.length === 0) {
+      return "No report-date trend data is available yet.";
     }
-    const first = trendData[0]!.value;
-    const last = trendData[trendData.length - 1]!.value;
+    if (trendData.length === 1) {
+      return "Only one report date is available. Add more report dates to compare alert movement over time.";
+    }
+    const first = trendData[0]!.alertCount;
+    const last = trendData[trendData.length - 1]!.alertCount;
     const delta = last - first;
-    const pct = first === 0 ? 0 : Math.round((delta / Math.abs(first)) * 100);
+    const pct = first === 0 ? (last > 0 ? 100 : 0) : Math.round((delta / Math.abs(first)) * 100);
 
-    if (Math.abs(delta) < 0.01) {
-      return `${activeMetric} has remained stable across recorded dates.`;
+    if (delta === 0) {
+      return "Alert count is stable across report dates.";
     }
     if (delta > 0) {
-      return `${activeMetric} is trending upward (${pct}% change from earliest point).`;
+      return `Alert burden is increasing over time (${pct}% change from the earliest report date).`;
     }
-    return `${activeMetric} is trending downward (${Math.abs(pct)}% change from earliest point).`;
-  }, [activeMetric, trendData]);
+    return `Alert burden is decreasing over time (${Math.abs(pct)}% change from the earliest report date).`;
+  }, [trendData]);
 
   return (
     <section className="result-section intelligence-section">
@@ -362,15 +360,13 @@ export default function ClinicalChatPanel({
                 >
                   <CartesianGrid stroke="#3f3a34" strokeDasharray="3 3" />
                   <XAxis dataKey="date" tick={{ fill: "#a8a29e", fontSize: 11 }} />
-                  <YAxis tick={{ fill: "#a8a29e", fontSize: 11 }} />
-                  <Tooltip />
-                  <Line dataKey="value" stroke="#d97706" strokeWidth={2.5} dot={{ r: 3, fill: "#d97706" }} />
-                  {activeRange.low !== null && <ReferenceLine y={activeRange.low} stroke="#78716c" strokeDasharray="4 4" />}
-                  {activeRange.high !== null && <ReferenceLine y={activeRange.high} stroke="#78716c" strokeDasharray="4 4" />}
+                  <YAxis allowDecimals={false} tick={{ fill: "#a8a29e", fontSize: 11 }} />
+                  <Tooltip formatter={(value) => [`${String(value ?? 0)} alerts`, "Alert Count"]} />
+                  <Line dataKey="alertCount" stroke="#d97706" strokeWidth={2.5} dot={{ r: 3, fill: "#d97706" }} />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <p className="muted-copy">Select a metric with numeric history to view trend.</p>
+              <p className="muted-copy">No report-date alert trend is available yet.</p>
             )}
           </div>
 

@@ -33,7 +33,6 @@ import TrendChart from "./TrendChart";
 import AlertsByCategory from "./AlertsByCategory";
 import OrganizedDataTree from "./OrganizedDataTree";
 import ClinicalChatPanel from "./ClinicalChatPanel";
-import ClinicalAssistantChat from "./ClinicalAssistantChat";
 import { generateClinicalPdfReport } from "@/lib/pdf";
 
 type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
@@ -55,6 +54,36 @@ type AnalyzeContext = {
   study: StudySummary;
   mode: "existing" | "new";
 };
+
+type ChatRole = "user" | "assistant" | "system";
+
+type ChatMessage = {
+  id: string;
+  role: ChatRole;
+  content: string;
+  isLoading?: boolean;
+};
+
+const MIN_CHAT_LOADING_MS = 400;
+
+function createChatMessageId(prefix: string): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function toApiChatHistory(messages: ChatMessage[]): ChatTurn[] {
+  return messages
+    .filter((message) => !message.isLoading && (message.role === "user" || message.role === "assistant"))
+    .map((message) => ({ role: message.role, content: message.content }));
+}
 
 function parseMedicalDate(value: string | null | undefined): number {
   if (!value) return Number.MAX_SAFE_INTEGER;
@@ -491,6 +520,12 @@ export default function DashboardPage() {
   });
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
+  const [chatQuestion, setChatQuestion] = useState("");
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [activeAnalysisId, setActiveAnalysisId] = useState<string | null>(null);
+  const [showAssistantPrompts, setShowAssistantPrompts] = useState(true);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [isChatPending, startChatTransition] = useTransition();
   const [selectedBodySystem, setSelectedBodySystem] = useState<string>("all");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [selectedTest, setSelectedTest] = useState<string>("");
@@ -557,6 +592,13 @@ export default function DashboardPage() {
       }
     }
   }, [forceReauth, getToken]);
+
+  const resetChatState = useCallback(() => {
+    setChatQuestion("");
+    setChatError(null);
+    setChatHistory([]);
+    setShowAssistantPrompts(true);
+  }, []);
 
   const loadDashboardData = useCallback(async () => {
     setHistoryLoading(true);
@@ -872,6 +914,8 @@ export default function DashboardPage() {
     try {
       const result = await runWithTokenRetry((token) => analyzeReportsStream(fd, token, handleAnalyzeStreamEvent));
       setAnalysis(result);
+      setActiveAnalysisId(studyContext ? `study-${studyContext.study.id}` : `analysis-${Date.now()}`);
+      resetChatState();
       setSelectedBodySystem("all");
       setSelectedCategory("all");
       setSelectedTest("");
@@ -927,7 +971,13 @@ export default function DashboardPage() {
       setStudyContext(null);
       setStudySuccessMessage(null);
       setResultStudyReportCount(null);
-      setAnalysis(result); setSelectedBodySystem("all"); setSelectedCategory("all"); setSelectedTest(""); setView("result");
+      setAnalysis(result);
+      setActiveAnalysisId(`history-${id}`);
+      resetChatState();
+      setSelectedBodySystem("all");
+      setSelectedCategory("all");
+      setSelectedTest("");
+      setView("result");
     } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Failed to load."); }
   }
 
@@ -940,6 +990,8 @@ export default function DashboardPage() {
       setStudySuccessMessage(`Loaded combined analysis for ${studyName}.`);
       setResultStudyReportCount(reportCount);
       setAnalysis(result);
+      setActiveAnalysisId(`study-${studyId}`);
+      resetChatState();
       setSelectedBodySystem("all");
       setSelectedCategory("all");
       setSelectedTest("");
@@ -949,6 +1001,91 @@ export default function DashboardPage() {
     } finally {
       setViewLoadingStudyId(null);
     }
+  }
+
+  async function sendAssistantQuestion(rawQuestion: string) {
+    if (!analysis) return;
+    const cleanQuestion = rawQuestion.trim();
+    if (!cleanQuestion) return;
+
+    setChatError(null);
+    setChatQuestion("");
+    setShowAssistantPrompts(false);
+
+    const userMessage: ChatMessage = {
+      id: createChatMessageId("user"),
+      role: "user",
+      content: cleanQuestion,
+    };
+    const loadingMessage: ChatMessage = {
+      id: createChatMessageId("assistant-loading"),
+      role: "assistant",
+      content: "",
+      isLoading: true,
+    };
+
+    const historyWithoutLoaders = [...chatHistory.filter((message) => !message.isLoading), userMessage];
+    setChatHistory([...historyWithoutLoaders, loadingMessage]);
+
+    const startedAt = Date.now();
+    try {
+      const resp = await runWithTokenRetry((token) => sendChatMessage(
+        {
+          analysisId: activeAnalysisId ?? `analysis-${analysis.patient_info.patient_id || "current"}`,
+          reportContext: {
+            patientInfo: analysis.patient_info,
+            totalRecords: analysis.total_records,
+            reportsIncluded: resultStudyReportCount ?? analysis.reports_with_data ?? null,
+            sourceFileNames: analysis.combined_report_file_names ?? [],
+            records: analysis.records,
+          },
+          history: toApiChatHistory(historyWithoutLoaders),
+          question: cleanQuestion,
+        },
+        token,
+      ));
+
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < MIN_CHAT_LOADING_MS) {
+        await sleep(MIN_CHAT_LOADING_MS - elapsed);
+      }
+
+      setChatHistory((prev) => [
+        ...prev.filter((message) => !message.isLoading),
+        {
+          id: createChatMessageId("assistant"),
+          role: "assistant",
+          content: resp.answer,
+        },
+      ]);
+    } catch (err) {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < MIN_CHAT_LOADING_MS) {
+        await sleep(MIN_CHAT_LOADING_MS - elapsed);
+      }
+
+      const msg = err instanceof Error ? err.message : "Unknown chat error.";
+      setChatError(msg);
+      setChatHistory((prev) => [
+        ...prev.filter((message) => !message.isLoading),
+        {
+          id: createChatMessageId("system"),
+          role: "system",
+          content: `Unable to get assistant response. ${msg}`,
+        },
+      ]);
+    }
+  }
+
+  async function submitChatQuestion() {
+    if (!chatQuestion.trim() || !analysis) return;
+    await sendAssistantQuestion(chatQuestion);
+  }
+
+  function handleQuickQuestion(q: string) {
+    startChatTransition(() => {
+      void sendAssistantQuestion(q);
+    });
   }
 
   async function handleDownloadReport() {
@@ -1414,8 +1551,102 @@ export default function DashboardPage() {
             records={analysis.records}
           />
 
-          <ClinicalAssistantChat records={analysis.records} runWithTokenRetry={runWithTokenRetry} />
-          
+          <section className="result-section assistant-workbench">
+            <div className="assistant-workbench-head">
+              <div>
+                <span className="assistant-kicker">Clinical Assistant</span>
+                <h2>Ask Follow-Up Questions</h2>
+                <p className="muted-copy">Get report-aware answers about abnormalities, trends, and clinical priorities. Markdown is supported in responses.</p>
+              </div>
+            </div>
+
+            <div className="assistant-workbench-grid">
+              <aside className="assistant-context-panel">
+                <h3>Prompt Ideas</h3>
+                {showAssistantPrompts && (
+                  <div className="assistant-quick-grid">
+                    {assistantPrompts.map((prompt) => (
+                      <button
+                        key={prompt}
+                        className="assistant-quick-btn"
+                        type="button"
+                        disabled={isChatPending}
+                        onClick={() => handleQuickQuestion(prompt)}
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="assistant-note">
+                  <strong>Tip</strong>
+                  <p>Ask about date-wise changes and alert clusters for the most useful clinical summaries.</p>
+                </div>
+              </aside>
+
+              <div className="assistant-chat-panel">
+                <div className="assistant-chat-history" role="log" aria-live="polite">
+                  {chatHistory.length === 0 && (
+                    <div className="chat-bubble assistant muted">
+                      Start with a question like "What changed the most in the latest report?"
+                    </div>
+                  )}
+
+                  {chatHistory.map((turn) => {
+                    const bubbleClass =
+                      turn.role === "user"
+                        ? "user"
+                        : turn.role === "assistant"
+                          ? "assistant"
+                          : "system";
+                    return (
+                      <div
+                        key={turn.id}
+                        className={`chat-bubble ${bubbleClass}${turn.isLoading ? " loading" : ""}`}
+                      >
+                        {turn.isLoading ? (
+                          <div className="chat-typing-dots" aria-label="Assistant is thinking" role="status">
+                            <span />
+                            <span />
+                            <span />
+                          </div>
+                        ) : turn.role === "system" ? (
+                          <p className="chat-system-message">{turn.content}</p>
+                        ) : (
+                          <div
+                            className="chat-bubble-markdown"
+                            dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(turn.content) }}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <form
+                  className="assistant-input-row"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    startChatTransition(() => {
+                      void submitChatQuestion();
+                    });
+                  }}
+                >
+                  <input
+                    className="text-input"
+                    type="text"
+                    placeholder="Ask a clinical question about trends, abnormalities, or next actions..."
+                    disabled={isChatPending}
+                    value={chatQuestion}
+                    onChange={(e) => setChatQuestion(e.target.value)}
+                  />
+                  <button className="primary-button" type="submit" disabled={isChatPending || !chatQuestion.trim()}>
+                    Send
+                  </button>
+                </form>
+              </div>
+            </div>
+          </section>
 
           <section className="result-section">
             <h2>Test Result Visualizations</h2>

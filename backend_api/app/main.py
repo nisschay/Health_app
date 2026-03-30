@@ -798,24 +798,10 @@ def chat_about_report(
     if not user.authenticated:
         raise HTTPException(status_code=401, detail="Authentication required.")
     try:
-        raw_records = payload.reportContext if payload.reportContext else []
-        records_list = []
-        for r in raw_records:
-            if hasattr(r, 'model_dump'):
-                records_list.append(r.model_dump())
-            elif isinstance(r, dict):
-                records_list.append(r)
-        
-        question = ""
-        history_list = []
-        if payload.messages:
-            question = payload.messages[-1].content
-            history_list = [{"role": m.role, "content": m.content} for m in payload.messages[:-1]]
-
         answer = service.get_chat_response(
-            records=records_list,
-            question=question,
-            history=history_list,
+            records=[record.model_dump() for record in payload.records],
+            question=payload.question,
+            history=[item.model_dump() for item in payload.history],
         )
         return ChatResponse(answer=answer)
     except Exception as exc:

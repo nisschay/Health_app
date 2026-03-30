@@ -29,6 +29,9 @@ function loadCentralEnv() {
 loadCentralEnv();
 
 const nextConfig: NextConfig = {
+  // Keep dev and production artifacts isolated so running `next build`
+  // does not invalidate chunks served by `next dev`.
+  distDir: process.env.NODE_ENV === "development" ? ".next-dev" : ".next",
   experimental: {
     optimizePackageImports: ["firebase"],
     // Needed because report uploads are proxied through Next via /backend.
