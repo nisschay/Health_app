@@ -55,3 +55,6 @@ web/.next/
 
 # Secrets
 serviceAccountKey.json
+
+.next/
+web/.next-dev/
