@@ -442,8 +442,17 @@ being discussed. If ranges conflict across reports, note the discrepancy.
 function buildGuidelinesSection(
   userMessage: string,
   activeFindings: string[],
+  conversationHistory: ChatTurnPayload[],
 ): string {
-  const relevantGuidelines = retrieveRelevantGuidelines(userMessage, activeFindings);
+  const relevantGuidelines = retrieveRelevantGuidelines(
+    userMessage,
+    activeFindings,
+    {
+      conversationHistory: conversationHistory.map((item) => item.content),
+      maxResults: 3,
+      minScore: 15,
+    },
+  );
   if (relevantGuidelines.length === 0) {
     return "";
   }
@@ -451,11 +460,34 @@ function buildGuidelinesSection(
   return `
 RELEVANT MEDICAL GUIDELINES (use these to ground your answer):
 ${relevantGuidelines
-  .map((guideline) => `
-[${guideline.source}]
-${guideline.title}
-${guideline.content}
-Cite as: "${guideline.source}" - ${guideline.sourceUrl}
+  .map(({ entry, score, matchedTerms, rationale }) => `
+[${entry.source}]  [retrieval score: ${score}]
+${entry.title}
+Category: ${entry.category}
+Core content:
+${entry.content}
+
+Interpretation bands:
+${entry.interpretationBands
+  .map((band) => `- ${band.label} (${band.range}): ${band.interpretation}. Typical action: ${band.typicalAction}`)
+  .join("\n")}
+
+Trend interpretation rules:
+${entry.trendSignals.map((signal) => `- ${signal}`).join("\n")}
+
+Known confounders:
+${entry.confounders.map((factor) => `- ${factor}`).join("\n")}
+
+Escalation triggers:
+${entry.escalationTriggers.map((trigger) => `- ${trigger}`).join("\n")}
+
+Patient-friendly action points:
+${entry.patientFriendlyActions.map((action) => `- ${action}`).join("\n")}
+
+Matched retrieval terms: ${matchedTerms.join(", ") || "none"}
+Retrieval rationale: ${rationale.join(", ") || "semantic overlap"}
+Evidence level: ${entry.evidenceLevel}
+Cite as: "${entry.source}" - ${entry.sourceUrl}
 `)
   .join("\n")}
 
@@ -529,6 +561,7 @@ export async function POST(request: NextRequest) {
   const guidelinesSection = buildGuidelinesSection(
     message,
     analysis.findings.map((finding) => finding.canonicalName),
+    cappedHistory,
   );
   const fullSystemPrompt = guidelinesSection
     ? `${baseSystemPrompt}\n\n${guidelinesSection}`
