@@ -192,6 +192,7 @@ class MedicalAnalysisService:
             df_single, patient_info_single = create_structured_dataframe(
                 gemini_analysis_json,
                 filename,
+                api_key_for_gemini=api_key,
             )
             if not df_single.empty:
                 all_dfs.append(df_single)
