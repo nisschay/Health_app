@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -58,13 +58,17 @@ class AnalysisResponse(BaseModel):
 
 
 class ChatTurn(BaseModel):
-    role: str
+    role: Literal["user", "assistant"]
     content: str
 
 
 class ChatRequest(BaseModel):
     records: list[MedicalRecord]
     question: str
+    analysis_id: str | None = None
+    session_id: str | None = None
+    system_prompt: str | None = None
+    report_context: dict[str, Any] = Field(default_factory=dict)
     history: list[ChatTurn] = Field(default_factory=list)
 
 

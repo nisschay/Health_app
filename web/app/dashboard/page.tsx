@@ -86,7 +86,10 @@ function sleep(ms: number): Promise<void> {
 function toApiChatHistory(messages: ChatMessage[]): ChatTurn[] {
   return messages
     .filter((message) => !message.isLoading && (message.role === "user" || message.role === "assistant"))
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map((message) => ({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: message.content,
+    }));
 }
 
 function parseMedicalDate(value: string | null | undefined): number {
@@ -536,6 +539,7 @@ export default function DashboardPage() {
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [chatSessionId, setChatSessionId] = useState(() => createChatMessageId("session"));
   const [activeAnalysisId, setActiveAnalysisId] = useState<string | null>(null);
   const [showAssistantPrompts, setShowAssistantPrompts] = useState(true);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -617,6 +621,7 @@ export default function DashboardPage() {
     setChatQuestion("");
     setChatError(null);
     setChatHistory([]);
+    setChatSessionId(createChatMessageId("session"));
     setShowAssistantPrompts(true);
   }, []);
 
@@ -1046,14 +1051,17 @@ export default function DashboardPage() {
       isLoading: true,
     };
 
-    const historyWithoutLoaders = [...chatHistory.filter((message) => !message.isLoading), userMessage];
-    setChatHistory([...historyWithoutLoaders, loadingMessage]);
+    const existingThread = chatHistory.filter(
+      (message) => !message.isLoading && (message.role === "user" || message.role === "assistant"),
+    );
+    setChatHistory([...existingThread, userMessage, loadingMessage]);
 
     const startedAt = Date.now();
     try {
       const resp = await runWithTokenRetry((token) => sendChatMessage(
         {
           analysisId: activeAnalysisId ?? `analysis-${analysis.patient_info.patient_id || "current"}`,
+          sessionId: chatSessionId,
           reportContext: {
             patientInfo: analysis.patient_info,
             totalRecords: analysis.total_records,
@@ -1061,8 +1069,8 @@ export default function DashboardPage() {
             sourceFileNames: analysis.combined_report_file_names ?? [],
             records: analysis.records,
           },
-          history: toApiChatHistory(historyWithoutLoaders),
-          question: cleanQuestion,
+          history: toApiChatHistory(existingThread).slice(-20),
+          message: cleanQuestion,
         },
         token,
       ));

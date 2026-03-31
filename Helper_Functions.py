@@ -725,7 +725,16 @@ def consolidate_patient_info(patient_info_list):
         'lab_name': get_most_common_or_latest([pi.get('lab_name') for pi in patient_info_list if pi.get('lab_name') and pi.get('lab_name') not in ['N/A', '']])
     }
 
-def get_chatbot_response(report_df_for_prompt, user_question, chat_history_for_prompt, api_key_for_gemini):
+def get_chatbot_response(
+    report_df_for_prompt,
+    user_question,
+    chat_history_for_prompt,
+    api_key_for_gemini,
+    analysis_id=None,
+    session_id=None,
+    system_prompt=None,
+    report_context=None,
+):
     global gemini_model_chat, _active_chat_model_name
     if not gemini_model_chat and not init_gemini_models(api_key_for_gemini):
         return "Chatbot model not initialized. API key might be missing or invalid."
@@ -745,39 +754,118 @@ def get_chatbot_response(report_df_for_prompt, user_question, chat_history_for_p
     for col in expected_cols:
         if col not in safe_df.columns:
             safe_df[col] = "N/A"
-    df_string = safe_df[expected_cols].to_string(index=False, max_rows=50)
-    
+
+    if "Lab_Name" not in safe_df.columns:
+        safe_df["Lab_Name"] = "Unknown Lab"
+
+    safe_df["Test_Date"] = safe_df["Test_Date"].fillna("Unknown date").astype(str)
+    safe_df["Lab_Name"] = safe_df["Lab_Name"].fillna("Unknown Lab").astype(str)
+    safe_df["_date_sort"] = safe_df["Test_Date"].apply(
+        lambda value: parse_date_dd_mm_yyyy(value) or datetime.max
+    )
+    safe_df = safe_df.sort_values(by=["_date_sort", "Lab_Name", "Test_Name"], na_position="last").reset_index(drop=True)
+
+    df_string = safe_df[expected_cols].to_string(index=False, max_rows=200)
+
+    timeline_lines = []
+    grouped = safe_df.groupby(["Test_Date", "Lab_Name"], dropna=False, sort=False)
+    for (date_label, lab_label), group in grouped:
+        status_series = group["Status"].fillna("").astype(str).str.lower()
+        abnormal_rows = group[
+            (~status_series.isin(["normal", "negative", "n/a", "na", ""]))
+        ]
+        abnormal_preview = ", ".join(
+            abnormal_rows.apply(
+                lambda row: (
+                    f"{row.get('Test_Name', 'Unknown')}: {row.get('Result', 'N/A')} "
+                    f"{row.get('Unit', '')} ({row.get('Status', 'ABNORMAL')})"
+                ).strip(),
+                axis=1,
+            ).tolist()[:10]
+        )
+        timeline_lines.append(
+            f"Date: {date_label} | Lab: {lab_label}\n"
+            f"Tests performed: {len(group)}\n"
+            f"Abnormal findings: {abnormal_preview or 'None'}"
+        )
+
+    timeline_summary = "\n---\n".join(timeline_lines[:60])
+
+    latest_snapshot_rows = safe_df.drop_duplicates(subset=["Test_Name"], keep="last")
+    latest_snapshot = "\n".join(
+        latest_snapshot_rows.apply(
+            lambda row: (
+                f"{row.get('Test_Name', 'Unknown')}: {row.get('Result', 'N/A')} {row.get('Unit', '')} "
+                f"[{row.get('Status', 'UNKNOWN')}] as of {row.get('Test_Date', 'Unknown date')}"
+            ).strip(),
+            axis=1,
+        ).tolist()[:120]
+    )
+
+    report_context = report_context or {}
+    source_names = report_context.get("sourceFileNames") or []
+    if isinstance(source_names, list):
+        source_names = [str(item) for item in source_names if item]
+    else:
+        source_names = []
+
     history_context = ""
-    for entry in chat_history_for_prompt[-5:]:
+    for entry in chat_history_for_prompt[-20:]:
         role = str(entry.get("role", "user")).capitalize()
         content = str(entry.get("content", "")).strip()
         if content:
             history_context += f"{role}: {content}\n"
 
-    prompt = f"""You are a medical report assistant, so try to be precise.
-Based on the provided medical test results and chat history, answer the user's question.
-Important guidelines:
-- Structure your response in clear, concise bullet points
-- Present one piece of information per bullet point
-- Use sub-bullets for additional details when needed
-- Keep explanations brief and focused
-- Do not provide medical advice or diagnosis
-- Stick to summarizing and explaining the data
-- For abnormal values, include the reference range in brackets
-- If answering about overall health, categorize findings as: Normal, Borderline, or Concerning
-- If the question is about a specific test, focus on that test's results and context
-- Explain medical jargon in simple terms please
-- If the question is about trends, summarize changes over time for relevant tests
+    if system_prompt:
+        prompt = f"""{system_prompt}
 
-Chat History:
-{history_context}
+THREAD CONTEXT:
+{history_context or 'No previous conversation in this session.'}
 
-Available Medical Report Data (summary):
+ADDITIONAL TABULAR DATA:
 {df_string}
+
+REQUEST METADATA:
+- Analysis ID: {analysis_id or 'unknown-analysis'}
+- Session ID: {session_id or 'unknown-session'}
+- Source files: {', '.join(source_names) if source_names else 'Unknown'}
 
 User Question: {user_question}
 
-Assistant Response (please use bullet points):
+Assistant Response (markdown):
+"""
+    else:
+        prompt = f"""You are a Clinical Assistant helping patients understand longitudinal lab trends.
+You must use ALL available reports, not only the most recent data.
+
+INSTRUCTIONS:
+- Answer in plain language
+- Include value, unit, and date when citing labs
+- Distinguish historical abnormalities from current status
+- If a test has not been repeated recently, call out that current status is unknown
+- Never diagnose; recommend clinician follow-up for treatment decisions
+- Use markdown formatting with short sections and bullet points
+
+REPORT TIMELINE:
+{timeline_summary}
+
+LATEST VALUES SNAPSHOT:
+{latest_snapshot}
+
+THREAD CONTEXT:
+{history_context or 'No previous conversation in this session.'}
+
+AVAILABLE MEDICAL REPORT DATA (tabular snapshot):
+{df_string}
+
+REQUEST METADATA:
+- Analysis ID: {analysis_id or 'unknown-analysis'}
+- Session ID: {session_id or 'unknown-session'}
+- Source files: {', '.join(source_names) if source_names else 'Unknown'}
+
+User Question: {user_question}
+
+Assistant Response (markdown):
 """
 
     def _response_text_from_model_response(model_response):
@@ -811,7 +899,10 @@ Assistant Response (please use bullet points):
                 gemini_model_chat = genai.GenerativeModel(model_name)
                 _active_chat_model_name = model_name
 
-            response = gemini_model_chat.generate_content(prompt)
+            response = gemini_model_chat.generate_content(
+                prompt,
+                generation_config={"temperature": 0.3},
+            )
             response_text = _response_text_from_model_response(response)
             if response_text:
                 return response_text

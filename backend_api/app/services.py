@@ -293,10 +293,23 @@ class MedicalAnalysisService:
         records: list[dict[str, Any]],
         question: str,
         history: list[dict[str, str]],
+        analysis_id: str | None = None,
+        session_id: str | None = None,
+        system_prompt: str | None = None,
+        report_context: dict[str, Any] | None = None,
     ) -> str:
         api_key = self._require_api_key()
         report_df = dataframe_from_records(records)
-        return get_chatbot_response(report_df, question, history, api_key)
+        return get_chatbot_response(
+            report_df,
+            question,
+            history,
+            api_key,
+            analysis_id=analysis_id,
+            session_id=session_id,
+            system_prompt=system_prompt,
+            report_context=report_context or {},
+        )
 
     def get_health_insights(self, records: list[dict[str, Any]]) -> dict[str, Any]:
         report_df = dataframe_from_records(normalize_records(records))

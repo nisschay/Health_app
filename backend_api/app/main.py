@@ -825,6 +825,10 @@ def chat_about_report(
             records=[record.model_dump() for record in payload.records],
             question=payload.question,
             history=[item.model_dump() for item in payload.history],
+            analysis_id=payload.analysis_id,
+            session_id=payload.session_id,
+            system_prompt=payload.system_prompt,
+            report_context=payload.report_context,
         )
         return ChatResponse(answer=answer)
     except Exception as exc:
