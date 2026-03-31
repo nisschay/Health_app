@@ -3479,6 +3479,32 @@ h1 {
   margin-bottom: 0;
 }
 
+.assistant-chat-citations {
+  margin: 10px -16px -14px;
+  padding: 8px 14px;
+  background: #1c1917;
+  border-top: 1px solid #292524;
+  border-radius: 0 0 12px 12px;
+  font-size: 11px;
+  color: #57534e;
+}
+
+.assistant-chat-citations p {
+  margin: 0;
+  color: #57534e;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.assistant-chat-citations a {
+  color: #d97706;
+  text-decoration: none;
+}
+
+.assistant-chat-citations a:hover {
+  text-decoration: underline;
+}
+
 .assistant-chat-timestamp {
   font-size: 10px;
   color: #57534e;

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { retrieveRelevantGuidelines } from "@/lib/ragRetrieval";
 
 type ChatTurnPayload = {
   role: "user" | "assistant";
@@ -350,15 +351,11 @@ async function getFullAnalysis(
   return summarizeRecords(reportContext);
 }
 
-async function buildSystemPrompt(
+function buildBaseSystemPrompt(
+  analysis: AggregatedAnalysis,
   analysisId: string,
   userId: string,
-  reportContext: ReportContextPayload,
-  backendBaseUrl: string,
-  authHeader: string,
-): Promise<string> {
-  // Fetch the full aggregated analysis for this profile (study/history), fallback to current context.
-  const analysis = await getFullAnalysis(analysisId, userId, reportContext, backendBaseUrl, authHeader);
+): string {
 
   const reportTimeline = analysis.reports
     .map((r) => {
@@ -442,6 +439,32 @@ being discussed. If ranges conflict across reports, note the discrepancy.
   `.trim();
 }
 
+function buildGuidelinesSection(
+  userMessage: string,
+  activeFindings: string[],
+): string {
+  const relevantGuidelines = retrieveRelevantGuidelines(userMessage, activeFindings);
+  if (relevantGuidelines.length === 0) {
+    return "";
+  }
+
+  return `
+RELEVANT MEDICAL GUIDELINES (use these to ground your answer):
+${relevantGuidelines
+  .map((guideline) => `
+[${guideline.source}]
+${guideline.title}
+${guideline.content}
+Cite as: "${guideline.source}" - ${guideline.sourceUrl}
+`)
+  .join("\n")}
+
+IMPORTANT: When your answer is informed by one of the above guidelines,
+end your response with a "Sources" section listing the citation(s) used.
+Format: "**Sources:** [Source Name](URL)"
+  `.trim();
+}
+
 async function readErrorDetail(response: Response): Promise<string> {
   try {
     const payload = (await response.json()) as { detail?: string };
@@ -495,13 +518,21 @@ export async function POST(request: NextRequest) {
     { role: "user" as const, content: message },
   ];
 
-  const systemPrompt = await buildSystemPrompt(
+  const analysis = await getFullAnalysis(
     analysisId,
     userId,
     reportContext,
     backendBaseUrl,
     authHeader,
   );
+  const baseSystemPrompt = buildBaseSystemPrompt(analysis, analysisId, userId);
+  const guidelinesSection = buildGuidelinesSection(
+    message,
+    analysis.findings.map((finding) => finding.canonicalName),
+  );
+  const fullSystemPrompt = guidelinesSection
+    ? `${baseSystemPrompt}\n\n${guidelinesSection}`
+    : baseSystemPrompt;
 
   const backendPayload = {
     records,
@@ -509,7 +540,7 @@ export async function POST(request: NextRequest) {
     history: cappedHistory,
     analysis_id: analysisId,
     session_id: sessionId,
-    system_prompt: systemPrompt,
+    system_prompt: fullSystemPrompt,
     messages,
     report_context: reportContext,
   };
