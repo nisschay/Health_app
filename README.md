@@ -147,3 +147,24 @@ Moved to keep runtime root clean:
 - archive/docs/PROJECT_ABSTRACT.md
 - archive/docs/PRESENTATION_SLIDES_CONTENT.md
 - archive/notebooks/Medical_Report_Analysis_(V2).ipynb
+
+## 7. Deployment Toolkit (Prepared)
+
+Automation helpers are now available under `deploy/`.
+
+- `deploy/deploy_backend_cloudrun.sh`: builds and deploys backend to Cloud Run, updates secrets, and configures runtime env.
+- `deploy/migrate_database.sh`: runs SQL migration `backend_api/sql/2026_03_24_study_management.sql`.
+- `deploy/deploy_frontend_vercel.sh`: installs frontend deps, verifies build, and deploys to Vercel production.
+- `deploy/smoke_test.sh`: checks deployed backend health and frontend availability.
+
+Templates:
+
+- `backend_api/.env.example`
+- `web/.env.example`
+
+Containerization:
+
+- `Dockerfile` for backend image builds
+- `.dockerignore` tuned for this project
+
+See `deploy/README.md` for the full variable checklist and command examples.

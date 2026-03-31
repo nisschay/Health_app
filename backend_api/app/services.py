@@ -10,7 +10,6 @@ import pandas as pd
 from Helper_Functions import (
     analyze_medical_report_with_gemini,
     calculate_health_score,
-    combine_duplicate_tests,
     consolidate_patient_info,
     create_consolidated_info_with_smart_selection,
     create_structured_dataframe,
@@ -23,7 +22,6 @@ from Helper_Functions import (
     smart_consolidate_patient_info,
     get_last_extraction_error,
 )
-from unify_test_names import unify_test_names
 
 from .auth import RequestUser
 from .config import settings
@@ -275,8 +273,6 @@ class MedicalAnalysisService:
             na_position="last",
         ).reset_index(drop=True)
 
-        combined_raw_df = unify_test_names(combined_raw_df)
-        combined_raw_df = combine_duplicate_tests(combined_raw_df)
         combined_raw_df = normalize_dataframe(combined_raw_df)
 
         health_summary = calculate_health_score(combined_raw_df)

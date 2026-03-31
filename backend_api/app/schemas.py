@@ -24,6 +24,7 @@ class MedicalRecord(BaseModel):
     Test_Category: str | None = None
     Original_Test_Name: str | None = None
     Test_Name: str | None = None
+    Aliases: list[str] | None = None
     Result: Any = None
     Unit: str | None = None
     Reference_Range: str | None = None
