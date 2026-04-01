@@ -1,0 +1,33 @@
+# Git and editor
+.git
+.gitignore
+.vscode
+.idea
+
+# Python caches/envs
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Local runtime artifacts
+.run/
+*.log
+
+# Secrets and env
+.env
+backend_api/.env
+web/.env.local
+serviceAccountKey.json
+backend_api/serviceAccountKey.json
+
+# Node/Next artifacts
+web/node_modules/
+web/.next/
+web/.next-dev/
+web/.turbo/
+
+# Optional heavy local artifacts
+archive/notebooks/

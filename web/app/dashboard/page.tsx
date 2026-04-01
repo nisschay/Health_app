@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useTransition, useEffect, useCallback, useRef } from "react";
+import { useState, useTransition, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import dayjs from "dayjs";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
@@ -62,6 +64,7 @@ type ChatMessage = {
   id: string;
   role: ChatRole;
   content: string;
+  createdAt: number;
   isLoading?: boolean;
 };
 
@@ -83,7 +86,10 @@ function sleep(ms: number): Promise<void> {
 function toApiChatHistory(messages: ChatMessage[]): ChatTurn[] {
   return messages
     .filter((message) => !message.isLoading && (message.role === "user" || message.role === "assistant"))
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map((message) => ({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: message.content,
+    }));
 }
 
 function parseMedicalDate(value: string | null | undefined): number {
@@ -149,27 +155,56 @@ function normalizeSourceFileName(value: string | null | undefined): string {
 
 function shouldRetryWithFreshToken(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return /invalid firebase token|firebase token expired|firebase token revoked|firebase token project mismatch/i.test(
+  return /invalid firebase token|firebase token expired|firebase token revoked|firebase token project mismatch|authentication required|missing bearer token|not authenticated|unauthorized|\b401\b/i.test(
     error.message,
   );
 }
 
-function renderMarkdownToHtml(markdown: string): string {
-  const escaped = markdown
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+function formatChatTimestamp(createdAt: number): string {
+  if (Date.now() - createdAt < 60_000) {
+    return "Just now";
+  }
+  return new Date(createdAt).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
-  return escaped
-    .replace(/^###\s+(.*)$/gm, "<h4>$1</h4>")
-    .replace(/^##\s+(.*)$/gm, "<h3>$1</h3>")
-    .replace(/^#\s+(.*)$/gm, "<h2>$1</h2>")
-    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/^-\s+(.*)$/gm, "<li>$1</li>")
-    .replace(/(<li>[\s\S]*<\/li>)/g, "<ul>$1</ul>")
-    .replace(/\n\n/g, "<br/><br/>")
-    .replace(/\n/g, "<br/>");
+function splitAssistantResponseForSources(content: string): { body: string; sources: string | null } {
+  const normalized = content.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return { body: "", sources: null };
+  }
+
+  const sourcesHeaderMatch = /^(?:\*\*)?Sources:(?:\*\*)?/im.exec(normalized);
+  if (!sourcesHeaderMatch || sourcesHeaderMatch.index < 0) {
+    return { body: normalized, sources: null };
+  }
+
+  const body = normalized.slice(0, sourcesHeaderMatch.index).trim();
+  const sources = normalized.slice(sourcesHeaderMatch.index).trim();
+  return {
+    body,
+    sources: sources || null,
+  };
+}
+
+function buildUserInitials(displayName?: string | null, email?: string | null): string {
+  const fallback = (displayName || email || "User").trim();
+  if (!fallback) return "U";
+
+  const fromWords = fallback
+    .replace(/@.*$/, "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+
+  const initials = fromWords.slice(0, 2);
+  if (initials) {
+    return initials;
+  }
+  return fallback.slice(0, 2).toUpperCase();
 }
 
 function NavBar({ user, onLogout, onHome }: { user: { displayName?: string | null; email?: string | null } | null; onLogout: () => void; onHome: () => void }) {
@@ -495,7 +530,21 @@ export default function DashboardPage() {
   const { user, loading, getToken, logout } = useAuth();
   const router = useRouter();
 
-  useEffect(() => { if (!loading && !user) router.replace("/login"); }, [user, loading, router]);
+  const hardRedirectToLogin = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      window.location.href = "/login";
+      return;
+    }
+    router.replace("/login");
+  }, [router]);
+
+  useEffect(() => {
+    if (!loading && !user) {
+      hardRedirectToLogin();
+    }
+  }, [user, loading, hardRedirectToLogin]);
 
   const [view, setView] = useState<"home" | "analyze" | "result">("home");
   const [history, setHistory] = useState<AnalysisHistoryItem[]>([]);
@@ -523,6 +572,7 @@ export default function DashboardPage() {
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [chatSessionId, setChatSessionId] = useState(() => createChatMessageId("session"));
   const [activeAnalysisId, setActiveAnalysisId] = useState<string | null>(null);
   const [showAssistantPrompts, setShowAssistantPrompts] = useState(true);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -551,6 +601,12 @@ export default function DashboardPage() {
   const [viewLoadingStudyId, setViewLoadingStudyId] = useState<string | null>(null);
   const [resultStudyReportCount, setResultStudyReportCount] = useState<number | null>(null);
   const reauthRedirectedRef = useRef(false);
+  const assistantMessagesEndRef = useRef<HTMLDivElement>(null);
+  const userInitials = useMemo(() => buildUserInitials(user?.displayName, user?.email), [user?.displayName, user?.email]);
+
+  useEffect(() => {
+    assistantMessagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatHistory]);
 
   const forceReauth = useCallback(async (): Promise<never> => {
     if (!reauthRedirectedRef.current) {
@@ -560,10 +616,18 @@ export default function DashboardPage() {
       } catch {
         // Ignore logout failures and still push user to login for re-auth.
       }
-      router.replace("/login");
+      hardRedirectToLogin();
     }
     throw new Error("Your session is no longer valid. Please sign in again.");
-  }, [logout, router]);
+  }, [hardRedirectToLogin, logout]);
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await logout();
+    } finally {
+      hardRedirectToLogin();
+    }
+  }, [hardRedirectToLogin, logout]);
 
   const runWithTokenRetry = useCallback(async <T,>(operation: (token: string) => Promise<T>): Promise<T> => {
     const token = await getToken();
@@ -598,6 +662,7 @@ export default function DashboardPage() {
     setChatQuestion("");
     setChatError(null);
     setChatHistory([]);
+    setChatSessionId(createChatMessageId("session"));
     setShowAssistantPrompts(true);
   }, []);
 
@@ -836,6 +901,8 @@ export default function DashboardPage() {
   }
 
   function handleAnalyzeStreamEvent(event: AnalyzeStreamEvent) {
+    console.log("[EVENT]", event);
+
     if (event.type === "stage") {
       const mapStep: Record<string, AnalyzeStep> = {
         validating: "preparing",
@@ -914,13 +981,7 @@ export default function DashboardPage() {
 
     try {
       const result = await runWithTokenRetry((token) => analyzeReportsStream(fd, token, handleAnalyzeStreamEvent));
-      setAnalysis(result);
-      setActiveAnalysisId(studyContext ? `study-${studyContext.study.id}` : `analysis-${Date.now()}`);
-      resetChatState();
-      setSelectedBodySystem("all");
-      setSelectedCategory("all");
-      setSelectedTest("");
-      setView("result");
+      let resultForView = result;
 
       setAnalyzeStep("saving");
       setSaveStatus("saving");
@@ -938,16 +999,31 @@ export default function DashboardPage() {
               : `New study ${saved.study_name} created for ${studyContext.profile.full_name}.`,
           );
           setResultStudyReportCount(saved.total_reports);
+
+          if (studyContext.mode === "existing") {
+            resultForView = await runWithTokenRetry((token) => fetchStudyCombinedReport(
+              studyContext.study.id,
+              token,
+            ));
+          }
         } else {
           await runWithTokenRetry((token) => saveAnalysis(result, pdfFiles.map((f) => f.name), token));
           setStudySuccessMessage(null);
           setResultStudyReportCount(null);
         }
         setSaveStatus("saved");
-        loadDashboardData();
+        await loadDashboardData();
       } catch {
         setSaveStatus("error");
       }
+
+      setAnalysis(resultForView);
+      setActiveAnalysisId(studyContext ? `study-${studyContext.study.id}` : `analysis-${Date.now()}`);
+      resetChatState();
+      setSelectedBodySystem("all");
+      setSelectedCategory("all");
+      setSelectedTest("");
+      setView("result");
 
       setAnalyzeStep("idle");
     } catch (err) {
@@ -1017,22 +1093,27 @@ export default function DashboardPage() {
       id: createChatMessageId("user"),
       role: "user",
       content: cleanQuestion,
+      createdAt: Date.now(),
     };
     const loadingMessage: ChatMessage = {
       id: createChatMessageId("assistant-loading"),
       role: "assistant",
       content: "",
+      createdAt: Date.now(),
       isLoading: true,
     };
 
-    const historyWithoutLoaders = [...chatHistory.filter((message) => !message.isLoading), userMessage];
-    setChatHistory([...historyWithoutLoaders, loadingMessage]);
+    const existingThread = chatHistory.filter(
+      (message) => !message.isLoading && (message.role === "user" || message.role === "assistant"),
+    );
+    setChatHistory([...existingThread, userMessage, loadingMessage]);
 
     const startedAt = Date.now();
     try {
       const resp = await runWithTokenRetry((token) => sendChatMessage(
         {
           analysisId: activeAnalysisId ?? `analysis-${analysis.patient_info.patient_id || "current"}`,
+          sessionId: chatSessionId,
           reportContext: {
             patientInfo: analysis.patient_info,
             totalRecords: analysis.total_records,
@@ -1040,8 +1121,8 @@ export default function DashboardPage() {
             sourceFileNames: analysis.combined_report_file_names ?? [],
             records: analysis.records,
           },
-          history: toApiChatHistory(historyWithoutLoaders),
-          question: cleanQuestion,
+          history: toApiChatHistory(existingThread).slice(-20),
+          message: cleanQuestion,
         },
         token,
       ));
@@ -1057,6 +1138,7 @@ export default function DashboardPage() {
           id: createChatMessageId("assistant"),
           role: "assistant",
           content: resp.answer,
+          createdAt: Date.now(),
         },
       ]);
     } catch (err) {
@@ -1066,13 +1148,15 @@ export default function DashboardPage() {
       }
 
       const msg = err instanceof Error ? err.message : "Unknown chat error.";
+      const normalizedMsg = msg.replace(/^error:\s*/i, "").replace(/\.+\s*$/, "");
       setChatError(msg);
       setChatHistory((prev) => [
         ...prev.filter((message) => !message.isLoading),
         {
           id: createChatMessageId("system"),
           role: "system",
-          content: `Unable to get assistant response. ${msg}`,
+          content: `Error: ${normalizedMsg}. Please try again.`,
+          createdAt: Date.now(),
         },
       ]);
     }
@@ -1220,7 +1304,7 @@ export default function DashboardPage() {
 
   return (
     <div className="dashboard-root">
-      <NavBar user={user} onLogout={async () => { await logout(); router.replace("/login"); }} onHome={() => setView("home")} />
+      <NavBar user={user} onLogout={() => { void handleSignOut(); }} onHome={() => setView("home")} />
 
       {/* HOME */}
       {view === "home" && (
@@ -1565,64 +1649,165 @@ export default function DashboardPage() {
             <div className="assistant-workbench-grid">
               <aside className="assistant-context-panel">
                 <h3>Prompt Ideas</h3>
-                {showAssistantPrompts && (
-                  <div className="assistant-quick-grid">
-                    {assistantPrompts.map((prompt) => (
-                      <button
-                        key={prompt}
-                        className="assistant-quick-btn"
-                        type="button"
-                        disabled={isChatPending}
-                        onClick={() => handleQuickQuestion(prompt)}
-                      >
-                        {prompt}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <div className={`assistant-quick-grid ${showAssistantPrompts ? "" : "disabled"}`}>
+                  {assistantPrompts.map((prompt) => (
+                    <button
+                      key={prompt}
+                      className="assistant-quick-btn"
+                      type="button"
+                      disabled={isChatPending || !showAssistantPrompts}
+                      onClick={() => handleQuickQuestion(prompt)}
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
                 <div className="assistant-note">
                   <strong>Tip</strong>
                   <p>Ask about date-wise changes and alert clusters for the most useful clinical summaries.</p>
                 </div>
+                <button
+                  type="button"
+                  className="assistant-clear-chat-btn"
+                  onClick={resetChatState}
+                  disabled={isChatPending || (chatHistory.length === 0 && showAssistantPrompts)}
+                >
+                  Clear chat
+                </button>
               </aside>
 
               <div className="assistant-chat-panel">
                 <div className="assistant-chat-history" role="log" aria-live="polite">
                   {chatHistory.length === 0 && (
-                    <div className="chat-bubble assistant muted">
+                    <div className="assistant-chat-empty">
                       Start with a question like "What changed the most in the latest report?"
                     </div>
                   )}
 
                   {chatHistory.map((turn) => {
-                    const bubbleClass =
-                      turn.role === "user"
-                        ? "user"
-                        : turn.role === "assistant"
-                          ? "assistant"
-                          : "system";
+                    if (turn.role === "system") {
+                      return (
+                        <div key={turn.id} className="assistant-system-error">
+                          {turn.content}
+                        </div>
+                      );
+                    }
+
+                    const isUser = turn.role === "user";
+                    const assistantParsedContent = !isUser && !turn.isLoading
+                      ? splitAssistantResponseForSources(turn.content)
+                      : null;
                     return (
-                      <div
-                        key={turn.id}
-                        className={`chat-bubble ${bubbleClass}${turn.isLoading ? " loading" : ""}`}
-                      >
-                        {turn.isLoading ? (
-                          <div className="chat-typing-dots" aria-label="Assistant is thinking" role="status">
-                            <span />
-                            <span />
-                            <span />
+                      <div key={turn.id} className={`assistant-chat-message-row ${isUser ? "user" : "assistant"}`}>
+                        <div className={`assistant-chat-avatar ${isUser ? "user" : "assistant"}`}>
+                          {isUser ? userInitials : "AI"}
+                        </div>
+                        <div className={`assistant-chat-bubble-wrap ${isUser ? "user" : "assistant"}`}>
+                          <div className={`assistant-chat-bubble ${isUser ? "user" : "assistant"}${turn.isLoading ? " loading" : ""}`}>
+                            {turn.isLoading ? (
+                              <div className="chat-typing-dots" aria-label="Assistant is thinking" role="status">
+                                <span />
+                                <span />
+                                <span />
+                              </div>
+                            ) : isUser ? (
+                              <p className="assistant-chat-user-text">{turn.content}</p>
+                            ) : (
+                              <>
+                                <div className="assistant-chat-markdown">
+                                  <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    components={{
+                                      p: ({ children }) => (
+                                        <p style={{ margin: "0 0 10px 0", lineHeight: 1.7, color: "#d4b483", fontSize: 14 }}>{children}</p>
+                                      ),
+                                      strong: ({ children }) => (
+                                        <strong style={{ color: "#fef3c7", fontWeight: 600 }}>
+                                          {children}
+                                        </strong>
+                                      ),
+                                      em: ({ children }) => (
+                                        <em style={{ color: "#fbbf24", fontStyle: "italic" }}>
+                                          {children}
+                                        </em>
+                                      ),
+                                      ul: ({ children }) => (
+                                        <ul style={{ margin: "8px 0", paddingLeft: 20, color: "#d4b483" }}>{children}</ul>
+                                      ),
+                                      ol: ({ children }) => (
+                                        <ol style={{ margin: "8px 0", paddingLeft: 20, color: "#d4b483" }}>{children}</ol>
+                                      ),
+                                      li: ({ children }) => (
+                                        <li style={{ margin: "4px 0", fontSize: 14, lineHeight: 1.6 }}>{children}</li>
+                                      ),
+                                      h1: ({ children }) => (
+                                        <h1 style={{ fontSize: 16, fontWeight: 600, color: "#fef3c7", margin: "12px 0 6px" }}>{children}</h1>
+                                      ),
+                                      h2: ({ children }) => (
+                                        <h2 style={{ fontSize: 15, fontWeight: 600, color: "#fef3c7", margin: "10px 0 6px" }}>{children}</h2>
+                                      ),
+                                      h3: ({ children }) => (
+                                        <h3 style={{ fontSize: 14, fontWeight: 600, color: "#fbbf24", margin: "8px 0 4px" }}>{children}</h3>
+                                      ),
+                                      code: ({ children, className }) => {
+                                        const isInline = !className;
+                                        return isInline ? (
+                                          <code style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#fbbf24", background: "#2d1f08", padding: "1px 5px", borderRadius: 4 }}>{children}</code>
+                                        ) : (
+                                          <pre style={{ background: "#1c1917", border: "1px solid #292524", borderRadius: 8, padding: "10px 14px", overflowX: "auto", margin: "8px 0" }}>
+                                            <code style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#d4b483" }}>{children}</code>
+                                          </pre>
+                                        );
+                                      },
+                                      blockquote: ({ children }) => (
+                                        <blockquote style={{ borderLeft: "3px solid #d97706", marginLeft: 0, paddingLeft: 12, color: "#a8a29e", fontStyle: "italic" }}>{children}</blockquote>
+                                      ),
+                                      table: ({ children }) => (
+                                        <div style={{ overflowX: "auto", margin: "8px 0" }}>
+                                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>{children}</table>
+                                        </div>
+                                      ),
+                                      th: ({ children }) => (
+                                        <th style={{ padding: "6px 10px", textAlign: "left", borderBottom: "1px solid #44403c", color: "#fbbf24", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>{children}</th>
+                                      ),
+                                      td: ({ children }) => (
+                                        <td style={{ padding: "6px 10px", borderBottom: "1px solid #292524", color: "#d4b483" }}>{children}</td>
+                                      ),
+                                    }}
+                                  >
+                                    {assistantParsedContent ? assistantParsedContent.body : turn.content}
+                                  </ReactMarkdown>
+                                </div>
+                                {assistantParsedContent?.sources && (
+                                  <div className="assistant-chat-citations">
+                                    <ReactMarkdown
+                                      remarkPlugins={[remarkGfm]}
+                                      components={{
+                                        p: ({ children }) => <p>{children}</p>,
+                                        a: ({ children, href }) => (
+                                          <a href={href || "#"} target="_blank" rel="noopener noreferrer">
+                                            {children}
+                                          </a>
+                                        ),
+                                      }}
+                                    >
+                                      {assistantParsedContent.sources}
+                                    </ReactMarkdown>
+                                  </div>
+                                )}
+                              </>
+                            )}
                           </div>
-                        ) : turn.role === "system" ? (
-                          <p className="chat-system-message">{turn.content}</p>
-                        ) : (
-                          <div
-                            className="chat-bubble-markdown"
-                            dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(turn.content) }}
-                          />
-                        )}
+                          {!turn.isLoading && (
+                            <div className={`assistant-chat-timestamp ${isUser ? "user" : "assistant"}`}>
+                              {formatChatTimestamp(turn.createdAt)}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
+                  <div ref={assistantMessagesEndRef} />
                 </div>
 
                 <form

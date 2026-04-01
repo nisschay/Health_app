@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef, useTransition } from "react";
 import ReactMarkdown from "react-markdown";
 import { MedicalRecord, sendChatMessage, ChatTurn } from "@/lib/api";
 
+type ChatMessage = ChatTurn | { role: "system"; content: string };
+
 interface ClinicalAssistantChatProps {
   records: MedicalRecord[];
   sessionId?: string;
@@ -22,12 +24,13 @@ export default function ClinicalAssistantChat({
   sessionId,
   runWithTokenRetry,
 }: ClinicalAssistantChatProps) {
-  const [chatHistory, setChatHistory] = useState<ChatTurn[]>([]);
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isPending, startTransition] = useTransition();
   const [showSuggestions, setShowSuggestions] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const sessionRef = useRef<string>(sessionId ?? `session-${Date.now()}`);
 
   useEffect(() => {
     if (chatHistory.length > 0 && showSuggestions) {
@@ -54,21 +57,25 @@ export default function ClinicalAssistantChat({
       textareaRef.current.style.height = "auto";
     }
 
-    const updatedHistory: ChatTurn[] = [...chatHistory, { role: "user", content: newQuestion }];
+    const priorThread: ChatTurn[] = chatHistory.filter(
+      (turn): turn is ChatTurn => turn.role === "user" || turn.role === "assistant",
+    );
+    const updatedHistory: ChatTurn[] = [...priorThread, { role: "user", content: newQuestion }];
     setChatHistory(updatedHistory);
 
     startTransition(async () => {
       try {
-        const analysisId = sessionId ?? `session-${Date.now()}`;
+        const analysisId = sessionRef.current;
         const resp = await runWithTokenRetry((token) =>
           sendChatMessage(
             {
               analysisId,
+              sessionId: analysisId,
               reportContext: {
                 records,
               },
-              history: updatedHistory,
-              question: newQuestion,
+              history: updatedHistory.slice(-20),
+              message: newQuestion,
             },
             token,
           )
@@ -93,7 +100,7 @@ export default function ClinicalAssistantChat({
 
   const reportCount = new Set(records.map(r => r.Source_Filename)).size || 1;
 
-  const renderMessageContent = (turn: ChatTurn) => {
+  const renderMessageContent = (turn: ChatMessage) => {
     if (turn.role === "system") {
       return (
         <div className="chat-system-error">

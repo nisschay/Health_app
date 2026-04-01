@@ -12,7 +12,7 @@ import {
 
 function shouldRetryWithFreshToken(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return /invalid firebase token|firebase token expired|firebase token revoked|firebase token project mismatch/i.test(
+  return /invalid firebase token|firebase token expired|firebase token revoked|firebase token project mismatch|authentication required|missing bearer token|not authenticated|unauthorized|\b401\b/i.test(
     error.message,
   );
 }
@@ -33,6 +33,16 @@ export default function ProfileReportsPage() {
   const [combinedReloadNonce, setCombinedReloadNonce] = useState(0);
   const reauthRedirectedRef = useRef(false);
 
+  const hardRedirectToLogin = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      window.location.href = "/login";
+      return;
+    }
+    router.replace("/login");
+  }, [router]);
+
   const forceReauth = useCallback(async (): Promise<never> => {
     if (!reauthRedirectedRef.current) {
       reauthRedirectedRef.current = true;
@@ -41,10 +51,10 @@ export default function ProfileReportsPage() {
       } catch {
         // Ignore logout failures and still redirect to login.
       }
-      router.replace("/login");
+      hardRedirectToLogin();
     }
     throw new Error("Your session is no longer valid. Please sign in again.");
-  }, [logout, router]);
+  }, [hardRedirectToLogin, logout]);
 
   const runWithTokenRetry = useCallback(async <T,>(operation: (token: string) => Promise<T>): Promise<T> => {
     const token = await getToken();
@@ -76,9 +86,9 @@ export default function ProfileReportsPage() {
 
   useEffect(() => {
     if (!loading && !user) {
-      router.replace("/login");
+      hardRedirectToLogin();
     }
-  }, [loading, user, router]);
+  }, [hardRedirectToLogin, loading, user]);
 
   useEffect(() => {
     async function load() {

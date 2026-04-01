@@ -10,7 +10,6 @@ import pandas as pd
 from Helper_Functions import (
     analyze_medical_report_with_gemini,
     calculate_health_score,
-    combine_duplicate_tests,
     consolidate_patient_info,
     create_consolidated_info_with_smart_selection,
     create_structured_dataframe,
@@ -23,7 +22,6 @@ from Helper_Functions import (
     smart_consolidate_patient_info,
     get_last_extraction_error,
 )
-from unify_test_names import unify_test_names
 
 from .auth import RequestUser
 from .config import settings
@@ -42,8 +40,25 @@ class NamedBytesIO(io.BytesIO):
 
 
 def _clean_value(value: Any) -> Any:
-    if pd.isna(value):
+    if value is None:
         return None
+
+    # pd.isna can return an array for array-like inputs; avoid ambiguous truth checks.
+    try:
+        na_result = pd.isna(value)
+    except Exception:
+        na_result = False
+
+    if isinstance(na_result, bool):
+        if na_result:
+            return None
+    elif hasattr(na_result, "all"):
+        try:
+            if bool(na_result.all()):
+                return None
+        except Exception:
+            pass
+
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
     if isinstance(value, datetime):
@@ -194,6 +209,7 @@ class MedicalAnalysisService:
             df_single, patient_info_single = create_structured_dataframe(
                 gemini_analysis_json,
                 filename,
+                api_key_for_gemini=api_key,
             )
             if not df_single.empty:
                 all_dfs.append(df_single)
@@ -275,8 +291,6 @@ class MedicalAnalysisService:
             na_position="last",
         ).reset_index(drop=True)
 
-        combined_raw_df = unify_test_names(combined_raw_df)
-        combined_raw_df = combine_duplicate_tests(combined_raw_df)
         combined_raw_df = normalize_dataframe(combined_raw_df)
 
         health_summary = calculate_health_score(combined_raw_df)
@@ -297,10 +311,23 @@ class MedicalAnalysisService:
         records: list[dict[str, Any]],
         question: str,
         history: list[dict[str, str]],
+        analysis_id: str | None = None,
+        session_id: str | None = None,
+        system_prompt: str | None = None,
+        report_context: dict[str, Any] | None = None,
     ) -> str:
         api_key = self._require_api_key()
         report_df = dataframe_from_records(records)
-        return get_chatbot_response(report_df, question, history, api_key)
+        return get_chatbot_response(
+            report_df,
+            question,
+            history,
+            api_key,
+            analysis_id=analysis_id,
+            session_id=session_id,
+            system_prompt=system_prompt,
+            report_context=report_context or {},
+        )
 
     def get_health_insights(self, records: list[dict[str, Any]]) -> dict[str, Any]:
         report_df = dataframe_from_records(normalize_records(records))

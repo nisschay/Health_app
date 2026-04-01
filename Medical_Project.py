@@ -9,7 +9,6 @@ import json
 import plotly.graph_objs as go
 import google.generativeai as genai
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI, TEST_NAME_MAPPING, UNIT_MAPPING, STATUS_MAPPING
-from unify_test_names import unify_test_names
 from Helper_Functions import *
 import sys
 import os
@@ -17,6 +16,12 @@ from collections import Counter
 import hashlib
 import concurrent.futures
 from functools import lru_cache
+
+try:
+    from backend_api.app.normalization import normalize_dataframe
+except Exception:
+    def normalize_dataframe(df, *, deduplicate=True):
+        return df
 
 # Add the script's directory to the Python path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -188,7 +193,9 @@ if analyze_button:
                     
                     if gemini_analysis_json:
                         df_single, patient_info_single = create_structured_dataframe(
-                            gemini_analysis_json, uploaded_file.name
+                            gemini_analysis_json,
+                            uploaded_file.name,
+                            api_key_for_gemini=api_key,
                         )
                         if not df_single.empty:
                             all_dfs.append(df_single)
@@ -268,6 +275,8 @@ if analyze_button:
                 by=['Test_Date_dt', 'Test_Category', 'Test_Name'],
                 na_position='last'
             ).reset_index(drop=True)
+
+            combined_raw_df = normalize_dataframe(combined_raw_df)
             
             # Update session state
             st.session_state.report_df = combined_raw_df
@@ -285,9 +294,7 @@ if analyze_button:
 
 # --- Display Results Section ---
 if st.session_state.analysis_done and not st.session_state.report_df.empty:
-    # Apply data processing
-    st.session_state.report_df = unify_test_names(st.session_state.report_df)
-    st.session_state.report_df = combine_duplicate_tests(st.session_state.report_df)
+    st.session_state.report_df = normalize_dataframe(st.session_state.report_df)
     
     st.divider()
     

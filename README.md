@@ -1,149 +1,225 @@
-# Medical Project
+# Medical Report Analyzer
 
-Medical report analysis platform with:
-- Python FastAPI backend for PDF parsing, Gemini-powered extraction, insights, chat, and PDF export
-- Next.js frontend intended for Vercel deployment
-- Firebase-ready auth flow using bearer tokens
+> Upload medical lab reports, track biomarker trends across time,
+> and get AI-powered clinical context in one secure workspace.
 
-## Project Layout
+## What It Does
 
-- backend_api/: FastAPI service
-- web/: Next.js frontend (deploy this on Vercel)
-- archive/: moved legacy docs and notebooks
-- start.sh / stop.sh: local testing helpers
-- Medical_Project.py: legacy Streamlit prototype (kept for reference)
+- Extracts structured data from PDF lab reports using Google Gemini AI
+- Tracks test results across multiple reports and labs over time
+- Identifies concerning trends across repeated abnormalities
+- Provides a Clinical Assistant chatbot grounded in uploaded report data
+- Includes an admin metrics dashboard for extraction quality and reliability
 
-## 1. Local Setup
+## Tech Stack
 
-### Backend
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 15, TypeScript, React 19, MUI |
+| Backend | FastAPI (Python), Google Gemini API |
+| Auth | Firebase Authentication |
+| Database | PostgreSQL (Supabase-compatible) |
+| Hosting | Vercel (frontend) + Cloud Run (backend) |
 
-1. Create/activate virtual env and install dependencies:
+## Project Structure
+
+medical-project/
+├── web/                    # Next.js frontend
+│   ├── app/                # App Router pages
+│   ├── lib/                # Utilities (auth, API client, normalization)
+│   └── tests/              # Vitest test suite
+├── backend_api/            # FastAPI backend
+│   ├── app/
+│   │   ├── main.py         # API entry point + route registration
+│   │   ├── services.py     # Business logic (PDF extraction, AI calls)
+│   │   ├── database.py     # DB models/session + query helpers
+│   │   └── auth.py         # Firebase token verification
+├── scripts/                # Shared utility scripts
+├── deploy/                 # Deployment helpers (Cloud Run, Vercel, smoke tests)
+├── .env                    # Local env (gitignored)
+└── README.md
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js 18+
+- Python 3.11+
+- PostgreSQL database
+- Firebase project (for auth)
+- Google Gemini API key
+
+### 1. Clone and install
 
 ```bash
-python -m venv .venv
+git clone <repo-url>
+cd medical-project
+
+# Install frontend
+cd web && npm install && cd ..
+
+# Install backend (root requirements for current repo layout)
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2. Create backend env file:
+### 2. Environment setup
+
+Copy the example env file and fill in your values:
 
 ```bash
-cp backend_api/.env.example backend_api/.env
+cp .env.example .env
 ```
 
-3. Fill values in backend_api/.env:
+Required variables:
 
-- GEMINI_API_KEY: required for analysis/chat/export
-- API_REQUIRE_AUTH: false for local open mode, true for Firebase-protected mode
-- FIREBASE_CREDENTIALS_PATH: service account JSON path (required when auth=true)
-- FIREBASE_PROJECT_ID: Firebase project id
-- API_CORS_ORIGINS: comma-separated allowed origins (example: http://localhost:3000)
-
-4. Run backend:
+Frontend (copy into web/.env.local)
 
 ```bash
+NEXT_PUBLIC_FIREBASE_API_KEY=
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
+NEXT_PUBLIC_FIREBASE_APP_ID=
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_DIRECT_API_URL=http://127.0.0.1:8000
+```
+
+Backend (root .env or backend_api/.env)
+
+```bash
+DATABASE_URL=postgresql://...
+GEMINI_API_KEY=your_gemini_key
+API_REQUIRE_AUTH=true
+FIREBASE_PROJECT_ID=
+FIREBASE_CREDENTIALS_PATH=/absolute/path/to/serviceAccountKey.json
+API_CORS_ORIGINS=http://localhost:3000
+```
+
+### 3. Database setup
+
+Run schema setup/migrations using one of these approaches:
+
+```bash
+# Option A: deployment migration helper
+./deploy/migrate_database.sh
+
+# Option B: apply SQL directly
+psql "$DATABASE_URL" -f backend_api/sql/2026_03_24_study_management.sql
+```
+
+### 4. Run locally
+
+```bash
+# Option A: using start script (recommended)
+./start.sh
+
+# Option B: manual
+# Terminal 1 — Backend
 source .venv/bin/activate
-uvicorn backend_api.app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn backend_api.app.main:app --reload --port 8000
+
+# Terminal 2 — Frontend
+cd web && npm run dev
 ```
 
-### Frontend
+Open: http://localhost:3000
 
-1. Install dependencies:
+## Key Features
+
+### PDF Report Processing
+
+Upload one or more medical lab PDFs. The system:
+
+1. Extracts test names, values, units, and reference ranges
+2. Normalizes test names across different lab formats
+3. Classifies result severity and trends across reports
+4. Saves structured findings into profile-linked studies
+
+### Clinical Intelligence Panel
+
+Aggregates findings across reports to show:
+
+- Top concerning findings ranked by severity and persistence
+- Trend views across studies and profile timelines
+- Category-level comparisons across body systems
+- Consolidated risk-oriented summary cards
+
+### Clinical Assistant
+
+AI chatbot with historical report context:
+
+- Answers temporal questions such as marker movement over time
+- Uses normalized data from combined report context
+- Returns grounded clinical context and follow-up guidance
+
+### Admin Metrics Dashboard
+
+Available at /admin/metrics for admin users. Tracks:
+
+- JSON Validity Rate
+- PDF Processing Success Rate
+- Hallucination Detection
+- API Reliability and latency
+- Context Retention across conversation turns
+- Extraction F1 Score against fixtures
+
+## Running Tests
 
 ```bash
 cd web
-npm ci
+npx vitest
+npx vitest run tests/clinical-assistant-context-retention.test.ts
+npx vitest run tests/extraction-f1.test.ts
 ```
 
-2. Create frontend env file:
+If metrics tests require secure context, set these first:
 
 ```bash
-cp .env.example .env.local
+export METRICS_TEST_TOKEN="<firebase-id-token>"
+export TEST_PROFILE_ID="<profile-uuid-from-db>"
 ```
 
-3. Fill values in web/.env.local:
-
-- NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-- NEXT_PUBLIC_FIREBASE_* values from Firebase console (if using frontend auth)
-
-4. Run frontend:
+## Making a User Admin
 
 ```bash
-npm run dev
+psql "$DATABASE_URL" -c \
+	"UPDATE users SET is_admin = true WHERE email = 'your@email.com';"
 ```
 
-Open:
-- Frontend: http://localhost:3000
-- Backend docs: http://localhost:8000/docs
+Then sign out and sign back in.
 
-## 2. Quick Start/Stop Scripts
-
-From project root:
+## Deployment
 
 ```bash
-./start.sh
+# Backend (Cloud Run helper)
+./deploy/deploy_backend_cloudrun.sh
+
+# Frontend (Vercel helper)
+./deploy/deploy_frontend_vercel.sh
+
+# Smoke test
+BACKEND_URL="https://your-backend" FRONTEND_URL="https://your-frontend" ./deploy/smoke_test.sh
 ```
 
-This starts:
-- FastAPI on port 8000
-- Next.js dev server on port 3000
+## Environment Variables Reference
 
-Logs and PIDs are stored in .run/.
-
-Stop both services:
+Auto-generate this section with:
 
 ```bash
-./stop.sh
+grep -Rho --exclude-dir=node_modules --exclude-dir=.next --include='*.ts' --include='*.tsx' 'process\.env\.[A-Z0-9_]*' web | sed 's/process\.env\.//' | sort -u
+grep -Rho --exclude-dir=__pycache__ --include='*.py' 'os\.getenv("[A-Z0-9_]*"' backend_api | sed -E 's/.*"([A-Z0-9_]+)".*/\1/' | sort -u
 ```
 
-## 3. Vercel Deployment (Frontend)
+## Known Limitations
 
-Deploy web/ as the Vercel project root.
+- PDF extraction quality depends on source document text quality
+- Reference ranges vary by lab and are interpreted per report context
+- Clinical Assistant responses are informational and not medical advice
 
-### Vercel Project Settings
+## License
 
-- Framework Preset: Next.js
-- Root Directory: web
-- Build Command: npm run build
-- Install Command: npm ci
-- Output Directory: .next
-
-### Vercel Environment Variables
-
-Set these in Vercel project settings:
-
-- NEXT_PUBLIC_API_BASE_URL=https://<your-backend-domain>
-- NEXT_PUBLIC_FIREBASE_API_KEY
-- NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
-- NEXT_PUBLIC_FIREBASE_PROJECT_ID
-- NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
-- NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
-- NEXT_PUBLIC_FIREBASE_APP_ID
-
-## 4. Backend Deployment Notes
-
-The backend should be deployed as a separate Python service (for example: Render, Railway, Fly.io, or container host).
-
-Required backend env vars in production:
-- GEMINI_API_KEY
-- API_REQUIRE_AUTH=true (recommended)
-- FIREBASE_CREDENTIALS_PATH (or mounted credentials)
-- FIREBASE_PROJECT_ID
-- API_CORS_ORIGINS=https://<your-vercel-domain>
-
-## 5. Completed Next Steps
-
-- Dashboard now uploads PDFs to /api/v1/reports/analyze
-- Dashboard now supports conversational follow-up via /api/v1/reports/chat
-- Optional bearer token field added for Firebase-secured backend mode
-- CORS configuration added to FastAPI for deployed frontend domains
-- Legacy docs and notebook moved under archive/
-
-## 6. Archived Files
-
-Moved to keep runtime root clean:
-
-- archive/docs/GENAI_PROJECT_JUSTIFICATION.md
-- archive/docs/PROJECT_ABSTRACT.md
-- archive/docs/PRESENTATION_SLIDES_CONTENT.md
-- archive/notebooks/Medical_Report_Analysis_(V2).ipynb
+[Choose and add your license here]

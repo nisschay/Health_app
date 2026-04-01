@@ -9,7 +9,6 @@ import json
 import plotly.graph_objs as go
 import google.generativeai as genai
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI, TEST_NAME_MAPPING, UNIT_MAPPING, STATUS_MAPPING
-from unify_test_names import unify_test_names
 try:
     from backend_api.app.normalization import canonicalize_category, normalize_test_name
 except Exception:
@@ -53,12 +52,39 @@ def _model_candidates_from_env(var_name: str, default: str) -> list[str]:
 
 EXTRACTION_MODEL_CANDIDATES = _model_candidates_from_env(
     "GEMINI_EXTRACTION_MODELS",
-    "gemini-1.5-flash,gemini-2.5-flash",
+    "gemini-2.5-flash,gemini-1.5-flash",
 )
 CHAT_MODEL_CANDIDATES = _model_candidates_from_env(
     "GEMINI_CHAT_MODELS",
-    "gemini-1.5-flash,gemini-2.5-flash",
+    "gemini-2.5-flash,gemini-1.5-flash",
 )
+
+CANONICAL_STATUS_VALUES = {
+    "Low",
+    "Normal",
+    "High",
+    "Critical",
+    "Positive",
+    "Negative",
+    "N/A",
+}
+
+CANONICAL_CATEGORY_VALUES = [
+    "Haematology",
+    "Lipid Profile",
+    "Liver Function",
+    "Kidney Function",
+    "Diabetes & Glucose",
+    "Thyroid Function",
+    "Vitamins & Minerals",
+    "Hormones",
+    "Cardiac Markers",
+    "Immunology",
+    "Urinalysis",
+    "Inflammation",
+    "Proteins",
+    "Other",
+]
 
 
 def _has_streamlit_context() -> bool:
@@ -333,6 +359,260 @@ def _extract_first_json_object(response_text: str) -> str | None:
     return None
 
 
+def _extract_text_from_response(response) -> str:
+    response_text = getattr(response, "text", "") or ""
+    if response_text:
+        return response_text
+
+    candidates = getattr(response, "candidates", None) or []
+    parts = []
+    for candidate in candidates:
+        content = getattr(candidate, "content", None)
+        if not content:
+            continue
+        for part in getattr(content, "parts", []) or []:
+            part_text = getattr(part, "text", None)
+            if part_text:
+                parts.append(part_text)
+    return "\n".join(parts).strip()
+
+
+def _generate_with_extraction_models(prompt: str, generation_config: dict | None = None) -> tuple[str, Exception | None]:
+    global gemini_model_extraction
+    global _active_extraction_model_name
+
+    response_text = ""
+    last_exception = None
+    models_to_try = []
+
+    if _active_extraction_model_name:
+        models_to_try.append(_active_extraction_model_name)
+    for model_name in EXTRACTION_MODEL_CANDIDATES:
+        if model_name not in models_to_try:
+            models_to_try.append(model_name)
+
+    for model_name in models_to_try:
+        if model_name != _active_extraction_model_name:
+            try:
+                gemini_model_extraction = genai.GenerativeModel(model_name)
+                _active_extraction_model_name = model_name
+            except Exception as model_exc:
+                last_exception = model_exc
+                continue
+
+        try:
+            call_kwargs = {}
+            if generation_config:
+                call_kwargs["generation_config"] = generation_config
+            response = gemini_model_extraction.generate_content(prompt, **call_kwargs)
+            response_text = _extract_text_from_response(response)
+            if response_text:
+                return response_text, None
+        except Exception as call_exc:
+            last_exception = call_exc
+            if _is_rate_limit_error(str(call_exc)):
+                continue
+            if generation_config:
+                try:
+                    # Retry once without structured output hints for model compatibility.
+                    response = gemini_model_extraction.generate_content(prompt)
+                    response_text = _extract_text_from_response(response)
+                    if response_text:
+                        return response_text, None
+                except Exception as fallback_exc:
+                    last_exception = fallback_exc
+            continue
+
+    return "", last_exception
+
+
+def _clean_text_value(value, default: str = "N/A") -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text if text else default
+
+
+def _canonical_status(raw_status) -> str:
+    status_text = _clean_text_value(raw_status, default="N/A")
+    lowered = status_text.lower()
+
+    if lowered in {"positive", "detected", "reactive", "present", "pos"}:
+        return "Positive"
+    if lowered in {"negative", "not detected", "non reactive", "absent", "neg"}:
+        return "Negative"
+    if "critical" in lowered or "panic" in lowered:
+        return "Critical"
+    if "high" in lowered or lowered in {"h", "elevated", "above range", "borderline high"}:
+        return "High"
+    if "low" in lowered or lowered in {"l", "decreased", "below range"}:
+        return "Low"
+    if "normal" in lowered or "within range" in lowered or "within normal" in lowered:
+        return "Normal"
+    if lowered in {"na", "n/a", "not applicable", "none", "unknown"}:
+        return "N/A"
+
+    standardized = str(standardize_value(status_text, STATUS_MAPPING, default_case='title')).strip()
+    if standardized in CANONICAL_STATUS_VALUES:
+        return standardized
+    return "N/A"
+
+
+def _normalize_patient_info_payload(patient_info) -> dict:
+    if not isinstance(patient_info, dict):
+        patient_info = {}
+
+    normalized = {
+        "name": _clean_text_value(patient_info.get("name"), default="N/A"),
+        "age": _clean_text_value(patient_info.get("age"), default="N/A"),
+        "gender": _clean_text_value(patient_info.get("gender"), default="N/A"),
+        "patient_id": _clean_text_value(patient_info.get("patient_id"), default="N/A"),
+        "date": "N/A",
+        "lab_name": _clean_text_value(patient_info.get("lab_name"), default="N/A"),
+    }
+
+    report_date_text = _clean_text_value(patient_info.get("date"), default="N/A")
+    parsed_report_date = parse_date_dd_mm_yyyy(report_date_text)
+    if parsed_report_date is not None:
+        normalized["date"] = format_date_dd_mm_yyyy(parsed_report_date)
+
+    return normalized
+
+
+def _normalize_single_test_result(raw_result) -> dict | None:
+    if not isinstance(raw_result, dict):
+        return None
+
+    test_name = _clean_text_value(raw_result.get("test_name"), default="")
+    result = _clean_text_value(raw_result.get("result"), default="")
+    if not test_name or not result:
+        return None
+
+    raw_category = _clean_text_value(raw_result.get("category"), default="Other")
+    normalized_category = canonicalize_category(standardize_value(raw_category, {}, default_case='title'))
+
+    return {
+        "test_name": test_name,
+        "result": result,
+        "unit": _clean_text_value(raw_result.get("unit"), default=""),
+        "reference_range": _clean_text_value(raw_result.get("reference_range"), default="N/A"),
+        "status": _canonical_status(raw_result.get("status")),
+        "category": normalized_category if normalized_category else "Other",
+    }
+
+
+def _validate_extraction_payload(parsed_payload) -> tuple[bool, dict, list[str]]:
+    if not isinstance(parsed_payload, dict):
+        return False, {}, ["Top-level payload must be a JSON object."]
+
+    issues = []
+
+    raw_patient_info = parsed_payload.get("patient_info")
+    if not isinstance(raw_patient_info, dict):
+        issues.append("Field 'patient_info' must be an object.")
+        raw_patient_info = {}
+
+    raw_test_results = parsed_payload.get("test_results")
+    if not isinstance(raw_test_results, list):
+        issues.append("Field 'test_results' must be an array.")
+        raw_test_results = []
+
+    normalized_test_results = []
+    malformed_entries = 0
+    for item in raw_test_results:
+        normalized = _normalize_single_test_result(item)
+        if normalized is None:
+            malformed_entries += 1
+            continue
+        normalized_test_results.append(normalized)
+
+    if malformed_entries:
+        issues.append(f"Dropped {malformed_entries} malformed test entries.")
+    if not normalized_test_results:
+        issues.append("No valid entries were present in 'test_results'.")
+
+    raw_summary = parsed_payload.get("abnormal_findings_summary_from_report", [])
+    if isinstance(raw_summary, str):
+        raw_summary = [raw_summary]
+    if not isinstance(raw_summary, list):
+        raw_summary = []
+
+    summary_items = []
+    for item in raw_summary:
+        cleaned = _clean_text_value(item, default="").strip()
+        if cleaned:
+            summary_items.append(cleaned)
+
+    normalized_payload = {
+        "patient_info": _normalize_patient_info_payload(raw_patient_info),
+        "test_results": normalized_test_results,
+        "abnormal_findings_summary_from_report": summary_items,
+    }
+
+    is_valid = (
+        isinstance(parsed_payload.get("patient_info"), dict)
+        and isinstance(parsed_payload.get("test_results"), list)
+        and len(normalized_test_results) > 0
+    )
+    return is_valid, normalized_payload, issues
+
+
+def _build_structured_extraction_prompt(report_text: str, validation_feedback: str = "") -> str:
+    categories_text = ", ".join(CANONICAL_CATEGORY_VALUES)
+    feedback_block = ""
+    if validation_feedback:
+        feedback_block = (
+            "\nIMPORTANT CORRECTION:\n"
+            f"Your previous response failed validation for: {validation_feedback}\n"
+            "Return corrected JSON only and satisfy all schema constraints.\n"
+        )
+
+    return f"""
+Analyze this medical laboratory report and return ONLY a JSON object with the schema below.{feedback_block}
+
+Hard requirements:
+1. Return valid JSON only. Do not use markdown fences.
+2. Include all required top-level fields: patient_info, test_results, abnormal_findings_summary_from_report.
+3. Keep dates in DD-MM-YYYY format; if unknown use \"N/A\".
+4. test_results must be an array of objects and each object must include:
+   test_name, result, unit, reference_range, status, category
+5. Use category values from: {categories_text}
+6. status must be one of: Low, Normal, High, Critical, Positive, Negative, N/A
+7. If report does not explicitly provide an interpretation flag, set status to \"N/A\".
+8. Preserve exact textual result for non-numeric outcomes (e.g., Detected, Non Reactive).
+
+Schema:
+{{
+  "patient_info": {{
+    "name": "Full patient name or N/A",
+    "age": "Age or N/A",
+    "gender": "Gender or N/A",
+    "patient_id": "Patient ID or registration number or N/A",
+    "date": "DD-MM-YYYY or N/A",
+    "lab_name": "Primary laboratory or hospital name or N/A"
+  }},
+  "test_results": [
+    {{
+      "test_name": "Name of test",
+      "result": "Observed value or finding",
+      "unit": "Unit or empty string",
+      "reference_range": "Reference range or N/A",
+      "status": "Low/Normal/High/Critical/Positive/Negative/N/A",
+      "category": "Canonical category"
+    }}
+  ],
+  "abnormal_findings_summary_from_report": [
+    "Only explicit abnormalities or summary notes stated in the report"
+  ]
+}}
+
+Medical Report Text:
+---
+{report_text}
+---
+"""
+
+
 def extract_patient_info_from_normalized_data(df):
     """Extract patient info from normalized dataframe"""
     if df.empty:
@@ -422,7 +702,6 @@ def auto_detect_and_process(df, filename, new_patient_info_list):
 def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     global gemini_model_extraction
     global _last_extraction_error
-    global _active_extraction_model_name
     _last_extraction_error = ""
     if not gemini_model_extraction and not init_gemini_models(api_key_for_gemini):
         _last_extraction_error = "Gemini extraction model not initialized. API key may be invalid or missing."
@@ -442,114 +721,82 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
     if cached is not None:
         return cached
 
-    prompt = f"""
-    Analyze this medical test report. Extract all patient information and test results.
-    The patient's full name is critical. Prioritize complete and formal names (e.g., "Nisschay Khandelwal" over "SelfNisschay Khandelwal" or "N Khandelwal"). Avoid prefixes like "Self" if a clearer name is available.
-    Also extract Patient ID, Age (e.g., "35 years", "35 Y", "35"), and Gender (e.g., "Male", "Female", "M", "F").
-    The report date or collection date is also critical. IMPORTANT: Ensure date is in DD-MM-YYYY format (day first, then month, then year). If you see a date like "15/03/2024" or "15-03-2024", this should be interpreted as 15th March 2024, not 3rd month 15th day. If multiple dates are present (collection, report), prefer collection date.
-    IMPORTANT: Extract the main laboratory/hospital name that conducted the tests. Look for prominent facility names like "Neuberg", "Apollo Hospital", "Quest Diagnostics", "Dr. Lal PathLabs", etc.
-    - This is usually prominently displayed at the top of the report as the main facility name
-    - Ignore billing locations, collection centers, or subsidiary names in smaller text
-    - Look for the main brand/facility name that appears in large text or as a header
-    - If you see names like "Neuberg Abha", "Apollo Hospitals", "Max Healthcare" etc., prefer these over technical/billing names
-    - Avoid names that look like billing addresses or subsidiary locations
-
-    For each test parameter, extract:
-    - Test Name (e.g., "Haemoglobin", "Total Leucocyte Count")
-    - Result (numerical value or finding like "Detected", "Not Detected", "Positive", "Negative")
-    - Unit of measurement (e.g., "g/dL", "cells/µL")
-    - Reference Range (e.g., "13.0 - 17.0", "< 5.0", "Negative")
-    - Status (interpret as "Low", "Normal", "High", "Critical", "Positive", "Negative", or "N/A" if not applicable or clearly stated. If not stated, use "N/A")
-        - Category (infer if not explicitly stated) and ALWAYS use only one of these canonical category names:
-            Haematology, Lipid Profile, Liver Function, Kidney Function, Diabetes & Glucose,
-            Thyroid Function, Vitamins & Minerals, Hormones, Cardiac Markers, Immunology,
-            Urinalysis, Inflammation, Proteins, Other.
-        - For synonymous test names (e.g., SGOT/AST/Aspartate Aminotransferase), keep one consistent clinical name.
-
-    Return the data in this exact JSON format:
-    {{
-        "patient_info": {{
-            "name": "Full Patient Name",
-            "age": "Age",
-            "gender": "Gender",
-            "patient_id": "Patient ID or Registration No.",
-            "date": "Test Date or Report Date (DD-MM-YYYY)",
-            "lab_name": "Laboratory or Medical Center Name"
-        }},
-        "test_results": [
-            {{
-                "test_name": "Name of the test",
-                "result": "Numerical value or finding",
-                "unit": "Unit of measurement",
-                "reference_range": "Normal reference range",
-                "status": "Low/Normal/High/Critical/Positive/Negative/N/A",
-                "category": "Test category"
-            }}
-        ],
-        "abnormal_findings_summary_from_report": [
-            "List any general abnormal findings or summary remarks directly stated in the report, if present."
-        ]
-    }}
-
-    Medical Report Text:
-    ---
-    {bounded_text}
-    ---
-    """
+    validation_feedback = ""
+    last_response_text = ""
+    last_exception = None
     try:
-        response_text = ""
-        last_exception = None
-        models_to_try = []
-        if _active_extraction_model_name:
-            models_to_try.append(_active_extraction_model_name)
-        for model_name in EXTRACTION_MODEL_CANDIDATES:
-            if model_name not in models_to_try:
-                models_to_try.append(model_name)
+        for attempt in range(2):
+            prompt = _build_structured_extraction_prompt(
+                bounded_text,
+                validation_feedback=validation_feedback,
+            )
+            response_text, last_exception = _generate_with_extraction_models(
+                prompt,
+                generation_config={
+                    "response_mime_type": "application/json",
+                    "temperature": 0.0,
+                },
+            )
+            last_response_text = response_text
 
-        for model_name in models_to_try:
-            if model_name != _active_extraction_model_name:
-                try:
-                    gemini_model_extraction = genai.GenerativeModel(model_name)
-                    _active_extraction_model_name = model_name
-                except Exception as model_exc:
-                    last_exception = model_exc
+            if not response_text:
+                if last_exception and _is_rate_limit_error(str(last_exception)):
+                    retry_delay = _extract_retry_delay(str(last_exception))
+                    _last_extraction_error = (
+                        f"Rate limit reached for Gemini extraction ({_active_extraction_model_name or 'configured models'})."
+                        + (f" Retry after {retry_delay}." if retry_delay else "")
+                    )
+                    _ui_error(_last_extraction_error)
+                    return None
+                if attempt == 0:
+                    validation_feedback = "Empty response from model."
                     continue
+                break
+
+            match_json_block = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if match_json_block:
+                json_str = match_json_block.group(1)
+            else:
+                json_str = _extract_first_json_object(response_text)
+                if not json_str:
+                    validation_feedback = "Response did not contain a valid JSON object."
+                    if attempt == 0:
+                        _ui_warn("Gemini extraction response was not valid JSON; retrying with corrective instructions.")
+                        continue
+                    _last_extraction_error = validation_feedback
+                    _ui_error(_last_extraction_error)
+                    _ui_debug_text("Gemini API Response (text)", response_text, height=150)
+                    return None
 
             try:
-                response = gemini_model_extraction.generate_content(
-                    prompt,
-                    generation_config={"response_mime_type": "application/json"},
-                )
-                response_text = getattr(response, "text", "") or ""
-                if not response_text and getattr(response, "candidates", None):
-                    parts = []
-                    for candidate in response.candidates:
-                        content = getattr(candidate, "content", None)
-                        if not content:
-                            continue
-                        for part in getattr(content, "parts", []) or []:
-                            part_text = getattr(part, "text", None)
-                            if part_text:
-                                parts.append(part_text)
-                    response_text = "\n".join(parts)
-                if response_text:
-                    break
-            except Exception as call_exc:
-                last_exception = call_exc
-                if _is_rate_limit_error(str(call_exc)):
+                parsed = json.loads(json_str)
+            except json.JSONDecodeError as json_e:
+                validation_feedback = f"JSON parse error: {json_e}"
+                if attempt == 0:
+                    _ui_warn("Gemini extraction JSON parse failed; retrying once with corrective instructions.")
                     continue
-                # Fallback call without structured output hint.
-                try:
-                    response = gemini_model_extraction.generate_content(prompt)
-                    response_text = getattr(response, "text", "") or ""
-                    if response_text:
-                        break
-                except Exception as fallback_exc:
-                    last_exception = fallback_exc
+                _last_extraction_error = f"JSON parse error from Gemini response: {json_e}"
+                _ui_error(_last_extraction_error)
+                _ui_debug_text("Problematic JSON string", json_str, height=150)
+                _ui_debug_text("Full Gemini Response (text)", response_text, height=150)
+                return None
+
+            is_valid, normalized_payload, validation_issues = _validate_extraction_payload(parsed)
+            if is_valid:
+                _cache_set(cache_key, normalized_payload)
+                return normalized_payload
+
+            validation_feedback = "; ".join(validation_issues[:6]) or "Schema validation failed."
+            if attempt == 0:
+                _ui_warn("Gemini extraction response failed schema validation; retrying once with corrective instructions.")
                 continue
 
-        if not response_text:
-            if last_exception and _is_rate_limit_error(str(last_exception)):
+            _last_extraction_error = f"Gemini JSON failed validation after retry: {validation_feedback}"
+            _ui_error(_last_extraction_error)
+            _ui_debug_text("Gemini JSON payload", json.dumps(parsed)[:2500], height=180)
+            return None
+
+        if last_exception and _is_rate_limit_error(str(last_exception)):
                 retry_delay = _extract_retry_delay(str(last_exception))
                 _last_extraction_error = (
                     f"Rate limit reached for Gemini extraction ({_active_extraction_model_name or 'configured models'})."
@@ -557,32 +804,13 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
                 )
                 _ui_error(_last_extraction_error)
                 return None
-            raise RuntimeError(f"Gemini returned empty response. Last error: {last_exception}")
-        
-        match_json_block = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
-        if match_json_block:
-            json_str = match_json_block.group(1)
-        else:
-            json_str = _extract_first_json_object(response_text)
-            if not json_str:
-                _last_extraction_error = "Gemini response did not contain valid JSON output."
-                _ui_error(_last_extraction_error)
-                _ui_debug_text("Gemini API Response (text)", response_text, height=150)
-                return None
-        
-        parsed = json.loads(json_str)
-        if not isinstance(parsed, dict) or "test_results" not in parsed:
-            _last_extraction_error = "Gemini JSON did not include required field 'test_results'."
-            _ui_error(_last_extraction_error)
-            _ui_debug_text("Gemini JSON payload", json_str, height=150)
-            return None
-        _cache_set(cache_key, parsed)
-        return parsed
-    except json.JSONDecodeError as json_e:
-        _last_extraction_error = f"JSON parse error from Gemini response: {json_e}"
+
+        _last_extraction_error = "Gemini extraction failed after retry attempts."
+        if last_exception:
+            _last_extraction_error = f"Gemini extraction exception: {str(last_exception)}"
         _ui_error(_last_extraction_error)
-        _ui_debug_text("Problematic JSON string", json_str, height=150)
-        _ui_debug_text("Full Gemini Response (text)", response_text, height=150)
+        if last_response_text:
+            _ui_debug_text("Last Gemini Response (text)", last_response_text, height=150)
         return None
     except Exception as e:
         _last_extraction_error = f"Gemini extraction exception: {str(e)}"
@@ -591,11 +819,110 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
             _ui_error("Please ensure your Gemini API key is correct and has the necessary permissions.")
         return None
 
-def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF"):
-    if not ai_results_json or 'test_results' not in ai_results_json:
+def _classify_test_statuses_with_gemini(test_results: list[dict], api_key_for_gemini: str | None) -> list[str]:
+    fallback_statuses = [_canonical_status(item.get("status")) for item in test_results]
+    if not test_results:
+        return fallback_statuses
+
+    if not api_key_for_gemini:
+        return fallback_statuses
+
+    if not gemini_model_extraction and not init_gemini_models(api_key_for_gemini):
+        return fallback_statuses
+
+    classifier_input = []
+    for idx, test_result in enumerate(test_results):
+        classifier_input.append(
+            {
+                "index": idx,
+                "test_name": _clean_text_value(test_result.get("test_name"), default="N/A"),
+                "result": _clean_text_value(test_result.get("result"), default="N/A"),
+                "unit": _clean_text_value(test_result.get("unit"), default=""),
+                "reference_range": _clean_text_value(test_result.get("reference_range"), default="N/A"),
+                "reported_status": _canonical_status(test_result.get("status")),
+            }
+        )
+
+    prompt = f"""
+Classify the clinical status for each laboratory finding.
+Return ONLY JSON in this shape:
+{{
+  "classifications": [
+    {{"index": 0, "status": "Low|Normal|High|Critical|Positive|Negative|N/A", "reason": "short rationale"}}
+  ]
+}}
+
+Rules:
+- Use each finding's result and reference_range.
+- Respect textual outcomes like Positive/Negative/Detected/Not Detected.
+- If data is insufficient, use N/A.
+- Do not skip indexes.
+
+Findings:
+{json.dumps(classifier_input)}
+"""
+
+    response_text, last_exception = _generate_with_extraction_models(
+        prompt,
+        generation_config={
+            "response_mime_type": "application/json",
+            "temperature": 0.1,
+        },
+    )
+    if not response_text:
+        if last_exception:
+            _ui_warn(f"Severity classification fallback used due to model error: {last_exception}")
+        return fallback_statuses
+
+    match_json_block = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+    json_str = match_json_block.group(1) if match_json_block else _extract_first_json_object(response_text)
+    if not json_str:
+        return fallback_statuses
+
+    try:
+        parsed = json.loads(json_str)
+    except Exception:
+        return fallback_statuses
+
+    raw_classifications = parsed.get("classifications") if isinstance(parsed, dict) else None
+    if not isinstance(raw_classifications, list):
+        return fallback_statuses
+
+    final_statuses = list(fallback_statuses)
+    for item in raw_classifications:
+        if not isinstance(item, dict):
+            continue
+        index_val = item.get("index")
+        if isinstance(index_val, bool):
+            continue
+        try:
+            idx = int(index_val)
+        except (TypeError, ValueError):
+            continue
+        if idx < 0 or idx >= len(final_statuses):
+            continue
+
+        candidate_status = _canonical_status(item.get("status"))
+        if candidate_status == "N/A" and fallback_statuses[idx] != "N/A":
+            candidate_status = fallback_statuses[idx]
+        final_statuses[idx] = candidate_status
+
+    return final_statuses
+
+
+def create_structured_dataframe(
+    ai_results_json,
+    source_filename="Uploaded PDF",
+    api_key_for_gemini=None,
+):
+    if not ai_results_json or not isinstance(ai_results_json, dict):
         return pd.DataFrame(), {}
 
-    patient_info_dict = ai_results_json.get('patient_info', {})
+    _, normalized_payload, _ = _validate_extraction_payload(ai_results_json)
+    if not normalized_payload:
+        return pd.DataFrame(), {}
+
+    patient_info_dict = normalized_payload.get('patient_info', {})
     report_date_str = patient_info_dict.get('date', 'N/A')
     parsed_date = 'N/A'
     if report_date_str and report_date_str != 'N/A':
@@ -604,10 +931,19 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
             parsed_date = format_date_dd_mm_yyyy(dt)
     patient_info_dict['date'] = parsed_date
 
+    test_results = normalized_payload.get('test_results', [])
+    if not test_results:
+        return pd.DataFrame(), patient_info_dict
+
+    classified_statuses = _classify_test_statuses_with_gemini(test_results, api_key_for_gemini)
+    if len(classified_statuses) != len(test_results):
+        classified_statuses = [_canonical_status(item.get('status')) for item in test_results]
+
     all_rows = []
-    for test_result in ai_results_json.get('test_results', []):
+    for idx, test_result in enumerate(test_results):
         raw_category = standardize_value(test_result.get('category', 'N/A'), {}, default_case='title')
         raw_test_name = standardize_value(test_result.get('test_name', 'UnknownTest'), TEST_NAME_MAPPING, default_case='title')
+        final_status = classified_statuses[idx] if idx < len(classified_statuses) else _canonical_status(test_result.get('status'))
         row = {
             'Source_Filename': source_filename,
             'Patient_ID': patient_info_dict.get('patient_id', 'N/A'),
@@ -622,7 +958,7 @@ def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF")
             'Result': test_result.get('result', ''),
             'Unit': standardize_value(test_result.get('unit', ''), UNIT_MAPPING, default_case='original'),
             'Reference_Range': test_result.get('reference_range', ''),
-            'Status': standardize_value(test_result.get('status', ''), STATUS_MAPPING, default_case='title'),
+            'Status': final_status,
             'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         all_rows.append(row)
@@ -726,7 +1062,16 @@ def consolidate_patient_info(patient_info_list):
         'lab_name': get_most_common_or_latest([pi.get('lab_name') for pi in patient_info_list if pi.get('lab_name') and pi.get('lab_name') not in ['N/A', '']])
     }
 
-def get_chatbot_response(report_df_for_prompt, user_question, chat_history_for_prompt, api_key_for_gemini):
+def get_chatbot_response(
+    report_df_for_prompt,
+    user_question,
+    chat_history_for_prompt,
+    api_key_for_gemini,
+    analysis_id=None,
+    session_id=None,
+    system_prompt=None,
+    report_context=None,
+):
     global gemini_model_chat, _active_chat_model_name
     if not gemini_model_chat and not init_gemini_models(api_key_for_gemini):
         return "Chatbot model not initialized. API key might be missing or invalid."
@@ -746,39 +1091,118 @@ def get_chatbot_response(report_df_for_prompt, user_question, chat_history_for_p
     for col in expected_cols:
         if col not in safe_df.columns:
             safe_df[col] = "N/A"
-    df_string = safe_df[expected_cols].to_string(index=False, max_rows=50)
-    
+
+    if "Lab_Name" not in safe_df.columns:
+        safe_df["Lab_Name"] = "Unknown Lab"
+
+    safe_df["Test_Date"] = safe_df["Test_Date"].fillna("Unknown date").astype(str)
+    safe_df["Lab_Name"] = safe_df["Lab_Name"].fillna("Unknown Lab").astype(str)
+    safe_df["_date_sort"] = safe_df["Test_Date"].apply(
+        lambda value: parse_date_dd_mm_yyyy(value) or datetime.max
+    )
+    safe_df = safe_df.sort_values(by=["_date_sort", "Lab_Name", "Test_Name"], na_position="last").reset_index(drop=True)
+
+    df_string = safe_df[expected_cols].to_string(index=False, max_rows=200)
+
+    timeline_lines = []
+    grouped = safe_df.groupby(["Test_Date", "Lab_Name"], dropna=False, sort=False)
+    for (date_label, lab_label), group in grouped:
+        status_series = group["Status"].fillna("").astype(str).str.lower()
+        abnormal_rows = group[
+            (~status_series.isin(["normal", "negative", "n/a", "na", ""]))
+        ]
+        abnormal_preview = ", ".join(
+            abnormal_rows.apply(
+                lambda row: (
+                    f"{row.get('Test_Name', 'Unknown')}: {row.get('Result', 'N/A')} "
+                    f"{row.get('Unit', '')} ({row.get('Status', 'ABNORMAL')})"
+                ).strip(),
+                axis=1,
+            ).tolist()[:10]
+        )
+        timeline_lines.append(
+            f"Date: {date_label} | Lab: {lab_label}\n"
+            f"Tests performed: {len(group)}\n"
+            f"Abnormal findings: {abnormal_preview or 'None'}"
+        )
+
+    timeline_summary = "\n---\n".join(timeline_lines[:60])
+
+    latest_snapshot_rows = safe_df.drop_duplicates(subset=["Test_Name"], keep="last")
+    latest_snapshot = "\n".join(
+        latest_snapshot_rows.apply(
+            lambda row: (
+                f"{row.get('Test_Name', 'Unknown')}: {row.get('Result', 'N/A')} {row.get('Unit', '')} "
+                f"[{row.get('Status', 'UNKNOWN')}] as of {row.get('Test_Date', 'Unknown date')}"
+            ).strip(),
+            axis=1,
+        ).tolist()[:120]
+    )
+
+    report_context = report_context or {}
+    source_names = report_context.get("sourceFileNames") or []
+    if isinstance(source_names, list):
+        source_names = [str(item) for item in source_names if item]
+    else:
+        source_names = []
+
     history_context = ""
-    for entry in chat_history_for_prompt[-5:]:
+    for entry in chat_history_for_prompt[-20:]:
         role = str(entry.get("role", "user")).capitalize()
         content = str(entry.get("content", "")).strip()
         if content:
             history_context += f"{role}: {content}\n"
 
-    prompt = f"""You are a medical report assistant, so try to be precise.
-Based on the provided medical test results and chat history, answer the user's question.
-Important guidelines:
-- Structure your response in clear, concise bullet points
-- Present one piece of information per bullet point
-- Use sub-bullets for additional details when needed
-- Keep explanations brief and focused
-- Do not provide medical advice or diagnosis
-- Stick to summarizing and explaining the data
-- For abnormal values, include the reference range in brackets
-- If answering about overall health, categorize findings as: Normal, Borderline, or Concerning
-- If the question is about a specific test, focus on that test's results and context
-- Explain medical jargon in simple terms please
-- If the question is about trends, summarize changes over time for relevant tests
+    if system_prompt:
+        prompt = f"""{system_prompt}
 
-Chat History:
-{history_context}
+THREAD CONTEXT:
+{history_context or 'No previous conversation in this session.'}
 
-Available Medical Report Data (summary):
+ADDITIONAL TABULAR DATA:
 {df_string}
+
+REQUEST METADATA:
+- Analysis ID: {analysis_id or 'unknown-analysis'}
+- Session ID: {session_id or 'unknown-session'}
+- Source files: {', '.join(source_names) if source_names else 'Unknown'}
 
 User Question: {user_question}
 
-Assistant Response (please use bullet points):
+Assistant Response (markdown):
+"""
+    else:
+        prompt = f"""You are a Clinical Assistant helping patients understand longitudinal lab trends.
+You must use ALL available reports, not only the most recent data.
+
+INSTRUCTIONS:
+- Answer in plain language
+- Include value, unit, and date when citing labs
+- Distinguish historical abnormalities from current status
+- If a test has not been repeated recently, call out that current status is unknown
+- Never diagnose; recommend clinician follow-up for treatment decisions
+- Use markdown formatting with short sections and bullet points
+
+REPORT TIMELINE:
+{timeline_summary}
+
+LATEST VALUES SNAPSHOT:
+{latest_snapshot}
+
+THREAD CONTEXT:
+{history_context or 'No previous conversation in this session.'}
+
+AVAILABLE MEDICAL REPORT DATA (tabular snapshot):
+{df_string}
+
+REQUEST METADATA:
+- Analysis ID: {analysis_id or 'unknown-analysis'}
+- Session ID: {session_id or 'unknown-session'}
+- Source files: {', '.join(source_names) if source_names else 'Unknown'}
+
+User Question: {user_question}
+
+Assistant Response (markdown):
 """
 
     def _response_text_from_model_response(model_response):
@@ -812,7 +1236,10 @@ Assistant Response (please use bullet points):
                 gemini_model_chat = genai.GenerativeModel(model_name)
                 _active_chat_model_name = model_name
 
-            response = gemini_model_chat.generate_content(prompt)
+            response = gemini_model_chat.generate_content(
+                prompt,
+                generation_config={"temperature": 0.3},
+            )
             response_text = _response_text_from_model_response(response)
             if response_text:
                 return response_text
