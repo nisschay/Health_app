@@ -901,6 +901,8 @@ export default function DashboardPage() {
   }
 
   function handleAnalyzeStreamEvent(event: AnalyzeStreamEvent) {
+    console.log("[EVENT]", event);
+
     if (event.type === "stage") {
       const mapStep: Record<string, AnalyzeStep> = {
         validating: "preparing",
@@ -979,13 +981,7 @@ export default function DashboardPage() {
 
     try {
       const result = await runWithTokenRetry((token) => analyzeReportsStream(fd, token, handleAnalyzeStreamEvent));
-      setAnalysis(result);
-      setActiveAnalysisId(studyContext ? `study-${studyContext.study.id}` : `analysis-${Date.now()}`);
-      resetChatState();
-      setSelectedBodySystem("all");
-      setSelectedCategory("all");
-      setSelectedTest("");
-      setView("result");
+      let resultForView = result;
 
       setAnalyzeStep("saving");
       setSaveStatus("saving");
@@ -1003,16 +999,31 @@ export default function DashboardPage() {
               : `New study ${saved.study_name} created for ${studyContext.profile.full_name}.`,
           );
           setResultStudyReportCount(saved.total_reports);
+
+          if (studyContext.mode === "existing") {
+            resultForView = await runWithTokenRetry((token) => fetchStudyCombinedReport(
+              studyContext.study.id,
+              token,
+            ));
+          }
         } else {
           await runWithTokenRetry((token) => saveAnalysis(result, pdfFiles.map((f) => f.name), token));
           setStudySuccessMessage(null);
           setResultStudyReportCount(null);
         }
         setSaveStatus("saved");
-        loadDashboardData();
+        await loadDashboardData();
       } catch {
         setSaveStatus("error");
       }
+
+      setAnalysis(resultForView);
+      setActiveAnalysisId(studyContext ? `study-${studyContext.study.id}` : `analysis-${Date.now()}`);
+      resetChatState();
+      setSelectedBodySystem("all");
+      setSelectedCategory("all");
+      setSelectedTest("");
+      setView("result");
 
       setAnalyzeStep("idle");
     } catch (err) {
