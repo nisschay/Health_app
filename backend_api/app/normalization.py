@@ -183,12 +183,13 @@ TEST_NAME_MAP: dict[str, str] = {
     "red blood cell count": "Red Blood Cell Count (RBC)",
     "total rbc": "Red Blood Cell Count (RBC)",
     "rbc electrical impedance": "Red Blood Cell Count (RBC)",
-    "total leucocyte count": "Total Leucocyte Count (TLC)",
-    "total leucocytes count": "Total Leucocyte Count (TLC)",
-    "tlc": "Total Leucocyte Count (TLC)",
+    "total leucocyte count": "Total WBC Count",
+    "total leucocytes count": "Total WBC Count",
+    "total wbc count": "Total WBC Count",
+    "wbc": "Total WBC Count",
+    "tlc": "Total WBC Count",
     "cholesterol total": "Total Cholesterol",
     "cholesterol-total": "Total Cholesterol",
-    "cholesterol total": "Total Cholesterol",
     "protein total": "Total Protein",
     "proteins total": "Total Protein",
     "bilirubin direct": "Bilirubin Direct (Conjugated)",
@@ -198,6 +199,145 @@ TEST_NAME_MAP: dict[str, str] = {
     "r a test": "Rheumatoid Factor (RA)",
     "rheumatoid factor": "Rheumatoid Factor (RA)",
     "rheumatoid factor ra test": "Rheumatoid Factor (RA)",
+
+    # Haematology - cell counts and differentials
+    "hematocrit": "Haematocrit (HCT/PCV)",
+    "hematocrit (pcv)": "Haematocrit (HCT/PCV)",
+    "pcv(calc)": "Haematocrit (HCT/PCV)",
+    "lymphocytes": "Lymphocytes %",
+    "lymphocyte": "Lymphocytes %",
+    "lymphocytes percentage": "Lymphocytes %",
+    "lymphocytes - absolute count": "Lymphocytes (Absolute)",
+    "lymphocytes-absolute count": "Lymphocytes (Absolute)",
+    "lymphocytes absolute count": "Lymphocytes (Absolute)",
+    "neutrophils": "Neutrophils %",
+    "neutrophil": "Neutrophils %",
+    "neutrophils percentage": "Neutrophils %",
+    "neutrophils - absolute count": "Neutrophils (Absolute)",
+    "neutrophils-absolute count": "Neutrophils (Absolute)",
+    "neutrophil absolute": "Neutrophils (Absolute)",
+    "neutrophil (absolute)": "Neutrophils (Absolute)",
+    "eosinophils": "Eosinophils %",
+    "eosinophil": "Eosinophils %",
+    "eosinophils percentage": "Eosinophils %",
+    "eosinophils - absolute count": "Eosinophils (Absolute)",
+    "eosinophil (absolute)": "Eosinophils (Absolute)",
+    "eosinophils-absolute count": "Eosinophils (Absolute)",
+    "basophils": "Basophils %",
+    "basophil": "Basophils %",
+    "basophils percentage": "Basophils %",
+    "basophils - absolute count": "Basophils (Absolute)",
+    "basophil (absolute)": "Basophils (Absolute)",
+    "basophils-absolute count": "Basophils (Absolute)",
+    "monocytes": "Monocytes %",
+    "monocytes percentage": "Monocytes %",
+    "monocytes - absolute count": "Monocytes (Absolute)",
+    "monocytes absolute": "Monocytes (Absolute)",
+    "monocytes (absolute)": "Monocytes (Absolute)",
+    "monocytes-absolute count": "Monocytes (Absolute)",
+    "band cell": "Band Cells %",
+    "platelet count": "Platelet Count",
+    "platelets": "Platelet Count",
+    "platelet (smear study)": "Platelet Count (Smear)",
+    "neut/lympho ratio (nlr)": "Neutrophil/Lymphocyte Ratio (NLR)",
+    "neut/lympho ratio nlr": "Neutrophil/Lymphocyte Ratio (NLR)",
+    "immature granulocyte percentage": "Immature Granulocytes %",
+    "immature granulocyte percentage(ig%)": "Immature Granulocytes %",
+    "immature granulocyte percentage (ig%)": "Immature Granulocytes %",
+    "immature granulocytes (ig)": "Immature Granulocytes (Absolute)",
+    "nucleated red blood cells": "Nucleated RBC",
+    "nucleated red blood cells %": "Nucleated RBC %",
+    "platelet to large cell ratio (plcr)": "Platelet Large Cell Ratio (PLCR)",
+    "platelet to large cell ratio plcr": "Platelet Large Cell Ratio (PLCR)",
+    "plateletcrit (pct)": "Plateletcrit (PCT)",
+    "plateletcrit pct": "Plateletcrit (PCT)",
+    "red cell distribution width index (rdwi)": "RDW Index (RDWI)",
+    "mentzer index": "Mentzer Index",
+    "mch (calc)": "MCH",
+    "mean corpuscular haemoglobin": "MCH",
+    "mchc (calc)": "MCHC",
+    "mean corp.hemo.conc(mchc)": "MCHC",
+    "mcv (rbc histogram)": "Mean Corpuscular Volume (MCV)",
+    "mean corpuscular volume (mcv)": "Mean Corpuscular Volume (MCV)",
+    "mean corpuscular volume (mcv) ": "Mean Corpuscular Volume (MCV)",
+    "mean corpuscular volume": "Mean Corpuscular Volume (MCV)",
+
+    # Liver Function
+    "albumin": "Albumin",
+    "albumin - serum": "Albumin",
+    "albumin serum": "Albumin",
+    "globulin": "Globulin",
+    "serum globulin": "Globulin",
+    "albumin/globulin ratio (a/g ratio)": "Albumin/Globulin Ratio (A/G)",
+    "albumin/globulin ratio": "Albumin/Globulin Ratio (A/G)",
+    "a/g ratio": "Albumin/Globulin Ratio (A/G)",
+    "serum alb/globulin ratio": "Albumin/Globulin Ratio (A/G)",
+    "alb creat ratio": "Albumin/Creatinine Ratio",
+    "alkaline phosphatase (alp)": "Alkaline Phosphatase (ALP)",
+    "alkaline phosphatase": "Alkaline Phosphatase (ALP)",
+    "gamma glutamyl transferase": "Gamma-Glutamyl Transferase (GGT)",
+    "gamma glutamyl transferase (ggt)": "Gamma-Glutamyl Transferase (GGT)",
+    "bilirubin total": "Bilirubin Total",
+    "bilirubin - total": "Bilirubin Total",
+    "bilirubin (indirect)": "Bilirubin Indirect",
+    "bilirubin indirect": "Bilirubin Indirect",
+    "bilirubin unconjugated": "Bilirubin Indirect",
+
+    # Vitamins & Minerals
+    "calcium": "Calcium",
+    "iron": "Serum Iron",
+    "total iron binding capacity (tibc)": "Total Iron Binding Capacity (TIBC)",
+    "total iron binding capacity": "Total Iron Binding Capacity (TIBC)",
+    "unsat.iron-binding capacity(uibc)": "Unsaturated Iron-Binding Capacity (UIBC)",
+    "% transferrin saturation": "Transferrin Saturation %",
+    "transferrin saturation": "Transferrin Saturation %",
+    "folate": "Folate (Folic Acid)",
+    "magnesium": "Magnesium",
+    "phosphorous": "Phosphorus",
+
+    # Electrolytes
+    "sodium": "Sodium (Na)",
+    "potassium": "Potassium (K)",
+    "chloride": "Chloride (Cl)",
+
+    # Kidney
+    "uric acid": "Uric Acid",
+    "est. glomerular filtration rate (egfr)": "eGFR (Estimated)",
+    "microalbuminuria": "Microalbuminuria",
+
+    # Lipids
+    "vldl": "VLDL Cholesterol",
+    "vldl cholesterol": "VLDL Cholesterol",
+    "apolipoprotein - a1 (apo-a1)": "Apolipoprotein A1 (Apo-A1)",
+    "apolipoprotein-a1 apo-a1": "Apolipoprotein A1 (Apo-A1)",
+    "apolipoprotein - b (apo-b)": "Apolipoprotein B (Apo-B)",
+    "apolipoprotein-b apo-b": "Apolipoprotein B (Apo-B)",
+    "apo b / apo a1 ratio (apo b/a1)": "Apo B/A1 Ratio",
+    "apo b/apo a1 ratio": "Apo B/A1 Ratio",
+    "apo b/apo a1 ratio apo b/a1": "Apo B/A1 Ratio",
+    "lipoprotein (a) [lp(a)]": "Lipoprotein (a) [Lp(a)]",
+
+    # Hormones / Markers
+    "testosterone": "Testosterone",
+    "insulin fasting": "Insulin (Fasting)",
+    "prostate specific antigen (psa)": "PSA (Total)",
+    "carcino embryonic antigen (cea)": "CEA (Carcinoembryonic Antigen)",
+    "anti ccp (accp)": "Anti-CCP Antibodies",
+    "anti nuclear antibodies (ana)": "ANA (Anti-Nuclear Antibodies)",
+    "high sensitivity c-reactive protein (hs-crp)": "hs-CRP",
+
+    # Urinalysis
+    "colour": "Urine Colour",
+    "transparency": "Urine Transparency",
+    "sp.gravity": "Urine Specific Gravity",
+    "ph": "Urine pH",
+    "leucocytes (esterase)": "Leucocyte Esterase (Urine)",
+    "ketone bodies urine": "Urine Ketones",
+    "urobilinogen": "Urobilinogen (Urine)",
+    "nitrite": "Urine Nitrite",
+    "epithelial cell (urine)": "Epithelial Cells (Urine)",
+    "crystals (urine)": "Crystals (Urine)",
+    "cast (urine)": "Casts (Urine)",
 }
 
 TEST_CATEGORY_HINTS: dict[str, str] = {
@@ -215,13 +355,29 @@ TEST_CATEGORY_HINTS: dict[str, str] = {
 }
 
 MUST_NOT_MERGE_RAW = [
-    ("bilirubin indirect", "bilirubin total"),
-    ("bilirubin indirect", "bilirubin conjugated"),
-    ("bilirubin indirect", "bilirubin unconjugated"),
+    ("globulin", "albumin/globulin ratio"),
+    ("albumin", "albumin/globulin ratio"),
+    ("albumin", "alb creat ratio"),
+    ("creatinine", "alb creat ratio"),
+    ("iron", "total iron binding capacity"),
+    ("iron", "transferrin saturation"),
+    ("iron", "unsat iron-binding capacity"),
+    ("apolipoprotein-a1", "apolipoprotein-b"),
+    ("apo-a1", "apo-b"),
+    ("apolipoprotein a", "apolipoprotein b"),
+    ("bilirubin total", "bilirubin direct"),
+    ("bilirubin total", "bilirubin indirect"),
     ("bilirubin total", "bilirubin conjugated"),
+    ("bilirubin direct", "bilirubin indirect"),
+    ("bilirubin conjugated", "bilirubin unconjugated"),
+    ("neutrophils", "neut/lympho ratio"),
+    ("neutrophil", "neut/lympho ratio"),
+    ("prostate specific antigen", "free psa"),
+    ("t3", "t4"),
+    ("free t3", "free t4"),
+    ("t3", "tsh"),
+    ("t4", "tsh"),
 ]
-
-MUST_NOT_MERGE = {frozenset(pair) for pair in MUST_NOT_MERGE_RAW}
 
 _warned_categories: set[str] = set()
 _warned_tests: set[str] = set()
@@ -316,7 +472,7 @@ def structural_clean(raw: str | None) -> str:
     cleaned = cleaned.replace("(", " ").replace(")", " ")
     cleaned = re.sub(r"\s*/\s*", "/", cleaned)
     cleaned = re.sub(r"\s*-\s*", "-", cleaned)
-    cleaned = re.sub(r"[^a-z0-9\-/,\.\s]", " ", cleaned)
+    cleaned = re.sub(r"[^a-z0-9%\-/,\.\s]", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
     return cleaned or "unknown test"
@@ -329,16 +485,53 @@ def _normalized_blocklist_key(value: str) -> str:
     return cleaned
 
 
+def _is_blocklisted(a: str, b: str) -> bool:
+    a_norm = _normalized_blocklist_key(a)
+    b_norm = _normalized_blocklist_key(b)
+    shorter, longer = (a_norm, b_norm) if len(a_norm) <= len(b_norm) else (b_norm, a_norm)
+
+    for p1, p2 in MUST_NOT_MERGE_RAW:
+        p1_norm = _normalized_blocklist_key(p1)
+        p2_norm = _normalized_blocklist_key(p2)
+        if (p1_norm in shorter and p2_norm in longer) or (p2_norm in shorter and p1_norm in longer):
+            return True
+    return False
+
+
 def are_same_test(a: str, b: str) -> bool:
     a_key = structural_clean(a)
     b_key = structural_clean(b)
 
-    pair = frozenset({_normalized_blocklist_key(a_key), _normalized_blocklist_key(b_key)})
-    if pair in MUST_NOT_MERGE:
-        return False
-
     if a_key == b_key:
         return True
+
+    # Hard blocklist first: these pairs must never merge regardless of similarity.
+    if _is_blocklisted(a_key, b_key):
+        return False
+
+    # Structural rule 1: ratio tests should not merge with non-ratio tests.
+    a_is_ratio = "ratio" in a_key or "/" in a_key
+    b_is_ratio = "ratio" in b_key or "/" in b_key
+    if a_is_ratio != b_is_ratio:
+        return False
+
+    # Structural rule 2: percentage and absolute count represent different measurements.
+    a_is_percent = "percent" in a_key or a_key.endswith("%") or "(%)" in a_key
+    b_is_percent = "percent" in b_key or b_key.endswith("%") or "(%)" in b_key
+    a_is_absolute = bool(re.search(r"(?:absolute|count|(?:\\u00d7|x)10|10\^)", a_key))
+    b_is_absolute = bool(re.search(r"(?:absolute|count|(?:\\u00d7|x)10|10\^)", b_key))
+    if (a_is_percent and b_is_absolute) or (b_is_percent and a_is_absolute):
+        return False
+
+    # Structural rule 3: bilirubin qualifiers are distinct analytes.
+    bilirubin_qualifiers = ["direct", "indirect", "total", "conjugated", "unconjugated"]
+    if "bilirubin" in a_key and "bilirubin" in b_key:
+        a_qualifier = next((q for q in bilirubin_qualifiers if q in a_key), None)
+        b_qualifier = next((q for q in bilirubin_qualifiers if q in b_key), None)
+        if a_qualifier and b_qualifier and a_qualifier != b_qualifier:
+            return False
+        if (a_qualifier and not b_qualifier) or (b_qualifier and not a_qualifier):
+            return False
 
     initials_a = _initials(a_key)
     initials_b = _initials(b_key)
@@ -347,15 +540,18 @@ def are_same_test(a: str, b: str) -> bool:
     if compact_a == initials_b or compact_b == initials_a:
         return True
 
-    tokens_a = set(token for token in _tokenize(a_key) if len(token) > 1)
-    tokens_b = set(token for token in _tokenize(b_key) if len(token) > 1)
-
-    shorter = tokens_a if len(tokens_a) <= len(tokens_b) else tokens_b
-    longer = tokens_b if len(tokens_a) <= len(tokens_b) else tokens_a
-    if shorter:
-        overlap = len([token for token in shorter if token in longer])
-        if overlap / len(shorter) >= 0.8:
-            return True
+    # Structural rule 4: token overlap applies only when both names have at least 2 meaningful tokens.
+    tokens_a = [token for token in _tokenize(a_key) if len(token) > 2]
+    tokens_b = [token for token in _tokenize(b_key) if len(token) > 2]
+    if len(tokens_a) >= 2 and len(tokens_b) >= 2:
+        set_a = set(tokens_a)
+        set_b = set(tokens_b)
+        shorter = set_a if len(set_a) <= len(set_b) else set_b
+        longer = set_b if len(set_a) <= len(set_b) else set_a
+        if shorter:
+            overlap = len([token for token in shorter if token in longer])
+            if overlap / len(shorter) >= 0.8:
+                return True
 
     strip_punct_a = _compact(a_key)
     strip_punct_b = _compact(b_key)
@@ -363,7 +559,7 @@ def are_same_test(a: str, b: str) -> bool:
         return True
 
     shorter_text, longer_text = (a_key, b_key) if len(a_key) <= len(b_key) else (b_key, a_key)
-    if len(shorter_text) >= 4 and longer_text.startswith(shorter_text):
+    if len(shorter_text) >= 8 and longer_text.startswith(shorter_text):
         return True
 
     return False

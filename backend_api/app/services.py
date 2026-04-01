@@ -40,8 +40,25 @@ class NamedBytesIO(io.BytesIO):
 
 
 def _clean_value(value: Any) -> Any:
-    if pd.isna(value):
+    if value is None:
         return None
+
+    # pd.isna can return an array for array-like inputs; avoid ambiguous truth checks.
+    try:
+        na_result = pd.isna(value)
+    except Exception:
+        na_result = False
+
+    if isinstance(na_result, bool):
+        if na_result:
+            return None
+    elif hasattr(na_result, "all"):
+        try:
+            if bool(na_result.all()):
+                return None
+        except Exception:
+            pass
+
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
     if isinstance(value, datetime):

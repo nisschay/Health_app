@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 
@@ -15,12 +15,49 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const displayNameInputRef = useRef<HTMLInputElement>(null);
+  const emailInputRef = useRef<HTMLInputElement>(null);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!loading && user) {
       router.replace("/dashboard");
     }
   }, [user, loading, router]);
+
+  // Keep auth fields empty on mount in case browser autofill injects values.
+  useEffect(() => {
+    const clearAutofilledInputs = () => {
+      if (displayNameInputRef.current?.value) {
+        displayNameInputRef.current.value = "";
+      }
+      if (emailInputRef.current?.value) {
+        emailInputRef.current.value = "";
+      }
+      if (passwordInputRef.current?.value) {
+        passwordInputRef.current.value = "";
+      }
+      setDisplayName("");
+      setEmail("");
+      setPassword("");
+    };
+
+    clearAutofilledInputs();
+    const timer = window.setTimeout(clearAutofilledInputs, 150);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  function handleModeChange(nextMode: "login" | "register") {
+    setMode(nextMode);
+    setDisplayName("");
+    setEmail("");
+    setPassword("");
+    setError(null);
+    setShowPassword(false);
+  }
 
   async function handleEmailSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -111,7 +148,7 @@ export default function LoginPage() {
           <div className="auth-tabs" role="tablist" aria-label="Authentication mode">
             <button
               className={`auth-tab ${mode === "login" ? "active" : ""}`}
-              onClick={() => { setMode("login"); setError(null); }}
+              onClick={() => handleModeChange("login")}
               type="button"
               role="tab"
               aria-selected={mode === "login"}
@@ -120,7 +157,7 @@ export default function LoginPage() {
             </button>
             <button
               className={`auth-tab ${mode === "register" ? "active" : ""}`}
-              onClick={() => { setMode("register"); setError(null); }}
+              onClick={() => handleModeChange("register")}
               type="button"
               role="tab"
               aria-selected={mode === "register"}
@@ -141,14 +178,15 @@ export default function LoginPage() {
 
           <div className="auth-divider"><span>or</span></div>
 
-          <form className="auth-form" onSubmit={handleEmailSubmit}>
+          <form autoComplete="off" className="auth-form" onSubmit={handleEmailSubmit}>
             {mode === "register" && (
               <label className="auth-field">
                 <span>Full Name</span>
                 <input
                   autoComplete="name"
                   disabled={isPending}
-                  placeholder="Ravi Khandelwal"
+                  name="name"
+                  ref={displayNameInputRef}
                   required
                   type="text"
                   value={displayName}
@@ -160,9 +198,11 @@ export default function LoginPage() {
             <label className="auth-field">
               <span>Email</span>
               <input
-                autoComplete="email"
+                autoComplete={mode === "login" ? "username" : "email"}
                 disabled={isPending}
+                name={mode === "login" ? "username" : "email"}
                 placeholder="you@example.com"
+                ref={emailInputRef}
                 required
                 type="email"
                 value={email}
@@ -183,7 +223,9 @@ export default function LoginPage() {
                   autoComplete={mode === "login" ? "current-password" : "new-password"}
                   disabled={isPending}
                   minLength={6}
+                  name={mode === "login" ? "password" : "new-password"}
                   placeholder="••••••••"
+                  ref={passwordInputRef}
                   required
                   type={showPassword ? "text" : "password"}
                   value={password}
@@ -216,14 +258,14 @@ export default function LoginPage() {
             {mode === "login" ? (
               <p className="auth-footnote">
                 Don&apos;t have an account?{" "}
-                <button className="auth-inline-action" onClick={() => setMode("register")} type="button">
+                <button className="auth-inline-action" onClick={() => handleModeChange("register")} type="button">
                   Create one
                 </button>
               </p>
             ) : (
               <p className="auth-footnote">
                 Already have an account?{" "}
-                <button className="auth-inline-action" onClick={() => setMode("login")} type="button">
+                <button className="auth-inline-action" onClick={() => handleModeChange("login")} type="button">
                   Sign in
                 </button>
               </p>

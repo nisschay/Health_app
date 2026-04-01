@@ -155,7 +155,7 @@ function normalizeSourceFileName(value: string | null | undefined): string {
 
 function shouldRetryWithFreshToken(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return /invalid firebase token|firebase token expired|firebase token revoked|firebase token project mismatch/i.test(
+  return /invalid firebase token|firebase token expired|firebase token revoked|firebase token project mismatch|authentication required|missing bearer token|not authenticated|unauthorized|\b401\b/i.test(
     error.message,
   );
 }
@@ -530,7 +530,21 @@ export default function DashboardPage() {
   const { user, loading, getToken, logout } = useAuth();
   const router = useRouter();
 
-  useEffect(() => { if (!loading && !user) router.replace("/login"); }, [user, loading, router]);
+  const hardRedirectToLogin = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      window.location.href = "/login";
+      return;
+    }
+    router.replace("/login");
+  }, [router]);
+
+  useEffect(() => {
+    if (!loading && !user) {
+      hardRedirectToLogin();
+    }
+  }, [user, loading, hardRedirectToLogin]);
 
   const [view, setView] = useState<"home" | "analyze" | "result">("home");
   const [history, setHistory] = useState<AnalysisHistoryItem[]>([]);
@@ -602,10 +616,18 @@ export default function DashboardPage() {
       } catch {
         // Ignore logout failures and still push user to login for re-auth.
       }
-      router.replace("/login");
+      hardRedirectToLogin();
     }
     throw new Error("Your session is no longer valid. Please sign in again.");
-  }, [logout, router]);
+  }, [hardRedirectToLogin, logout]);
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await logout();
+    } finally {
+      hardRedirectToLogin();
+    }
+  }, [hardRedirectToLogin, logout]);
 
   const runWithTokenRetry = useCallback(async <T,>(operation: (token: string) => Promise<T>): Promise<T> => {
     const token = await getToken();
@@ -1271,7 +1293,7 @@ export default function DashboardPage() {
 
   return (
     <div className="dashboard-root">
-      <NavBar user={user} onLogout={async () => { await logout(); router.replace("/login"); }} onHome={() => setView("home")} />
+      <NavBar user={user} onLogout={() => { void handleSignOut(); }} onHome={() => setView("home")} />
 
       {/* HOME */}
       {view === "home" && (

@@ -720,6 +720,7 @@ async def analyze_reports_stream(
         while True:
             event = await queue.get()
             yield f"data: {json.dumps(event)}\n\n"
+            await asyncio.sleep(0)
             if event.get("type") in {"done", "error"}:
                 break
 
