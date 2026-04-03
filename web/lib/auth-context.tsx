@@ -20,8 +20,6 @@ import {
 import { auth } from "./firebase";
 import { buildApiUrl, getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
 
-const HF_SPACE_BACKEND_URL = "https://nisschay-medical-project-backend.hf.space";
-
 const AUTH_PRESENCE_COOKIE = "mra_auth";
 const AUTH_PRESENCE_MAX_AGE_SECONDS = 60 * 60 * 12;
 
@@ -73,21 +71,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       // Sync user to backend PostgreSQL on sign-in
       firebaseUser.getIdToken()
-        .then((token) => {
+        .then(async (token) => {
           const publicApiBase = getPublicApiBaseUrl();
-          const syncBase = process.env.NODE_ENV === "production"
-            ? HF_SPACE_BACKEND_URL
-            : (publicApiBase.startsWith("/") ? getDirectApiBaseUrl() : publicApiBase);
-          const syncUrl = buildApiUrl(syncBase, "/api/v1/auth/sync", {
+          const directApiBase = getDirectApiBaseUrl();
+          const primaryBase = publicApiBase.startsWith("/") ? directApiBase : publicApiBase;
+
+          const syncTargets = [primaryBase, directApiBase].filter(
+            (value, index, arr) => Boolean(value) && arr.indexOf(value) === index,
+          );
+
+          const syncUrl = buildApiUrl(syncTargets[0]!, "/api/v1/auth/sync", {
             display_name: firebaseUser.displayName ?? "",
           });
-          return fetch(
+          let response = await fetch(
             syncUrl,
             {
               method: "POST",
               headers: { Authorization: `Bearer ${token}` },
             },
           );
+
+          if ((response.status === 404 || response.status >= 500) && syncTargets.length > 1) {
+            const fallbackSyncUrl = buildApiUrl(syncTargets[1]!, "/api/v1/auth/sync", {
+              display_name: firebaseUser.displayName ?? "",
+            });
+            response = await fetch(
+              fallbackSyncUrl,
+              {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+              },
+            );
+          }
+
+          return response;
         })
         .then(async (response) => {
           if (!isActive) {

@@ -1,31 +1,28 @@
 import { normalizeAnalysisPayload } from "./normalizeTest";
 import { getAuth } from "firebase/auth";
-
-const HF_SPACE_BACKEND_URL = "https://nisschay-medical-project-backend.hf.space";
+import { getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
 
 const API_BASE_URL = (() => {
-  const url = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL;
-  if (!url || url === "/backend") {
-    if (process.env.NODE_ENV === "production") {
-      console.error("NEXT_PUBLIC_API_URL not set in production!");
-      return HF_SPACE_BACKEND_URL;
-    }
-    return "/backend";
+  const url = getPublicApiBaseUrl();
+  if (!url || (process.env.NODE_ENV === "production" && url === "/backend")) {
+    console.error("NEXT_PUBLIC_API_URL not set correctly for production.");
+    return getDirectApiBaseUrl();
   }
   return url.replace(/\/$/, "");
 })();
 
-const DIRECT_API_BASE_URL = (
-  process.env.NEXT_PUBLIC_DIRECT_API_URL?.replace(/\/$/, "")
-  ?? (process.env.NODE_ENV === "production" ? HF_SPACE_BACKEND_URL : "http://localhost:8000")
-);
+const DIRECT_API_BASE_URL = getDirectApiBaseUrl().replace(/\/$/, "");
 
 if (process.env.NODE_ENV === "production") {
   console.log("[API] Base URL:", API_BASE_URL);
+  console.log("[API] Direct Base URL:", DIRECT_API_BASE_URL);
 }
 
 function shouldRetryDirect(response: Response): boolean {
-  return API_BASE_URL.startsWith("/") && response.status >= 500;
+  if (DIRECT_API_BASE_URL === API_BASE_URL) {
+    return false;
+  }
+  return response.status === 404 || response.status >= 500;
 }
 
 function redirectToLogin(): never {
