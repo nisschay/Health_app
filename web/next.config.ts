@@ -43,7 +43,7 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/backend/:path*",
-        destination: "http://127.0.0.1:8000/:path*",
+        destination: "https://nisschay-medical-project-backend.hf.space/:path*",
       },
     ];
   },
