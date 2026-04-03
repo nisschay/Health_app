@@ -1,3 +1,4 @@
+cat > ~/Medical_Project/.gitignore << 'EOF'
 # =========================================
 # Root Git Ignore (single source of truth)
 # =========================================
@@ -14,7 +15,8 @@ develop-eggs/
 downloads/
 eggs/
 .eggs/
-lib/
+backend_api/lib/
+venv/lib/
 lib64/
 parts/
 sdist/
@@ -56,7 +58,6 @@ web/.next/
 # Secrets
 serviceAccountKey.json
 
-.next/
 web/.next-dev/
 Medical_Project-Backend/
-Medical_Project-Backend/
+EOF
