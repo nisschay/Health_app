@@ -1,5 +1,3 @@
-const HF_SPACE_BACKEND_URL = "https://nisschay-medical-project-backend.hf.space";
-
 function normalizeEnvBaseUrl(raw: string | undefined): string | null {
   if (!raw) return null;
 
@@ -22,21 +20,33 @@ function isAbsoluteHttpUrl(value: string): boolean {
 }
 
 function fallbackDirectBaseUrl(): string {
-  return process.env.NODE_ENV === "production"
-    ? HF_SPACE_BACKEND_URL
-    : "http://localhost:8000";
+  return "http://localhost:8000";
 }
 
 export function getPublicApiBaseUrl(): string {
-  return (
+  const publicBase = (
     normalizeEnvBaseUrl(process.env.NEXT_PUBLIC_API_URL)
     ?? normalizeEnvBaseUrl(process.env.NEXT_PUBLIC_API_BASE_URL)
-    ?? "/backend"
   );
+
+  if (publicBase) {
+    return publicBase;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    return getDirectApiBaseUrl();
+  }
+
+  return "/backend";
 }
 
 export function getDirectApiBaseUrl(): string {
-  return normalizeEnvBaseUrl(process.env.NEXT_PUBLIC_DIRECT_API_URL) ?? fallbackDirectBaseUrl();
+  return (
+    normalizeEnvBaseUrl(process.env.NEXT_PUBLIC_DIRECT_API_URL)
+    ?? normalizeEnvBaseUrl(process.env.NEXT_PUBLIC_API_URL)
+    ?? normalizeEnvBaseUrl(process.env.NEXT_PUBLIC_API_BASE_URL)
+    ?? fallbackDirectBaseUrl()
+  );
 }
 
 export function getServerBackendBaseUrl(): string {
