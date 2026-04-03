@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-VERIFY_FILE="${VERIFY_FILE:-$ROOT_DIR/backend_api/sql/verify_firebase_postgres_bootstrap.sql}"
+VERIFY_FILE="${VERIFY_FILE:-$ROOT_DIR/backend_api/sql/verify_postgres_schema.sql}"
 
 require_cmd() {
   local cmd="$1"

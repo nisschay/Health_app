@@ -1,3 +1,5 @@
+import json
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 import logging
@@ -40,24 +42,40 @@ def _extract_bearer_token(authorization: str | None) -> str | None:
 def _firebase_enabled() -> bool:
     if not firebase_admin or not credentials or not firebase_auth:
         return False
-    if not settings.firebase_credentials_path:
+
+    service_account_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+    cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH") or settings.firebase_credentials_path
+    if not service_account_json and not cred_path:
         return False
 
-    creds_path = Path(settings.firebase_credentials_path)
-    if not creds_path.exists():
-        # In local/dev, allow API to continue without Firebase if auth is optional.
-        print(f"[WARN] Firebase credentials file not found: {creds_path}")
-        return False
+    if cred_path and not service_account_json:
+        creds_path = Path(cred_path)
+        if not creds_path.exists():
+            # In local/dev, allow API to continue without Firebase if auth is optional.
+            print(f"[WARN] Firebase credentials file not found: {creds_path}")
+            return False
 
     if not firebase_admin._apps:
+        # In local/dev, allow API to continue without Firebase if auth is optional.
         try:
-            firebase_admin.initialize_app(
-                credentials.Certificate(settings.firebase_credentials_path)
-            )
+            if service_account_json:
+                # Production (Hugging Face): load from env secret.
+                cred_dict = json.loads(service_account_json)
+                cred = credentials.Certificate(cred_dict)
+            elif cred_path:
+                # Local dev: load from file path.
+                cred = credentials.Certificate(cred_path)
+            else:
+                raise ValueError(
+                    "No Firebase credentials found. Set FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_CREDENTIALS_PATH"
+                )
+
+            firebase_admin.initialize_app(cred)
         except ValueError as exc:
             # Concurrent requests can race on first init; if default app exists, continue.
             if "already exists" not in str(exc):
-                raise
+                print(f"[WARN] Firebase initialization failed: {exc}")
+                return False
         except Exception as exc:
             # Avoid taking down the API when Firebase is misconfigured in optional-auth mode.
             print(f"[WARN] Firebase initialization failed: {exc}")
