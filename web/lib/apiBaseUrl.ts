@@ -72,7 +72,8 @@ export function buildApiUrl(
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
 
   if (isAbsoluteHttpUrl(baseUrl)) {
-    const url = new URL(normalizedPath, `${baseUrl}/`);
+    const base = baseUrl.replace(/\/$/, "");
+    const url = new URL(`${base}${normalizedPath}`);
     if (query) {
       for (const [key, value] of Object.entries(query)) {
         if (value === null || value === undefined) continue;
