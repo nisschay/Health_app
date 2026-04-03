@@ -69,7 +69,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setAuthPresenceCookie();
       // Register token provider so api.ts can always get fresh token
-      setAuthTokenProvider(() => getToken());
+      setAuthTokenProvider(async () => {
+        try {
+          return await firebaseUser.getIdToken(false);
+        } catch {
+          try {
+            return await firebaseUser.getIdToken(true);
+          } catch {
+            return null;
+          }
+        }
+      });
 
       setLoading(true);
 
