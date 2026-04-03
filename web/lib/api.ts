@@ -1,13 +1,9 @@
 import { normalizeAnalysisPayload } from "./normalizeTest";
+import { getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ??
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "/backend";
+const API_BASE_URL = getPublicApiBaseUrl();
 
-const DIRECT_API_BASE_URL =
-  process.env.NEXT_PUBLIC_DIRECT_API_URL?.replace(/\/$/, "") ??
-  "http://localhost:8000";
+const DIRECT_API_BASE_URL = getDirectApiBaseUrl();
 
 function shouldRetryDirect(response: Response): boolean {
   return API_BASE_URL.startsWith("/") && response.status >= 500;

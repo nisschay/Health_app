@@ -18,6 +18,7 @@ import {
   signOut,
 } from "firebase/auth";
 import { auth } from "./firebase";
+import { buildApiUrl, getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
 
 const AUTH_PRESENCE_COOKIE = "mra_auth";
 const AUTH_PRESENCE_MAX_AGE_SECONDS = 60 * 60 * 12;
@@ -71,13 +72,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Sync user to backend PostgreSQL on sign-in
       firebaseUser.getIdToken()
         .then((token) => {
-          const apiBase =
-            process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ??
-            process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-            "/backend";
-          const displayName = encodeURIComponent(firebaseUser.displayName ?? "");
+          const publicApiBase = getPublicApiBaseUrl();
+          const syncBase = publicApiBase.startsWith("/") ? getDirectApiBaseUrl() : publicApiBase;
+          const syncUrl = buildApiUrl(syncBase, "/api/v1/auth/sync", {
+            display_name: firebaseUser.displayName ?? "",
+          });
           return fetch(
-            `${apiBase}/api/v1/auth/sync${displayName ? `?display_name=${displayName}` : ""}`,
+            syncUrl,
             {
               method: "POST",
               headers: { Authorization: `Bearer ${token}` },
