@@ -19,6 +19,7 @@ import {
 } from "firebase/auth";
 import { auth } from "./firebase";
 import { buildApiUrl, getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
+import { setAuthTokenProvider } from "./api";
 
 const AUTH_PRESENCE_COOKIE = "mra_auth";
 const AUTH_PRESENCE_MAX_AGE_SECONDS = 60 * 60 * 12;
@@ -60,12 +61,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(firebaseUser);
       if (!firebaseUser) {
         clearAuthPresenceCookie();
+        setAuthTokenProvider(async () => null);
         setIsAdmin(false);
         setLoading(false);
         return;
       }
 
       setAuthPresenceCookie();
+      // Register token provider so api.ts can always get fresh token
+      setAuthTokenProvider(() => getToken());
 
       setLoading(true);
 

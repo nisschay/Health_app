@@ -1,6 +1,12 @@
 import { normalizeAnalysisPayload } from "./normalizeTest";
-import { getAuth } from "firebase/auth";
 import { getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
+
+// Token provider - set by AuthContext on login
+let _getTokenFn: (() => Promise<string | null>) | null = null;
+
+export function setAuthTokenProvider(fn: () => Promise<string | null>) {
+  _getTokenFn = fn;
+}
 
 const API_BASE_URL = (() => {
   const url = getPublicApiBaseUrl();
@@ -32,15 +38,6 @@ function redirectToLogin(): never {
   throw new Error("Auth failed");
 }
 
-async function getBearerToken(forceRefresh = false): Promise<string> {
-  const auth = getAuth();
-  const user = auth.currentUser;
-  if (!user) {
-    throw new Error("No user");
-  }
-  return user.getIdToken(forceRefresh);
-}
-
 function withAuthHeaders(options: RequestInit, token: string): Headers {
   const headers = new Headers(options.headers ?? {});
   headers.set("Authorization", `Bearer ${token}`);
@@ -52,39 +49,50 @@ function withAuthHeaders(options: RequestInit, token: string): Headers {
 }
 
 async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  let token: string;
-  try {
-    token = await getBearerToken(false);
-  } catch {
-    try {
-      token = await getBearerToken(true);
-    } catch {
-      return redirectToLogin();
-    }
+  let token: string | null = null;
+
+  if (_getTokenFn) {
+    token = await _getTokenFn();
   }
 
-  let response = await fetch(url, {
+  if (!token) {
+    // fallback: try Firebase directly
+    try {
+      const { getAuth } = await import("firebase/auth");
+      const user = getAuth().currentUser;
+      if (user) token = await user.getIdToken(false);
+    } catch { }
+  }
+
+  if (!token) {
+    throw new Error("No auth token available");
+  }
+
+  const response = await fetch(url, {
     ...options,
     headers: withAuthHeaders(options, token),
   });
 
-  if (response.status !== 401) {
-    return response;
+  // Retry once with fresh token on 401
+  if (response.status === 401) {
+    try {
+      const { getAuth } = await import("firebase/auth");
+      const user = getAuth().currentUser;
+      if (user) {
+        const freshToken = await user.getIdToken(true);
+        return fetch(url, {
+          ...options,
+          headers: withAuthHeaders(options, freshToken),
+        });
+      }
+    } catch { }
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    }
+    throw new Error("Auth failed after retry");
   }
 
-  try {
-    const freshToken = await getBearerToken(true);
-    response = await fetch(url, {
-      ...options,
-      headers: withAuthHeaders(options, freshToken),
-    });
-    if (response.status === 401) {
-      return redirectToLogin();
-    }
-    return response;
-  } catch {
-    return redirectToLogin();
-  }
+  return response;
 }
 
 async function authBackendFetch(path: string, options: RequestInit = {}): Promise<Response> {
