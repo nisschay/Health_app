@@ -669,9 +669,9 @@ export default function DashboardPage() {
   const loadDashboardData = useCallback(async () => {
     setHistoryLoading(true);
     try {
-      const [items, summary] = await runWithTokenRetry((token) => Promise.all([
-        fetchReportHistory(token),
-        fetchStudiesDashboard(token),
+      const [items, summary] = await runWithTokenRetry((_token) => Promise.all([
+        fetchReportHistory(),
+        fetchStudiesDashboard(),
       ]));
       setHistory(items);
       setDashboardSummary(summary);
@@ -700,14 +700,14 @@ export default function DashboardPage() {
     resetStudyFlow();
     setFlowLoading(true);
     try {
-      let rows = await runWithTokenRetry((token) => fetchProfiles(token));
+      let rows = await runWithTokenRetry((_token) => fetchProfiles());
       if (!rows.some((item) => item.relationship.trim().toLowerCase() === "self")) {
         const fallbackName = (user?.displayName || user?.email?.split("@")[0] || "My Profile").trim() || "My Profile";
         try {
-          const createdSelf = await runWithTokenRetry((token) => createProfile({
+          const createdSelf = await runWithTokenRetry((_token) => createProfile({
             full_name: fallbackName,
             relationship: "self",
-          }, token));
+          }));
           rows = [...rows, createdSelf];
         } catch {
           // If self profile bootstrap fails, continue with fetched profiles.
@@ -728,7 +728,7 @@ export default function DashboardPage() {
     setFlowError(null);
     setFlowLoading(true);
     try {
-      const studies = await runWithTokenRetry((token) => fetchStudiesForProfile(profile.id, token));
+      const studies = await runWithTokenRetry((_token) => fetchStudiesForProfile(profile.id));
       setProfileStudies(studies);
       if (studies.length > 0) {
         setStudyFlowStep("what");
@@ -796,13 +796,12 @@ export default function DashboardPage() {
     setFlowLoading(true);
     setFlowError(null);
     try {
-      const created = await runWithTokenRetry((token) => createStudy(
+      const created = await runWithTokenRetry((_token) => createStudy(
         {
           profile_id: selectedProfile.id,
           name: newStudyName.trim(),
           description: newStudyDescription.trim() || undefined,
         },
-        token,
       ));
       proceedToAnalyze({
         profile: selectedProfile,
@@ -832,13 +831,12 @@ export default function DashboardPage() {
     setFlowLoading(true);
     setFlowError(null);
     try {
-      const created = await runWithTokenRetry((token) => createProfile(
+      const created = await runWithTokenRetry((_token) => createProfile(
         {
           full_name: newMemberName.trim(),
           relationship,
           date_of_birth: newMemberDob || undefined,
         },
-        token,
       ));
       setProfiles((prev) => [...prev, created]);
       setSelectedProfile(created);
@@ -980,18 +978,17 @@ export default function DashboardPage() {
     if (existingDataFile) fd.append("existing_data", existingDataFile);
 
     try {
-      const result = await runWithTokenRetry((token) => analyzeReportsStream(fd, token, handleAnalyzeStreamEvent));
+      const result = await runWithTokenRetry((_token) => analyzeReportsStream(fd, handleAnalyzeStreamEvent));
       let resultForView = result;
 
       setAnalyzeStep("saving");
       setSaveStatus("saving");
       try {
         if (studyContext) {
-          const saved = await runWithTokenRetry((token) => saveStudyAnalysis(
+          const saved = await runWithTokenRetry((_token) => saveStudyAnalysis(
             studyContext.study.id,
             result,
             pdfFiles.map((f) => f.name),
-            token,
           ));
           setStudySuccessMessage(
             studyContext.mode === "existing"
@@ -1001,13 +998,12 @@ export default function DashboardPage() {
           setResultStudyReportCount(saved.total_reports);
 
           if (studyContext.mode === "existing") {
-            resultForView = await runWithTokenRetry((token) => fetchStudyCombinedReport(
+            resultForView = await runWithTokenRetry((_token) => fetchStudyCombinedReport(
               studyContext.study.id,
-              token,
             ));
           }
         } else {
-          await runWithTokenRetry((token) => saveAnalysis(result, pdfFiles.map((f) => f.name), token));
+          await runWithTokenRetry((_token) => saveAnalysis(result, pdfFiles.map((f) => f.name)));
           setStudySuccessMessage(null);
           setResultStudyReportCount(null);
         }
@@ -1044,7 +1040,7 @@ export default function DashboardPage() {
 
   async function loadHistoryItem(id: number) {
     try {
-      const result = await runWithTokenRetry((token) => fetchReportById(id, token));
+      const result = await runWithTokenRetry((_token) => fetchReportById(id));
       setStudyContext(null);
       setStudySuccessMessage(null);
       setResultStudyReportCount(null);
@@ -1062,7 +1058,7 @@ export default function DashboardPage() {
     setErrorMessage(null);
     setViewLoadingStudyId(studyId);
     try {
-      const result = await runWithTokenRetry((token) => fetchStudyCombinedReport(studyId, token));
+      const result = await runWithTokenRetry((_token) => fetchStudyCombinedReport(studyId));
       setStudyContext(null);
       setStudySuccessMessage(`Loaded combined analysis for ${studyName}.`);
       setResultStudyReportCount(reportCount);
@@ -1110,7 +1106,7 @@ export default function DashboardPage() {
 
     const startedAt = Date.now();
     try {
-      const resp = await runWithTokenRetry((token) => sendChatMessage(
+      const resp = await runWithTokenRetry((_token) => sendChatMessage(
         {
           analysisId: activeAnalysisId ?? `analysis-${analysis.patient_info.patient_id || "current"}`,
           sessionId: chatSessionId,
@@ -1124,7 +1120,6 @@ export default function DashboardPage() {
           history: toApiChatHistory(existingThread).slice(-20),
           message: cleanQuestion,
         },
-        token,
       ));
 
       const elapsed = Date.now() - startedAt;
@@ -1189,7 +1184,7 @@ export default function DashboardPage() {
     if (!analysis) return;
     setIsExporting("excel");
     try {
-      const blob = await runWithTokenRetry((token) => exportExcel(analysis.records, analysis.patient_info, token));
+      const blob = await runWithTokenRetry((_token) => exportExcel(analysis.records, analysis.patient_info));
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url;
       a.download = `medical-data-${analysis.patient_info.name || "patient"}.xlsx`; a.click();
