@@ -96,7 +96,7 @@ export default function ProfileReportsPage() {
       setLoadingProfile(true);
       setError(null);
       try {
-        const summary = await runWithTokenRetry((token) => fetchStudiesDashboard(token));
+        const summary = await runWithTokenRetry((_token) => fetchStudiesDashboard());
         const selected = summary.profiles.find((item) => item.profile_id === profileId);
         if (!selected) {
           throw new Error("Profile not found or you do not have access.");
@@ -130,7 +130,7 @@ export default function ProfileReportsPage() {
       setCombinedError(null);
       setCombinedReport(null);
       try {
-        const report = await runWithTokenRetry((token) => fetchStudyCombinedReport(activeStudyId, token));
+        const report = await runWithTokenRetry((_token) => fetchStudyCombinedReport(activeStudyId));
         setCombinedReport(report);
       } catch (err) {
         setCombinedError(err instanceof Error ? err.message : "Failed to load combined report.");

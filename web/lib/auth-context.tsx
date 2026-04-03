@@ -20,6 +20,8 @@ import {
 import { auth } from "./firebase";
 import { buildApiUrl, getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
 
+const HF_SPACE_BACKEND_URL = "https://nisschay-medical-project-backend.hf.space";
+
 const AUTH_PRESENCE_COOKIE = "mra_auth";
 const AUTH_PRESENCE_MAX_AGE_SECONDS = 60 * 60 * 12;
 
@@ -73,7 +75,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       firebaseUser.getIdToken()
         .then((token) => {
           const publicApiBase = getPublicApiBaseUrl();
-          const syncBase = publicApiBase.startsWith("/") ? getDirectApiBaseUrl() : publicApiBase;
+          const syncBase = process.env.NODE_ENV === "production"
+            ? HF_SPACE_BACKEND_URL
+            : (publicApiBase.startsWith("/") ? getDirectApiBaseUrl() : publicApiBase);
           const syncUrl = buildApiUrl(syncBase, "/api/v1/auth/sync", {
             display_name: firebaseUser.displayName ?? "",
           });

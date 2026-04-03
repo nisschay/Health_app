@@ -1,12 +1,101 @@
 import { normalizeAnalysisPayload } from "./normalizeTest";
-import { getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
+import { getAuth } from "firebase/auth";
 
-const API_BASE_URL = getPublicApiBaseUrl();
+const HF_SPACE_BACKEND_URL = "https://nisschay-medical-project-backend.hf.space";
 
-const DIRECT_API_BASE_URL = getDirectApiBaseUrl();
+const API_BASE_URL = (() => {
+  const url = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (!url || url === "/backend") {
+    if (process.env.NODE_ENV === "production") {
+      console.error("NEXT_PUBLIC_API_URL not set in production!");
+      return HF_SPACE_BACKEND_URL;
+    }
+    return "/backend";
+  }
+  return url.replace(/\/$/, "");
+})();
+
+const DIRECT_API_BASE_URL = (
+  process.env.NEXT_PUBLIC_DIRECT_API_URL?.replace(/\/$/, "")
+  ?? (process.env.NODE_ENV === "production" ? HF_SPACE_BACKEND_URL : "http://localhost:8000")
+);
+
+if (process.env.NODE_ENV === "production") {
+  console.log("[API] Base URL:", API_BASE_URL);
+}
 
 function shouldRetryDirect(response: Response): boolean {
   return API_BASE_URL.startsWith("/") && response.status >= 500;
+}
+
+function redirectToLogin(): never {
+  if (typeof window !== "undefined") {
+    window.location.href = "/login";
+  }
+  throw new Error("Auth failed");
+}
+
+async function getBearerToken(forceRefresh = false): Promise<string> {
+  const auth = getAuth();
+  const user = auth.currentUser;
+  if (!user) {
+    throw new Error("No user");
+  }
+  return user.getIdToken(forceRefresh);
+}
+
+function withAuthHeaders(options: RequestInit, token: string): Headers {
+  const headers = new Headers(options.headers ?? {});
+  headers.set("Authorization", `Bearer ${token}`);
+  const hasBody = options.body !== undefined && options.body !== null;
+  if (hasBody && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  return headers;
+}
+
+async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  let token: string;
+  try {
+    token = await getBearerToken(false);
+  } catch {
+    try {
+      token = await getBearerToken(true);
+    } catch {
+      return redirectToLogin();
+    }
+  }
+
+  let response = await fetch(url, {
+    ...options,
+    headers: withAuthHeaders(options, token),
+  });
+
+  if (response.status !== 401) {
+    return response;
+  }
+
+  try {
+    const freshToken = await getBearerToken(true);
+    response = await fetch(url, {
+      ...options,
+      headers: withAuthHeaders(options, freshToken),
+    });
+    if (response.status === 401) {
+      return redirectToLogin();
+    }
+    return response;
+  } catch {
+    return redirectToLogin();
+  }
+}
+
+async function authBackendFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  let response = await authFetch(`${API_BASE_URL}${path}`, options);
+  if (shouldRetryDirect(response)) {
+    response = await authFetch(`${DIRECT_API_BASE_URL}${path}`, options);
+  }
+  return response;
 }
 
 export type PatientInfo = {
@@ -243,14 +332,12 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
 
 export async function analyzeReports(
   formData: FormData,
-  token?: string
 ): Promise<AnalysisResponse> {
   async function sendAnalyze(baseUrl: string): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8 * 60 * 1000);
-    return fetch(`${baseUrl}/api/v1/reports/analyze`, {
+    return authFetch(`${baseUrl}/api/v1/reports/analyze`, {
       method: "POST",
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       body: formData,
       signal: controller.signal,
     }).catch((error: unknown) => {
@@ -274,14 +361,12 @@ export async function analyzeReports(
 
 export async function analyzeReportsStream(
   formData: FormData,
-  token: string | undefined,
   onEvent: (event: AnalyzeStreamEvent) => void,
 ): Promise<AnalysisResponse> {
   async function sendStream(baseUrl: string): Promise<Response> {
-    return fetch(`${baseUrl}/api/v1/reports/analyze/stream`, {
+    return authFetch(`${baseUrl}/api/v1/reports/analyze/stream`, {
       method: "POST",
       headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         Accept: "text/event-stream",
       },
       body: formData,
@@ -401,15 +486,10 @@ export async function analyzeReportsStream(
 
 export async function fetchInsights(
   records: unknown[],
-  token?: string
 ): Promise<InsightsResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/reports/insights`, {
+  const response = await authBackendFetch("/api/v1/reports/insights", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
-    },
-    body: JSON.stringify({ records })
+    body: JSON.stringify({ records }),
   });
 
   return parseJsonResponse<InsightsResponse>(response);
@@ -417,36 +497,22 @@ export async function fetchInsights(
 
 export async function sendChatMessage(
   payload: ClinicalAssistantRequest,
-  token?: string
 ): Promise<ChatResponse> {
-  const response = await fetch(`/api/clinical-assistant`, {
+  const response = await authFetch(`/api/clinical-assistant`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
-    },
     body: JSON.stringify(payload),
   });
 
   return parseJsonResponse<ChatResponse>(response);
 }
 
-export async function fetchReportHistory(token: string): Promise<AnalysisHistoryItem[]> {
-  let response = await fetch(`${API_BASE_URL}/api/v1/reports/history`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (shouldRetryDirect(response)) {
-    response = await fetch(`${DIRECT_API_BASE_URL}/api/v1/reports/history`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  }
+export async function fetchReportHistory(): Promise<AnalysisHistoryItem[]> {
+  const response = await authBackendFetch("/api/v1/reports/history");
   return parseJsonResponse<AnalysisHistoryItem[]>(response);
 }
 
-export async function fetchReportById(id: number, token: string): Promise<AnalysisResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/reports/history/${id}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export async function fetchReportById(id: number): Promise<AnalysisResponse> {
+  const response = await authBackendFetch(`/api/v1/reports/history/${id}`);
   const parsed = await parseJsonResponse<AnalysisResponse>(response);
   return normalizeAnalysisPayload(parsed);
 }
@@ -454,58 +520,39 @@ export async function fetchReportById(id: number, token: string): Promise<Analys
 export async function saveAnalysis(
   analysis: AnalysisResponse,
   sourceFilenames: string[],
-  token: string
 ): Promise<AnalysisHistoryItem> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/reports/save`, {
+  const response = await authBackendFetch("/api/v1/reports/save", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
     body: JSON.stringify({ analysis, source_filenames: sourceFilenames }),
   });
   return parseJsonResponse<AnalysisHistoryItem>(response);
 }
 
-export async function fetchProfiles(token: string): Promise<ProfileItem[]> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/studies/profiles`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export async function fetchProfiles(): Promise<ProfileItem[]> {
+  const response = await authBackendFetch("/api/v1/studies/profiles");
   return parseJsonResponse<ProfileItem[]>(response);
 }
 
 export async function createProfile(
   payload: { full_name: string; relationship: string; date_of_birth?: string | null },
-  token: string,
 ): Promise<ProfileItem> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/studies/profiles`, {
+  const response = await authBackendFetch("/api/v1/studies/profiles", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
     body: JSON.stringify(payload),
   });
   return parseJsonResponse<ProfileItem>(response);
 }
 
-export async function fetchStudiesForProfile(profileId: string, token: string): Promise<StudySummary[]> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/studies/profiles/${profileId}/studies`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export async function fetchStudiesForProfile(profileId: string): Promise<StudySummary[]> {
+  const response = await authBackendFetch(`/api/v1/studies/profiles/${profileId}/studies`);
   return parseJsonResponse<StudySummary[]>(response);
 }
 
 export async function createStudy(
   payload: { profile_id: string; name: string; description?: string | null },
-  token: string,
 ): Promise<StudySummary> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/studies`, {
+  const response = await authBackendFetch("/api/v1/studies", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
     body: JSON.stringify(payload),
   });
   return parseJsonResponse<StudySummary>(response);
@@ -515,14 +562,9 @@ export async function saveStudyAnalysis(
   studyId: string,
   analysis: AnalysisResponse,
   sourceFilenames: string[],
-  token: string,
 ): Promise<SaveStudyAnalysisResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/studies/${studyId}/reports/save-analysis`, {
+  const response = await authBackendFetch(`/api/v1/studies/${studyId}/reports/save-analysis`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
     body: JSON.stringify({
       analysis,
       source_filenames: sourceFilenames,
@@ -531,27 +573,13 @@ export async function saveStudyAnalysis(
   return parseJsonResponse<SaveStudyAnalysisResponse>(response);
 }
 
-export async function fetchStudiesDashboard(token: string): Promise<DashboardSummary> {
-  let response = await fetch(`${API_BASE_URL}/api/v1/studies/dashboard`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (shouldRetryDirect(response)) {
-    response = await fetch(`${DIRECT_API_BASE_URL}/api/v1/studies/dashboard`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  }
+export async function fetchStudiesDashboard(): Promise<DashboardSummary> {
+  const response = await authBackendFetch("/api/v1/studies/dashboard");
   return parseJsonResponse<DashboardSummary>(response);
 }
 
-export async function fetchStudyCombinedReport(studyId: string, token: string): Promise<AnalysisResponse> {
-  let response = await fetch(`${API_BASE_URL}/api/v1/studies/${studyId}/combined-report`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (shouldRetryDirect(response)) {
-    response = await fetch(`${DIRECT_API_BASE_URL}/api/v1/studies/${studyId}/combined-report`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  }
+export async function fetchStudyCombinedReport(studyId: string): Promise<AnalysisResponse> {
+  const response = await authBackendFetch(`/api/v1/studies/${studyId}/combined-report`);
   const parsed = await parseJsonResponse<AnalysisResponse>(response);
   return normalizeAnalysisPayload(parsed);
 }
@@ -559,14 +587,9 @@ export async function fetchStudyCombinedReport(studyId: string, token: string): 
 export async function exportPdf(
   records: MedicalRecord[],
   patientInfo: PatientInfo,
-  token?: string
 ): Promise<Blob> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/reports/export/pdf`, {
+  const response = await authBackendFetch("/api/v1/reports/export/pdf", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
     body: JSON.stringify({ records, patient_info: patientInfo }),
   });
   if (!response.ok) throw new Error("PDF export failed.");
@@ -576,14 +599,9 @@ export async function exportPdf(
 export async function exportExcel(
   records: MedicalRecord[],
   patientInfo: PatientInfo,
-  token?: string
 ): Promise<Blob> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/reports/export/excel`, {
+  const response = await authBackendFetch("/api/v1/reports/export/excel", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
     body: JSON.stringify({ records, patient_info: patientInfo }),
   });
   if (!response.ok) throw new Error("Excel export failed.");
