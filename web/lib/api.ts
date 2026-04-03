@@ -56,15 +56,7 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
   }
 
   if (!token) {
-    // fallback: try Firebase directly
-    try {
-      const { getAuth } = await import("firebase/auth");
-      const user = getAuth().currentUser;
-      if (user) token = await user.getIdToken(false);
-    } catch { }
-  }
-
-  if (!token) {
+    console.error("[authFetch] No token available - user may not be logged in");
     throw new Error("No auth token available");
   }
 
@@ -73,23 +65,9 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
     headers: withAuthHeaders(options, token),
   });
 
-  // Retry once with fresh token on 401
   if (response.status === 401) {
-    try {
-      const { getAuth } = await import("firebase/auth");
-      const user = getAuth().currentUser;
-      if (user) {
-        const freshToken = await user.getIdToken(true);
-        return fetch(url, {
-          ...options,
-          headers: withAuthHeaders(options, freshToken),
-        });
-      }
-    } catch { }
-    if (typeof window !== "undefined") {
-      window.location.href = "/login";
-    }
-    throw new Error("Auth failed after retry");
+    console.error("[authFetch] 401 received - token may be expired");
+    redirectToLogin();
   }
 
   return response;
