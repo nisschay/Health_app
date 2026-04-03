@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { retrieveRelevantGuidelines } from "@/lib/ragRetrieval";
+import { buildApiUrl, getServerBackendBaseUrl } from "@/lib/apiBaseUrl";
 
 type ChatTurnPayload = {
   role: "user" | "assistant";
@@ -88,16 +89,7 @@ const sessionHistoryStore = new Map<string, ChatTurnPayload[]>();
 export const runtime = "nodejs";
 
 function resolveBackendBaseUrl(): string {
-  const raw =
-    process.env.NEXT_PUBLIC_DIRECT_API_URL?.replace(/\/$/, "") ||
-    process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ||
-    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
-    "http://127.0.0.1:8000";
-
-  if (raw.startsWith("/")) {
-    return "http://127.0.0.1:8000";
-  }
-  return raw;
+  return getServerBackendBaseUrl();
 }
 
 function normalizeRole(value: unknown): "user" | "assistant" | null {
@@ -579,7 +571,7 @@ export async function POST(request: NextRequest) {
   };
 
   try {
-    const response = await fetch(`${backendBaseUrl}/api/v1/reports/chat`, {
+    const response = await fetch(buildApiUrl(backendBaseUrl, "/api/v1/reports/chat"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

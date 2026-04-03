@@ -22,7 +22,10 @@ function loadCentralEnv() {
       value = value.slice(1, -1);
     }
 
-    process.env[key] = value;
+    // Never clobber env values already injected by CI/hosting providers.
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
   }
 }
 

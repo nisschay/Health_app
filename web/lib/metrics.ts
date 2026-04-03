@@ -1,9 +1,7 @@
 import { normalizeTestName } from "./testNameMap";
+import { getPublicApiBaseUrl } from "./apiBaseUrl";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ??
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "/backend";
+const API_BASE_URL = getPublicApiBaseUrl();
 
 export type MetricName =
   | "json_validity"
