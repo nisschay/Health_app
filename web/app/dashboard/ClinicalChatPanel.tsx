@@ -6,6 +6,8 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -460,6 +462,57 @@ function deltaText(metric: PriorityMetric): string {
   return `${sign}${metric.trendDelta.toFixed(1)} from last`;
 }
 
+function formatTrendTickLabel(value: string): string {
+  const parsed = parseMedicalDate(value);
+  if (parsed === Number.MAX_SAFE_INTEGER) return value;
+  return new Date(parsed).toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+  });
+}
+
+function formatTrendTooltipLabel(value: string): string {
+  const parsed = parseMedicalDate(value);
+  if (parsed === Number.MAX_SAFE_INTEGER) return value;
+  return new Date(parsed).toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function TrendTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+
+  const count = Number(payload[0]?.value ?? 0);
+  return (
+    <div
+      style={{
+        background: "#292524",
+        border: "1px solid #44403c",
+        borderRadius: "8px",
+        padding: "8px 12px",
+        fontFamily: "DM Sans",
+      }}
+    >
+      <p style={{ fontSize: 12, color: "#78716c", margin: 0, marginBottom: 4 }}>
+        {formatTrendTooltipLabel(String(label ?? ""))}
+      </p>
+      <p
+        style={{
+          margin: 0,
+          fontSize: 14,
+          fontFamily: "JetBrains Mono",
+          color: "#fbbf24",
+          fontWeight: 600,
+        }}
+      >
+        {count} alerts
+      </p>
+    </div>
+  );
+}
+
 function CategoryTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   return (
@@ -707,13 +760,38 @@ export default function ClinicalChatPanel({
           <div className="intelligence-viz-card">
             <h3>Metric Trend</h3>
             {trendData.length > 0 ? (
-              <div className="metric-trend-embed">
-                <iframe
-                  title="Metric Trend"
-                  src="/metric-trend-widget.html?embed=1"
-                  className="metric-trend-iframe"
-                  loading="lazy"
-                />
+              <div className="metric-trend-embed metric-trend-chart-wrap">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={trendData}
+                    margin={{ top: 16, right: 12, left: 0, bottom: 12 }}
+                  >
+                    <CartesianGrid stroke="#3f3a34" strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fill: "#78716c", fontSize: 11, fontFamily: "DM Sans" }}
+                      tickLine={false}
+                      axisLine={false}
+                      minTickGap={16}
+                      tickFormatter={(value: string) => formatTrendTickLabel(value)}
+                    />
+                    <YAxis
+                      allowDecimals={false}
+                      tick={{ fill: "#a8a29e", fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip content={<TrendTooltip />} cursor={{ stroke: "#f59e0b", strokeDasharray: "3 3" }} />
+                    <Line
+                      type="monotone"
+                      dataKey="alertCount"
+                      stroke="#d97706"
+                      strokeWidth={2.5}
+                      dot={{ r: 4, fill: "#f59e0b", stroke: "#1c1917", strokeWidth: 2 }}
+                      activeDot={{ r: 5, fill: "#fbbf24", stroke: "#1c1917", strokeWidth: 2 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
               </div>
             ) : (
               <p className="muted-copy">No report-date alert trend is available yet.</p>

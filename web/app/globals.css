@@ -3865,12 +3865,8 @@ h1 {
   border: 1px solid #1f1f1f;
 }
 
-.metric-trend-iframe {
-  display: block;
-  width: 100%;
+.metric-trend-chart-wrap {
   height: 262px;
-  border: 0;
-  background: #111;
 }
 
 .category-chart-scroll {
