@@ -37,33 +37,6 @@ Add project screenshots in docs/screenshots/ using the filenames below:
 
 ![System Architecture](docs/screenshots/system-architecture.png)
 
-Mermaid reference diagram used in docs and design discussions:
-
-<<<<<<< HEAD
-<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/310d8357-d821-4659-af9d-ee7bc2b01fb4" />
-
-=======
-```mermaid
-flowchart LR
-    U[User Browser]
-    FE[Next.js 15 App Router\nweb/]
-    API[FastAPI\nbackend_api/app/main.py]
-    DB[(PostgreSQL)]
-    FB[Firebase Auth]
-    G[Google Gemini API]
-    KB[Local Guideline KB\nweb/lib/medicalKnowledge.ts]
-
-    U --> FE
-    FE -->|Bearer ID Token| API
-    FE -->|/api/clinical-assistant| FE
-    FE -->|RAG retrieval| KB
-    FE -->|chat relay| API
-    API -->|verify_id_token| FB
-    API --> DB
-    API --> G
-```
->>>>>>> 3386e4b5 (updated readme)
-
 ## 5) Tech Stack
 
 - Frontend: Next.js 15, React 19, TypeScript, Tailwind-compatible styling.
@@ -375,8 +348,7 @@ The production path is Next.js + FastAPI, while legacy files remain useful for e
 
 Pull requests are welcome. For major changes, open an issue first to discuss what you would like to change.
 
-<<<<<<< HEAD
-## 16) License
+## 18) License
 MIT License
 =======
 Areas where contributions are especially welcome:
@@ -385,6 +357,5 @@ Areas where contributions are especially welcome:
 - Support for more lab report formats.
 - Mobile-friendly frontend improvements.
 
-## 18) License
->>>>>>> 3386e4b5 (updated readme)
+
 
