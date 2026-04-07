@@ -6,14 +6,6 @@ Production URL: https://health-app-lovat-eta.vercel.app/
 
 Medical Report Analyzer helps families and caregivers organize medical reports that are usually scattered across PDFs, labs, and timelines. Instead of treating each report as a one-off file, it builds a longitudinal health history with normalized test names and values, then adds an AI clinical assistant to explain trends and answer report-specific questions.
 
-### Product Screenshots
-
-Add project screenshots in docs/screenshots/ using the filenames below:
-
-![Dashboard](docs/screenshots/dashboard.png)
-![Clinical Assistant Chat](docs/screenshots/clinical-assistant-chat.png)
-![Trend Charts](docs/screenshots/trend-charts.png)
-
 ## 2) Important Disclaimers
 
 - This project is for informational support and engineering research.
@@ -38,11 +30,6 @@ Add project screenshots in docs/screenshots/ using the filenames below:
 ![System Architecture](docs/screenshots/system-architecture.png)
 
 Mermaid reference diagram used in docs and design discussions:
-
-<<<<<<< HEAD
-<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/310d8357-d821-4659-af9d-ee7bc2b01fb4" />
-
-=======
 ```mermaid
 flowchart LR
     U[User Browser]
@@ -62,7 +49,6 @@ flowchart LR
     API --> DB
     API --> G
 ```
->>>>>>> 3386e4b5 (updated readme)
 
 ## 5) Tech Stack
 
@@ -375,10 +361,6 @@ The production path is Next.js + FastAPI, while legacy files remain useful for e
 
 Pull requests are welcome. For major changes, open an issue first to discuss what you would like to change.
 
-<<<<<<< HEAD
-## 16) License
-MIT License
-=======
 Areas where contributions are especially welcome:
 
 - Better OCR handling for scanned PDFs.
@@ -386,5 +368,5 @@ Areas where contributions are especially welcome:
 - Mobile-friendly frontend improvements.
 
 ## 18) License
->>>>>>> 3386e4b5 (updated readme)
+Add your preferred license file and update this section.
 
