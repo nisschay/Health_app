@@ -26,25 +26,8 @@ Implemented capabilities across the project:
 
 ## 2) Technical Architecture
 
-```mermaid
-flowchart LR
-	U[User Browser]
-	FE[Next.js 15 App Router\nweb/]
-	API[FastAPI\nbackend_api/app/main.py]
-	DB[(PostgreSQL)]
-	FB[Firebase Auth]
-	G[Google Gemini API]
-	KB[Local Guideline KB\nweb/lib/medicalKnowledge.ts]
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/310d8357-d821-4659-af9d-ee7bc2b01fb4" />
 
-	U --> FE
-	FE -->|Bearer ID Token| API
-	FE -->|/api/clinical-assistant| FE
-	FE -->|RAG retrieval| KB
-	FE -->|chat relay| API
-	API -->|verify_id_token| FB
-	API --> DB
-	API --> G
-```
 
 Primary architecture decisions:
 
