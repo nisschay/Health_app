@@ -29,27 +29,6 @@ Medical Report Analyzer helps families and caregivers organize medical reports t
 
 ![System Architecture](docs/screenshots/system-architecture.png)
 
-Mermaid reference diagram used in docs and design discussions:
-```mermaid
-flowchart LR
-    U[User Browser]
-    FE[Next.js 15 App Router\nweb/]
-    API[FastAPI\nbackend_api/app/main.py]
-    DB[(PostgreSQL)]
-    FB[Firebase Auth]
-    G[Google Gemini API]
-    KB[Local Guideline KB\nweb/lib/medicalKnowledge.ts]
-
-    U --> FE
-    FE -->|Bearer ID Token| API
-    FE -->|/api/clinical-assistant| FE
-    FE -->|RAG retrieval| KB
-    FE -->|chat relay| API
-    API -->|verify_id_token| FB
-    API --> DB
-    API --> G
-```
-
 ## 5) Tech Stack
 
 - Frontend: Next.js 15, React 19, TypeScript, Tailwind-compatible styling.
@@ -368,5 +347,5 @@ Areas where contributions are especially welcome:
 - Mobile-friendly frontend improvements.
 
 ## 18) License
-Add your preferred license file and update this section.
+MIT License
 
