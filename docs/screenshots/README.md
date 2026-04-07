@@ -2,9 +2,6 @@
 
 Place project visuals in this folder using these filenames so README image links resolve:
 
-- dashboard.png
-- clinical-assistant-chat.png
-- trend-charts.png
 - system-architecture.png
 
 Notes:
