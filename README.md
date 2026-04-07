@@ -341,5 +341,5 @@ Current production-oriented stack is the Next.js + FastAPI path, while legacy fi
 - Clinical assistant outputs are informational support, not medical diagnosis.
 
 ## 16) License
+MIT License
 
-Add your preferred license file and update this section.
