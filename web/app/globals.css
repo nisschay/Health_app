@@ -4448,3 +4448,61 @@ h1 {
     padding: 2rem 1.5rem;
   }
 }
+
+/* =========================================
+   BACKEND WAKEUP OVERLAY
+   ========================================= */
+
+.backend-wakeup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(12, 10, 9, 0.84);
+  backdrop-filter: blur(8px);
+}
+
+.backend-wakeup-card {
+  width: min(92vw, 420px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.85rem;
+  text-align: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  box-shadow: var(--shadow-lg);
+}
+
+.backend-wakeup-spinner {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: var(--radius-full);
+  border: 3px solid var(--border-default);
+  border-top-color: var(--accent-soft);
+  animation: backend-wakeup-spin 0.85s linear infinite;
+}
+
+.backend-wakeup-title {
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.backend-wakeup-note {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+@keyframes backend-wakeup-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
