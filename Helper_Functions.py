@@ -26,6 +26,7 @@ from collections import Counter
 import hashlib
 import copy
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 try:
     from streamlit.runtime.scriptrunner import get_script_run_ctx
@@ -58,6 +59,12 @@ CHAT_MODEL_CANDIDATES = _model_candidates_from_env(
     "GEMINI_CHAT_MODELS",
     "gemini-2.5-flash,gemini-1.5-flash",
 )
+
+CHAT_HISTORY_LIMIT = max(1, int(os.getenv("CHAT_HISTORY_LIMIT", "8")))
+CHAT_PROMPT_MAX_ROWS = max(20, int(os.getenv("CHAT_PROMPT_MAX_ROWS", "80")))
+CHAT_TIMELINE_LIMIT = max(1, int(os.getenv("CHAT_TIMELINE_LIMIT", "12")))
+CHAT_SNAPSHOT_LIMIT = max(5, int(os.getenv("CHAT_SNAPSHOT_LIMIT", "40")))
+CHAT_MODEL_TIMEOUT_SECONDS = max(5, int(os.getenv("CHAT_MODEL_TIMEOUT_SECONDS", "50")))
 
 CANONICAL_STATUS_VALUES = {
     "Low",
@@ -1102,7 +1109,7 @@ def get_chatbot_response(
     )
     safe_df = safe_df.sort_values(by=["_date_sort", "Lab_Name", "Test_Name"], na_position="last").reset_index(drop=True)
 
-    df_string = safe_df[expected_cols].to_string(index=False, max_rows=200)
+    df_string = safe_df[expected_cols].to_string(index=False, max_rows=CHAT_PROMPT_MAX_ROWS)
 
     timeline_lines = []
     grouped = safe_df.groupby(["Test_Date", "Lab_Name"], dropna=False, sort=False)
@@ -1126,7 +1133,7 @@ def get_chatbot_response(
             f"Abnormal findings: {abnormal_preview or 'None'}"
         )
 
-    timeline_summary = "\n---\n".join(timeline_lines[:60])
+    timeline_summary = "\n---\n".join(timeline_lines[:CHAT_TIMELINE_LIMIT])
 
     latest_snapshot_rows = safe_df.drop_duplicates(subset=["Test_Name"], keep="last")
     latest_snapshot = "\n".join(
@@ -1136,7 +1143,7 @@ def get_chatbot_response(
                 f"[{row.get('Status', 'UNKNOWN')}] as of {row.get('Test_Date', 'Unknown date')}"
             ).strip(),
             axis=1,
-        ).tolist()[:120]
+        ).tolist()[:CHAT_SNAPSHOT_LIMIT]
     )
 
     report_context = report_context or {}
@@ -1147,7 +1154,7 @@ def get_chatbot_response(
         source_names = []
 
     history_context = ""
-    for entry in chat_history_for_prompt[-20:]:
+    for entry in chat_history_for_prompt[-CHAT_HISTORY_LIMIT:]:
         role = str(entry.get("role", "user")).capitalize()
         content = str(entry.get("content", "")).strip()
         if content:
@@ -1236,14 +1243,23 @@ Assistant Response (markdown):
                 gemini_model_chat = genai.GenerativeModel(model_name)
                 _active_chat_model_name = model_name
 
-            response = gemini_model_chat.generate_content(
-                prompt,
-                generation_config={"temperature": 0.3},
-            )
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                response_future = executor.submit(
+                    gemini_model_chat.generate_content,
+                    prompt,
+                    generation_config={"temperature": 0.3},
+                )
+                response = response_future.result(timeout=CHAT_MODEL_TIMEOUT_SECONDS)
             response_text = _response_text_from_model_response(response)
             if response_text:
                 return response_text
             last_error_text = "Gemini chat returned an empty response."
+            continue
+        except FutureTimeoutError:
+            last_error_text = (
+                f"Gemini chat timed out after {CHAT_MODEL_TIMEOUT_SECONDS}s "
+                f"for model {model_name}."
+            )
             continue
         except Exception as e:
             last_error_text = str(e)

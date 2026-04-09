@@ -38,6 +38,7 @@ type ClinicalAssistantPayload = {
   history?: unknown;
   message?: string;
   question?: string; // Backward compatibility for older clients.
+  stream?: boolean;
 };
 
 type AnalysisFinding = {
@@ -85,6 +86,12 @@ type BackendAnalysisPayload = {
 };
 
 const sessionHistoryStore = new Map<string, ChatTurnPayload[]>();
+
+const CHAT_HISTORY_LIMIT = 8;
+const REPORT_TIMELINE_LIMIT = 12;
+const FINDINGS_SNAPSHOT_LIMIT = 40;
+const CHAT_BACKEND_TIMEOUT_MS = 55_000;
+const STREAM_CHUNK_SIZE = 140;
 
 export const runtime = "nodejs";
 
@@ -336,6 +343,12 @@ async function getFullAnalysis(
   // userId is part of the function contract for profile-scoped resolution and auditing context.
   void userId;
 
+  const hasContextRecords = Array.isArray(reportContext.records)
+    && reportContext.records.some((row) => row && typeof row === "object");
+  if (hasContextRecords) {
+    return summarizeRecords(reportContext);
+  }
+
   const fetched = await fetchFullAnalysis(analysisId, backendBaseUrl, authHeader);
   if (fetched) {
     return summarizeRecords(toReportContextFromBackend(fetched));
@@ -349,10 +362,13 @@ function buildBaseSystemPrompt(
   userId: string,
 ): string {
 
-  const reportTimeline = analysis.reports
+  const reportSlice = analysis.reports.slice(-REPORT_TIMELINE_LIMIT);
+
+  const reportTimeline = reportSlice
     .map((r) => {
       const abnormalFindings = r.findings
         .filter((f) => f.severity !== "NORMAL")
+        .slice(0, 8)
         .map((f) => `${f.name}: ${f.value}${f.unit ? ` ${f.unit}` : ""} (${f.severity})`)
         .join(", ");
 
@@ -365,7 +381,7 @@ function buildBaseSystemPrompt(
     .join("\n---\n");
 
   const concernMap = new Map<string, number>();
-  for (const r of analysis.reports) {
+  for (const r of reportSlice) {
     for (const f of r.findings) {
       if (f.severity !== "NORMAL") {
         concernMap.set(f.canonicalName, (concernMap.get(f.canonicalName) || 0) + 1);
@@ -380,6 +396,7 @@ function buildBaseSystemPrompt(
     .join("\n");
 
   const latestValues = analysis.findings
+    .slice(0, FINDINGS_SNAPSHOT_LIMIT)
     .map((f) => `${f.canonicalName}: ${f.latestValue}${f.unit ? ` ${f.unit}` : ""} [${f.latestStatus}] as of ${f.latestDate}`)
     .join("\n");
 
@@ -429,6 +446,52 @@ Different labs in this patient's history use slightly different reference
 ranges. Always use the reference range from the SAME report as the value
 being discussed. If ranges conflict across reports, note the discrepancy.
   `.trim();
+}
+
+function wantsEventStream(request: NextRequest, payload: ClinicalAssistantPayload): boolean {
+  if (payload.stream === true) return true;
+  const accept = request.headers.get("accept") ?? "";
+  return accept.toLowerCase().includes("text/event-stream");
+}
+
+function sseEvent(event: Record<string, unknown>): string {
+  return `data: ${JSON.stringify(event)}\n\n`;
+}
+
+function streamAnswerChunks(answer: string): string[] {
+  const normalized = answer.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+
+  const chunks: string[] = [];
+  const sentences = normalized.split(/(?<=[.!?])\s+/).filter(Boolean);
+  let pending = "";
+
+  for (const sentence of sentences) {
+    const candidate = pending ? `${pending} ${sentence}` : sentence;
+    if (candidate.length <= STREAM_CHUNK_SIZE) {
+      pending = candidate;
+      continue;
+    }
+    if (pending) {
+      chunks.push(pending);
+      pending = "";
+    }
+
+    if (sentence.length <= STREAM_CHUNK_SIZE) {
+      pending = sentence;
+      continue;
+    }
+
+    for (let index = 0; index < sentence.length; index += STREAM_CHUNK_SIZE) {
+      chunks.push(sentence.slice(index, index + STREAM_CHUNK_SIZE));
+    }
+  }
+
+  if (pending) {
+    chunks.push(pending);
+  }
+
+  return chunks;
 }
 
 function buildGuidelinesSection(
@@ -500,6 +563,7 @@ async function readErrorDetail(response: Response): Promise<string> {
 }
 
 export async function POST(request: NextRequest) {
+  const requestStartedAt = Date.now();
   const authHeader = request.headers.get("authorization");
   if (!authHeader) {
     return NextResponse.json(
@@ -528,15 +592,16 @@ export async function POST(request: NextRequest) {
     ? payload.reportContext
     : {};
   const records = Array.isArray(reportContext.records) ? reportContext.records : [];
+  const shouldStream = wantsEventStream(request, payload);
   const backendBaseUrl = resolveBackendBaseUrl();
 
   const analysisId = asText(payload.analysisId, "unknown-analysis");
   const sessionId = asText(payload.sessionId, "session-default");
   const userId = resolveUserId(authHeader);
 
-  const incomingHistory = sanitizeHistory(payload.history).slice(-20);
+  const incomingHistory = sanitizeHistory(payload.history).slice(-CHAT_HISTORY_LIMIT);
   const storedHistory = sessionHistoryStore.get(sessionId) ?? [];
-  const cappedHistory = (incomingHistory.length > 0 ? incomingHistory : storedHistory).slice(-20);
+  const cappedHistory = (incomingHistory.length > 0 ? incomingHistory : storedHistory).slice(-CHAT_HISTORY_LIMIT);
   const messages = [
     ...cappedHistory.map((h) => ({ role: h.role, content: h.content })),
     { role: "user" as const, content: message },
@@ -570,63 +635,155 @@ export async function POST(request: NextRequest) {
     report_context: reportContext,
   };
 
-  try {
-    const response = await fetch(buildApiUrl(backendBaseUrl, "/api/v1/reports/chat"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: authHeader,
-      },
-      body: JSON.stringify(backendPayload),
-      cache: "no-store",
-    });
+  const executeChatRequest = async (): Promise<{ answer: string; status: number; backendLatencyMs: number }> => {
+    const backendCallStartedAt = Date.now();
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), CHAT_BACKEND_TIMEOUT_MS);
+    try {
+      const response = await fetch(buildApiUrl(backendBaseUrl, "/api/v1/reports/chat"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authHeader,
+        },
+        body: JSON.stringify(backendPayload),
+        cache: "no-store",
+        signal: abortController.signal,
+      });
 
-    if (response.status === 401 || response.status === 403) {
+      if (response.status === 401 || response.status === 403) {
+        throw Object.assign(new Error("Session expired or token invalid. Please sign in again."), { status: 401 });
+      }
+
+      if (!response.ok) {
+        const detail = await readErrorDetail(response);
+        if (response.status >= 500) {
+          throw Object.assign(new Error(`Clinical assistant model error: ${detail}`), { status: 500 });
+        }
+        throw Object.assign(new Error(detail), { status: response.status });
+      }
+
+      const data = (await response.json()) as { answer?: unknown };
+      if (typeof data.answer !== "string") {
+        throw Object.assign(new Error("Clinical assistant returned an invalid response."), { status: 500 });
+      }
+
+      const updatedHistory = [
+        ...cappedHistory,
+        { role: "user" as const, content: message },
+        { role: "assistant" as const, content: data.answer },
+      ].slice(-CHAT_HISTORY_LIMIT);
+      sessionHistoryStore.set(sessionId, updatedHistory);
+
+      if (sessionHistoryStore.size > 500) {
+        const firstKey = sessionHistoryStore.keys().next().value;
+        if (firstKey) {
+          sessionHistoryStore.delete(firstKey);
+        }
+      }
+
+      return {
+        answer: data.answer,
+        status: 200,
+        backendLatencyMs: Date.now() - backendCallStartedAt,
+      };
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw Object.assign(new Error("Clinical assistant timed out. Please retry with a shorter question."), {
+          status: 504,
+        });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  if (!shouldStream) {
+    try {
+      const { answer, backendLatencyMs } = await executeChatRequest();
       return NextResponse.json(
-        { detail: "Session expired or token invalid. Please sign in again." },
-        { status: 401 },
+        { answer },
+        {
+          headers: {
+            "X-Chat-Backend-Latency-Ms": String(backendLatencyMs),
+            "X-Chat-Total-Latency-Ms": String(Date.now() - requestStartedAt),
+          },
+        },
+      );
+    } catch (error) {
+      const status = typeof (error as { status?: unknown })?.status === "number"
+        ? Number((error as { status: number }).status)
+        : 500;
+      const detail = error instanceof Error ? error.message : "Unknown assistant service error.";
+      return NextResponse.json(
+        { detail },
+        { status },
       );
     }
-
-    if (!response.ok) {
-      const detail = await readErrorDetail(response);
-      if (response.status >= 500) {
-        return NextResponse.json(
-          { detail: `Clinical assistant model error: ${detail}` },
-          { status: 500 },
-        );
-      }
-      return NextResponse.json({ detail }, { status: response.status });
-    }
-
-    const data = (await response.json()) as { answer?: unknown };
-    if (typeof data.answer !== "string") {
-      return NextResponse.json(
-        { detail: "Clinical assistant returned an invalid response." },
-        { status: 500 },
-      );
-    }
-
-    const updatedHistory = [
-      ...cappedHistory,
-      { role: "user" as const, content: message },
-      { role: "assistant" as const, content: data.answer },
-    ].slice(-20);
-    sessionHistoryStore.set(sessionId, updatedHistory);
-
-    if (sessionHistoryStore.size > 500) {
-      const firstKey = sessionHistoryStore.keys().next().value;
-      if (firstKey) {
-        sessionHistoryStore.delete(firstKey);
-      }
-    }
-
-    return NextResponse.json({ answer: data.answer });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "Unknown assistant service error.";
-    return NextResponse.json(
-      { detail: `Clinical assistant model error: ${detail}` },
-      { status: 500 },
-    );
   }
+
+  const encoder = new TextEncoder();
+  let keepAlive: ReturnType<typeof setInterval> | null = null;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (event: Record<string, unknown>) => {
+        controller.enqueue(encoder.encode(sseEvent(event)));
+      };
+
+      send({
+        type: "started",
+        sessionId,
+        analysisId,
+        serverReceivedAt: requestStartedAt,
+      });
+      keepAlive = setInterval(() => {
+        send({ type: "keepalive", ts: Date.now() });
+      }, 10_000);
+
+      (async () => {
+        try {
+          const { answer, backendLatencyMs } = await executeChatRequest();
+          const chunks = streamAnswerChunks(answer);
+          for (const chunk of chunks) {
+            send({ type: "delta", text: chunk });
+          }
+          send({
+            type: "done",
+            answer,
+            backendLatencyMs,
+            totalLatencyMs: Date.now() - requestStartedAt,
+          });
+        } catch (error) {
+          const status = typeof (error as { status?: unknown })?.status === "number"
+            ? Number((error as { status: number }).status)
+            : 500;
+          const message = error instanceof Error ? error.message : "Unknown assistant service error.";
+          send({ type: "error", status, message });
+        } finally {
+          if (keepAlive) {
+            clearInterval(keepAlive);
+            keepAlive = null;
+          }
+          controller.close();
+        }
+      })();
+    },
+    cancel() {
+      if (keepAlive) {
+        clearInterval(keepAlive);
+        keepAlive = null;
+      }
+    },
+  });
+
+  return new NextResponse(stream, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
+  });
 }

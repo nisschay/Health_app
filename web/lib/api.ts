@@ -197,6 +197,13 @@ export type ChatResponse = {
   answer: string;
 };
 
+export type ChatStreamEvent =
+  | { type: "started"; sessionId?: string; analysisId?: string; serverReceivedAt?: number }
+  | { type: "keepalive"; ts?: number }
+  | { type: "delta"; text: string }
+  | { type: "done"; answer: string; backendLatencyMs?: number; totalLatencyMs?: number }
+  | { type: "error"; status?: number; message: string };
+
 export type ClinicalAssistantReportContext = {
   patientInfo?: PatientInfo;
   totalRecords?: number;
@@ -487,6 +494,92 @@ export async function sendChatMessage(
   });
 
   return parseJsonResponse<ChatResponse>(response);
+}
+
+export async function sendChatMessageStream(
+  payload: ClinicalAssistantRequest,
+  onEvent: (event: ChatStreamEvent) => void,
+): Promise<ChatResponse> {
+  const response = await authFetch(`/api/clinical-assistant`, {
+    method: "POST",
+    headers: {
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify({
+      ...payload,
+      stream: true,
+    }),
+  });
+
+  if (!response.ok) {
+    return parseJsonResponse<ChatResponse>(response);
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/event-stream")) {
+    return parseJsonResponse<ChatResponse>(response);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("Chat stream was unavailable from the server.");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalAnswer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    const normalizedBuffer = buffer.replace(/\r\n/g, "\n");
+    const chunks = normalizedBuffer.split("\n\n");
+    buffer = chunks.pop() ?? "";
+
+    for (const chunk of chunks) {
+      const dataLines = chunk
+        .split("\n")
+        .filter((line) => line.startsWith("data:"));
+      if (dataLines.length === 0) continue;
+
+      const rawPayload = dataLines
+        .map((line) => line.replace(/^data:\s*/, ""))
+        .join("\n")
+        .trim();
+      if (!rawPayload) continue;
+
+      let event: ChatStreamEvent;
+      try {
+        event = JSON.parse(rawPayload) as ChatStreamEvent;
+      } catch {
+        continue;
+      }
+
+      onEvent(event);
+
+      if (event.type === "delta") {
+        finalAnswer += event.text;
+      }
+
+      if (event.type === "done") {
+        finalAnswer = event.answer;
+      }
+
+      if (event.type === "error") {
+        throw new Error(event.message || "Clinical assistant request failed.");
+      }
+    }
+  }
+
+  if (!finalAnswer.trim()) {
+    throw new Error("Clinical assistant stream ended without an answer.");
+  }
+
+  return { answer: finalAnswer };
 }
 
 export async function fetchReportHistory(): Promise<AnalysisHistoryItem[]> {

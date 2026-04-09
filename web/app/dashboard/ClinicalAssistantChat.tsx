@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useTransition } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
-import { MedicalRecord, sendChatMessage, ChatTurn } from "@/lib/api";
+import { MedicalRecord, sendChatMessageStream, ChatTurn } from "@/lib/api";
 
 type ChatMessage = ChatTurn | { role: "system"; content: string };
 
@@ -26,7 +26,8 @@ export default function ClinicalAssistantChat({
 }: ClinicalAssistantChatProps) {
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
-  const [isPending, startTransition] = useTransition();
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [assistantDraft, setAssistantDraft] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -49,7 +50,7 @@ export default function ClinicalAssistantChat({
   };
 
   const submitQuestion = (question: string) => {
-    if (!question.trim() || isPending) return;
+    if (!question.trim() || isStreaming) return;
 
     const newQuestion = question.trim();
     setInputValue("");
@@ -62,32 +63,56 @@ export default function ClinicalAssistantChat({
     );
     const updatedHistory: ChatTurn[] = [...priorThread, { role: "user", content: newQuestion }];
     setChatHistory(updatedHistory);
+    setAssistantDraft("");
+    setIsStreaming(true);
 
-    startTransition(async () => {
+    void (async () => {
+      const requestStartedAt = Date.now();
+      let firstResponseLogged = false;
       try {
         const analysisId = sessionRef.current;
         const resp = await runWithTokenRetry((_token) =>
-          sendChatMessage(
+          sendChatMessageStream(
             {
               analysisId,
               sessionId: analysisId,
               reportContext: {
                 records,
               },
-              history: updatedHistory.slice(-20),
+              history: updatedHistory.slice(-8),
               message: newQuestion,
+            },
+            (event) => {
+              if (!firstResponseLogged && (event.type === "started" || event.type === "delta" || event.type === "done")) {
+                firstResponseLogged = true;
+                console.info("[CHAT_METRIC] ttft_ms", Date.now() - requestStartedAt);
+              }
+              if (event.type === "delta") {
+                setAssistantDraft((prev) => prev + event.text);
+              }
+              if (event.type === "done") {
+                setAssistantDraft(event.answer);
+                console.info("[CHAT_METRIC] total_ms", Date.now() - requestStartedAt, {
+                  backendLatencyMs: event.backendLatencyMs,
+                  totalLatencyMs: event.totalLatencyMs,
+                });
+              }
             },
           )
         );
+        setAssistantDraft("");
         setChatHistory((prev) => [...prev, { role: "assistant", content: resp.answer }]);
       } catch (err) {
+        setAssistantDraft("");
         const msg = err instanceof Error ? err.message : "Unknown error connecting to chat service.";
         setChatHistory((prev) => [
           ...prev,
           { role: "system", content: `**Error:** ${msg}` },
         ]);
+      } finally {
+        setIsStreaming(false);
       }
-    });
+    })();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -161,14 +186,20 @@ export default function ClinicalAssistantChat({
           );
         })}
 
-        {isPending && (
+        {isStreaming && (
           <div className="clinical-chat-row assistant">
             <div className="clinical-chat-avatar">AI</div>
-            <div className="clinical-chat-bubble typing">
-              <span className="dot"></span>
-              <span className="dot"></span>
-              <span className="dot"></span>
-            </div>
+            {assistantDraft ? (
+              <div className="clinical-chat-bubble">
+                <ReactMarkdown>{assistantDraft}</ReactMarkdown>
+              </div>
+            ) : (
+              <div className="clinical-chat-bubble typing">
+                <span className="dot"></span>
+                <span className="dot"></span>
+                <span className="dot"></span>
+              </div>
+            )}
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -204,13 +235,13 @@ export default function ClinicalAssistantChat({
             value={inputValue}
             onChange={handleInputInput}
             onKeyDown={handleKeyDown}
-            disabled={isPending}
+            disabled={isStreaming}
             rows={1}
           />
           <button
             type="submit"
             className="clinical-chat-send-btn"
-            disabled={isPending || !inputValue.trim()}
+            disabled={isStreaming || !inputValue.trim()}
           >
             ↑ Send
           </button>
