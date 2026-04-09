@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Callable
@@ -88,6 +89,55 @@ def dataframe_from_records(records: list[dict[str, Any]]) -> pd.DataFrame:
     return df
 
 
+def _process_single_pdf(
+    filename: str,
+    payload: bytes,
+    api_key: str,
+    include_raw_texts: bool,
+) -> dict[str, Any]:
+    try:
+        report_text = extract_text_from_pdf(payload)
+    except Exception:
+        report_text = None
+
+    if not report_text:
+        return {
+            "file": filename,
+            "ok": False,
+            "reason": "No extractable text found.",
+        }
+
+    gemini_analysis_json = analyze_medical_report_with_gemini(report_text, api_key)
+    if not gemini_analysis_json:
+        reason = get_last_extraction_error() or "Gemini extraction failed"
+        return {
+            "file": filename,
+            "ok": False,
+            "reason": reason,
+        }
+
+    df_single, patient_info_single = create_structured_dataframe(
+        gemini_analysis_json,
+        filename,
+        api_key_for_gemini=api_key,
+    )
+
+    return {
+        "file": filename,
+        "ok": True,
+        "df": df_single,
+        "patient_info": patient_info_single,
+        "raw_preview": (
+            {
+                "name": filename,
+                "text": report_text[:2000],
+            }
+            if include_raw_texts
+            else None
+        ),
+    }
+
+
 class MedicalAnalysisService:
     def __init__(self, api_key: str | None = None):
         self.api_key = api_key or settings.gemini_api_key
@@ -136,7 +186,23 @@ class MedicalAnalysisService:
         raw_texts: list[dict[str, str]] = []
         failed_files: list[str] = []
 
-        for filename, payload in pdf_files:
+        queue_mode_active = (
+            settings.enable_batch_ingestion_queue
+            and total_files >= settings.batch_queue_min_files
+        )
+        worker_count = (
+            min(settings.batch_ingestion_workers, max(1, total_files))
+            if queue_mode_active
+            else 1
+        )
+
+        if queue_mode_active:
+            print(
+                "[ANALYZE] Phase C batch worker mode enabled: "
+                f"files={total_files}, workers={worker_count}"
+            )
+
+        for filename, _ in pdf_files:
             emit(
                 {
                     "type": "file",
@@ -148,38 +214,30 @@ class MedicalAnalysisService:
                 }
             )
 
-            try:
-                report_text = extract_text_from_pdf(payload)
-            except Exception:
-                report_text = None
+        if worker_count <= 1:
+            results = [
+                _process_single_pdf(filename, payload, api_key, include_raw_texts)
+                for filename, payload in pdf_files
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(
+                        _process_single_pdf,
+                        filename,
+                        payload,
+                        api_key,
+                        include_raw_texts,
+                    )
+                    for filename, payload in pdf_files
+                ]
+                results = [future.result() for future in as_completed(futures)]
 
-            if not report_text:
-                failed_files.append(f"{filename}: no extractable text")
-                processed_files += 1
-                emit(
-                    {
-                        "type": "file",
-                        "file": filename,
-                        "step": "failed",
-                        "percent": 100,
-                        "processed": processed_files,
-                        "total": total_files,
-                        "error": "No extractable text found.",
-                    }
-                )
-                continue
+        for result in results:
+            filename = str(result.get("file") or "uploaded.pdf")
 
-            if include_raw_texts:
-                raw_texts.append(
-                    {
-                        "name": filename,
-                        "text": report_text[:2000],
-                    }
-                )
-
-            gemini_analysis_json = analyze_medical_report_with_gemini(report_text, api_key)
-            if not gemini_analysis_json:
-                reason = get_last_extraction_error() or "Gemini extraction failed"
+            if not result.get("ok"):
+                reason = str(result.get("reason") or "Processing failed")
                 failed_files.append(f"{filename}: {reason}")
                 processed_files += 1
                 emit(
@@ -206,15 +264,16 @@ class MedicalAnalysisService:
                 }
             )
 
-            df_single, patient_info_single = create_structured_dataframe(
-                gemini_analysis_json,
-                filename,
-                api_key_for_gemini=api_key,
-            )
-            if not df_single.empty:
+            df_single = result.get("df")
+            patient_info_single = result.get("patient_info")
+            raw_preview = result.get("raw_preview")
+
+            if isinstance(df_single, pd.DataFrame) and not df_single.empty:
                 all_dfs.append(df_single)
-            if patient_info_single:
+            if isinstance(patient_info_single, dict) and patient_info_single:
                 all_patient_infos_from_pdfs.append(patient_info_single)
+            if isinstance(raw_preview, dict):
+                raw_texts.append(raw_preview)
 
             processed_files += 1
             elapsed = (datetime.utcnow() - started_at).total_seconds()

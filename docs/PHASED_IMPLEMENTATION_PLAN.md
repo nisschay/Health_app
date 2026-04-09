@@ -10,9 +10,9 @@ Reduce end-user latency while preserving medical safety:
 - Ingestion: avoid repeated heavy compute and reduce duplicate model calls
 - Normalization: safer canonicalization with strict clinical guardrails
 
-## Phase A - Day 1 Fast Path (current phase)
+## Phase A - Day 1 Fast Path
 
-Status: In progress (implemented core streaming + chat path trim)
+Status: Completed
 
 ### Implemented in this phase
 
@@ -52,7 +52,7 @@ Status: In progress (implemented core streaming + chat path trim)
 
 ## Phase B - Persistence + Aggregation Correctness
 
-Status: Planned
+Status: Completed
 
 ### Scope
 
@@ -97,7 +97,7 @@ Status: Planned
 
 ## Phase C - Batch Throughput + Safe Normalization Expansion
 
-Status: Planned
+Status: Implemented
 
 ### Scope
 
@@ -116,6 +116,23 @@ Status: Planned
 4. Rollout and tuning
 - canary rollout by cohort
 - monitor TTFT, chat p95, combined-report p95, normalization regression pass rate
+
+### Implemented in this phase
+
+1. Batch worker orchestration for heavy ingestion
+- batch-worker mode is enabled only when upload count crosses configurable threshold
+- no queueing added to chat path; chat remains direct request-response
+
+2. Hybrid OCR fallback
+- OCR fallback for empty/near-empty native PDF extraction
+- optional dependency support with graceful fallback when OCR libs are unavailable
+
+3. Safe normalization expansion
+- alias-whitelist-only mode enabled by default via env flag
+- generic fuzzy merge fallback disabled in safe mode
+
+4. Operational smoke coverage updates
+- smoke test now validates analyze and analyze-stream endpoint reachability
 
 ### Target files for Phase C
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -382,6 +383,19 @@ MUST_NOT_MERGE_RAW = [
 _warned_categories: set[str] = set()
 _warned_tests: set[str] = set()
 _warned_other_category_tests: set[str] = set()
+_normalized_test_name_map_cache: dict[str, str] | None = None
+
+
+def _as_bool(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+NORMALIZATION_ALIAS_WHITELIST_ONLY = _as_bool(
+    os.getenv("NORMALIZATION_ALIAS_WHITELIST_ONLY"),
+    default=True,
+)
 
 
 def _normalize_lookup_key(raw: str) -> str:
@@ -393,6 +407,34 @@ def _normalize_lookup_key(raw: str) -> str:
     key = re.sub(r"[^a-z0-9\-&/+,.\s]", " ", key)
     key = re.sub(r"\s+", " ", key)
     return key.strip(" -")
+
+
+def _normalized_test_name_map() -> dict[str, str]:
+    global _normalized_test_name_map_cache
+    if _normalized_test_name_map_cache is not None:
+        return _normalized_test_name_map_cache
+
+    mapped: dict[str, str] = {}
+    for map_key, canonical in TEST_NAME_MAP.items():
+        normalized_key = _normalize_lookup_key(map_key)
+        if normalized_key:
+            mapped[normalized_key] = canonical
+
+    _normalized_test_name_map_cache = mapped
+    return _normalized_test_name_map_cache
+
+
+def _canonical_from_lookup(value: str) -> str | None:
+    normalized_map = _normalized_test_name_map()
+    lookup_key = _normalize_lookup_key(value)
+    if lookup_key in normalized_map:
+        return normalized_map[lookup_key]
+
+    compact_lookup = _compact(lookup_key)
+    for map_key, canonical in normalized_map.items():
+        if _compact(map_key) == compact_lookup:
+            return canonical
+    return None
 
 
 def _titlecase_fallback(raw: str) -> str:
@@ -504,6 +546,11 @@ def are_same_test(a: str, b: str) -> bool:
 
     if a_key == b_key:
         return True
+
+    if NORMALIZATION_ALIAS_WHITELIST_ONLY:
+        a_canonical = _canonical_from_lookup(a_key)
+        b_canonical = _canonical_from_lookup(b_key)
+        return bool(a_canonical and b_canonical and a_canonical == b_canonical)
 
     # Hard blocklist first: these pairs must never merge regardless of similarity.
     if _is_blocklisted(a_key, b_key):
@@ -667,15 +714,26 @@ def normalize_test_name(raw: str | None) -> str:
     if key in TEST_NAME_MAP:
         return TEST_NAME_MAP[key]
 
+    normalized_map = _normalized_test_name_map()
+    normalized_key = _normalize_lookup_key(key)
+    if normalized_key in normalized_map:
+        return normalized_map[normalized_key]
+
     compact_key = _compact(key)
     for map_key, canonical in TEST_NAME_MAP.items():
         map_compact = _compact(map_key)
         if compact_key == map_compact:
             return canonical
 
-    for map_key, canonical in TEST_NAME_MAP.items():
-        if are_same_test(key, map_key):
+    for map_key, canonical in normalized_map.items():
+        map_compact = _compact(map_key)
+        if compact_key == map_compact:
             return canonical
+
+    if not NORMALIZATION_ALIAS_WHITELIST_ONLY:
+        for map_key, canonical in TEST_NAME_MAP.items():
+            if are_same_test(key, map_key):
+                return canonical
 
     if raw_text not in _warned_tests:
         _warned_tests.add(raw_text)

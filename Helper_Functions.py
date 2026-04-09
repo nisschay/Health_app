@@ -10,6 +10,16 @@ import plotly.graph_objs as go
 import google.generativeai as genai
 from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI, TEST_NAME_MAPPING, UNIT_MAPPING, STATUS_MAPPING
 try:
+    import pytesseract
+except Exception:  # pragma: no cover - optional OCR dependency
+    pytesseract = None
+
+try:
+    from pdf2image import convert_from_bytes
+except Exception:  # pragma: no cover - optional OCR dependency
+    convert_from_bytes = None
+
+try:
     from backend_api.app.normalization import canonicalize_category, normalize_test_name
 except Exception:
     # Streamlit-only fallback when backend package imports are unavailable.
@@ -51,6 +61,13 @@ def _model_candidates_from_env(var_name: str, default: str) -> list[str]:
     return [m.strip() for m in raw.split(",") if m.strip()]
 
 
+def _env_bool(var_name: str, default: bool = False) -> bool:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 EXTRACTION_MODEL_CANDIDATES = _model_candidates_from_env(
     "GEMINI_EXTRACTION_MODELS",
     "gemini-2.5-flash,gemini-1.5-flash",
@@ -65,6 +82,9 @@ CHAT_PROMPT_MAX_ROWS = max(20, int(os.getenv("CHAT_PROMPT_MAX_ROWS", "80")))
 CHAT_TIMELINE_LIMIT = max(1, int(os.getenv("CHAT_TIMELINE_LIMIT", "12")))
 CHAT_SNAPSHOT_LIMIT = max(5, int(os.getenv("CHAT_SNAPSHOT_LIMIT", "40")))
 CHAT_MODEL_TIMEOUT_SECONDS = max(5, int(os.getenv("CHAT_MODEL_TIMEOUT_SECONDS", "50")))
+PDF_OCR_FALLBACK_ENABLED = _env_bool("PDF_OCR_FALLBACK_ENABLED", default=True)
+PDF_OCR_MIN_TEXT_CHARS = max(0, int(os.getenv("PDF_OCR_MIN_TEXT_CHARS", "120")))
+PDF_OCR_MAX_PAGES = max(1, int(os.getenv("PDF_OCR_MAX_PAGES", "5")))
 
 CANONICAL_STATUS_VALUES = {
     "Low",
@@ -268,6 +288,32 @@ def create_consolidated_info_with_smart_selection(patient_info_list):
         'lab_name': final_lab_name
     }
 
+
+def _ocr_extract_text_from_pdf(file_content):
+    if not PDF_OCR_FALLBACK_ENABLED:
+        return ""
+    if convert_from_bytes is None or pytesseract is None:
+        _ui_warn("OCR fallback unavailable: install pdf2image and pytesseract to enable image-PDF extraction.")
+        return ""
+
+    try:
+        images = convert_from_bytes(file_content, first_page=1, last_page=PDF_OCR_MAX_PAGES)
+    except Exception as exc:
+        _ui_warn(f"OCR fallback could not rasterize PDF: {exc}")
+        return ""
+
+    text_parts = []
+    for page_num, image in enumerate(images, start=1):
+        try:
+            page_text = pytesseract.image_to_string(image)
+        except Exception as exc:
+            _ui_warn(f"OCR failed on page {page_num}: {exc}")
+            continue
+        if page_text and page_text.strip():
+            text_parts.append(f"\n--- OCR Page {page_num} ---\n{page_text}")
+
+    return "".join(text_parts).strip()
+
 def extract_text_from_pdf(file_content):
     try:
         pdf_file = io.BytesIO(file_content)
@@ -277,12 +323,31 @@ def extract_text_from_pdf(file_content):
             page_text = page.extract_text()
             if page_text:
                 text_parts.append(f"\n--- Page {page_num+1} ---\n{page_text}")
-        text = "".join(text_parts)
-        if not text.strip():
-            _ui_warn("No text extracted from PDF. The PDF may be image-based or empty.")
+        text = "".join(text_parts).strip()
+        if text and len(text) >= PDF_OCR_MIN_TEXT_CHARS:
+            return text
+
+        if not text:
+            _ui_warn("No text extracted from PDF. Attempting OCR fallback.")
+        else:
+            _ui_warn(
+                f"Extracted text length ({len(text)}) below OCR threshold ({PDF_OCR_MIN_TEXT_CHARS}). Attempting OCR fallback."
+            )
+
+        ocr_text = _ocr_extract_text_from_pdf(file_content)
+        if ocr_text:
+            if text:
+                return f"{text}\n\n--- OCR Fallback ---\n{ocr_text}"
+            return ocr_text
+
+        if not text:
+            _ui_warn("No text extracted after OCR fallback.")
         return text
     except Exception as e:
         _ui_error(f"Error reading PDF: {str(e)}")
+        ocr_text = _ocr_extract_text_from_pdf(file_content)
+        if ocr_text:
+            return ocr_text
         return None
 
 def init_gemini_models(api_key_for_gemini):

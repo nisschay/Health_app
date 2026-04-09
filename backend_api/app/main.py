@@ -685,6 +685,16 @@ async def analyze_reports(
         f"has_existing_data={existing_data is not None}, user={user.user_id}"
     )
 
+    queue_mode_active = (
+        settings.enable_batch_ingestion_queue
+        and len(pdf_files or []) >= settings.batch_queue_min_files
+    )
+    if queue_mode_active:
+        print(
+            "[ANALYZE] Phase C batch mode active "
+            f"(min_files={settings.batch_queue_min_files}, workers={settings.batch_ingestion_workers})"
+        )
+
     pdf_payloads: list[tuple[str, bytes]] = []
     for upload in pdf_files or []:
         pdf_payloads.append((upload.filename or "uploaded.pdf", await upload.read()))
@@ -733,6 +743,16 @@ async def analyze_reports_stream(
 ) -> StreamingResponse:
     if not user.authenticated:
         raise HTTPException(status_code=401, detail="Authentication required.")
+
+    queue_mode_active = (
+        settings.enable_batch_ingestion_queue
+        and len(pdf_files or []) >= settings.batch_queue_min_files
+    )
+    if queue_mode_active:
+        print(
+            "[ANALYZE:STREAM] Phase C batch mode active "
+            f"(min_files={settings.batch_queue_min_files}, workers={settings.batch_ingestion_workers})"
+        )
 
     pdf_payloads: list[tuple[str, bytes]] = []
     for upload in pdf_files or []:

@@ -40,6 +40,30 @@ class Settings:
     app_name: str = "Medical Project API"
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY")
     require_auth: bool = _as_bool(os.getenv("API_REQUIRE_AUTH"), default=False)
+    enable_batch_ingestion_queue: bool = _as_bool(
+        os.getenv("ENABLE_BATCH_INGESTION_QUEUE"),
+        default=True,
+    )
+    batch_queue_min_files: int = max(
+        2,
+        _as_int(os.getenv("BATCH_QUEUE_MIN_FILES"), default=10),
+    )
+    batch_ingestion_workers: int = max(
+        1,
+        _as_int(os.getenv("BATCH_INGESTION_WORKERS"), default=4),
+    )
+    ocr_fallback_enabled: bool = _as_bool(
+        os.getenv("PDF_OCR_FALLBACK_ENABLED"),
+        default=True,
+    )
+    ocr_min_text_chars: int = max(
+        0,
+        _as_int(os.getenv("PDF_OCR_MIN_TEXT_CHARS"), default=120),
+    )
+    normalization_alias_whitelist_only: bool = _as_bool(
+        os.getenv("NORMALIZATION_ALIAS_WHITELIST_ONLY"),
+        default=True,
+    )
     firebase_credentials_path: str | None = os.getenv("FIREBASE_CREDENTIALS_PATH")
     firebase_project_id: str | None = os.getenv("FIREBASE_PROJECT_ID")
     firebase_clock_skew_seconds: int = min(
