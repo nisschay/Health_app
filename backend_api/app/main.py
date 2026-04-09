@@ -65,6 +65,7 @@ app = FastAPI(
 )
 
 service = MedicalAnalysisService()
+CURRENT_NORMALIZATION_VERSION = 1
 
 # Initialise DB tables on startup
 @app.on_event("startup")
@@ -221,6 +222,53 @@ def _slice_records_for_report(
         return matched
 
     return valid_rows if fallback_to_all else []
+
+
+def _slice_records_for_report_deterministic(
+    rows: list[Any],
+    report_file_name: str | None,
+) -> list[dict[str, Any]]:
+    valid_rows = [row for row in rows if isinstance(row, dict)]
+    if not valid_rows:
+        return []
+
+    target_name = _normalize_filename(report_file_name)
+    if not target_name:
+        return valid_rows
+
+    exact_matches = [
+        row
+        for row in valid_rows
+        if _normalize_filename(_extract_source_filename(row)) == target_name
+    ]
+    if exact_matches:
+        return exact_matches
+
+    target_stem = Path(target_name).stem
+    if target_stem:
+        stem_matches = []
+        for row in valid_rows:
+            source_name = _normalize_filename(_extract_source_filename(row))
+            source_stem = Path(source_name).stem if source_name else ""
+            if source_stem and (source_stem == target_stem or source_stem in target_stem or target_stem in source_stem):
+                stem_matches.append(row)
+        if stem_matches:
+            return stem_matches
+
+    # Legacy fallback: never drop report rows on filename mismatch.
+    return valid_rows
+
+
+def _with_source_filename(rows: list[dict[str, Any]], source_file_name: str) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        next_row = dict(row)
+        if not _extract_source_filename(next_row):
+            next_row["Source_Filename"] = source_file_name
+        enriched.append(next_row)
+    return enriched
 
 
 def _infer_report_date_from_records(rows: list[dict[str, Any]]) -> date | None:
@@ -390,7 +438,8 @@ def save_analysis_to_study(
     if not profile or profile.account_owner_id != owner.id:
         raise HTTPException(status_code=403, detail="You do not have access to this study.")
 
-    analysis_dict = _normalize_analysis_payload(payload.analysis.model_dump())
+    raw_analysis_dict = payload.analysis.model_dump()
+    analysis_dict = _normalize_analysis_payload(raw_analysis_dict)
     patient_info = analysis_dict.get("patient_info", {})
     report_date = _parse_report_date_flexible(patient_info.get("date"))
     if report_date is None:
@@ -399,7 +448,15 @@ def save_analysis_to_study(
 
     source_filenames = payload.source_filenames or ["uploaded-report.pdf"]
     urls = payload.source_file_urls or []
-    analysis_records = analysis_dict.get("records", []) if isinstance(analysis_dict, dict) else []
+    raw_analysis_records = raw_analysis_dict.get("records", []) if isinstance(raw_analysis_dict, dict) else []
+    normalized_analysis_records = analysis_dict.get("records", []) if isinstance(analysis_dict, dict) else []
+    if isinstance(raw_analysis_records, list):
+        analysis_records = raw_analysis_records
+    elif isinstance(normalized_analysis_records, list):
+        analysis_records = normalized_analysis_records
+    else:
+        analysis_records = []
+
     has_record_sources = isinstance(analysis_records, list) and any(
         isinstance(row, dict) and _extract_source_filename(row)
         for row in analysis_records
@@ -421,7 +478,10 @@ def save_analysis_to_study(
         else:
             scoped_records = []
 
-        scoped_analysis = dict(analysis_dict)
+        scoped_records = _with_source_filename([row for row in scoped_records if isinstance(row, dict)], name)
+        scoped_normalized_records = normalize_records(scoped_records)
+
+        scoped_analysis = dict(raw_analysis_dict)
         if isinstance(analysis_records, list):
             # Always scope records per report when list payload exists, including empty slices.
             scoped_analysis["records"] = scoped_records
@@ -437,6 +497,9 @@ def save_analysis_to_study(
             report_date=scoped_report_date,
             lab_name=patient_info.get("lab_name"),
             analysis_data=scoped_analysis,
+            normalized_records=scoped_normalized_records,
+            is_normalized=True,
+            normalization_version=CURRENT_NORMALIZATION_VERSION,
         )
         added += 1
 
@@ -543,27 +606,37 @@ def get_combined_study_report(
     report_file_names = [report.file_name for report in reports]
     combined_records: list[dict[str, Any]] = []
     reports_with_data = 0
+    requires_read_path_normalization = False
     latest_payload: dict[str, Any] = {}
+
     for report in reports:
         payload = report.analysis_data or {}
-        if isinstance(payload, dict):
+        if isinstance(payload, dict) and payload:
             latest_payload = payload
-            rows = payload.get("records", [])
-            if isinstance(rows, list):
-                has_source_rows = any(
-                    isinstance(row, dict) and _extract_source_filename(row)
-                    for row in rows
-                )
-                scoped_rows = _slice_records_for_report(
-                    rows,
-                    report.file_name,
-                    fallback_to_all=not has_source_rows,
-                )
-                if scoped_rows:
-                    reports_with_data += 1
-                combined_records.extend(scoped_rows)
 
-    combined_records = normalize_records(_dedupe_records(combined_records))
+        report_rows: list[dict[str, Any]] = []
+        if (
+            getattr(report, "is_normalized", False)
+            and getattr(report, "normalization_version", None) == CURRENT_NORMALIZATION_VERSION
+            and isinstance(getattr(report, "normalized_records", None), list)
+        ):
+            report_rows = [row for row in report.normalized_records if isinstance(row, dict)]
+        else:
+            raw_rows = payload.get("records", []) if isinstance(payload, dict) else []
+            if isinstance(raw_rows, list):
+                report_rows = _slice_records_for_report_deterministic(raw_rows, report.file_name)
+            if report_rows:
+                report_rows = normalize_records(report_rows)
+                requires_read_path_normalization = True
+
+        report_rows = _with_source_filename(report_rows, report.file_name)
+        if report_rows:
+            reports_with_data += 1
+        combined_records.extend(report_rows)
+
+    combined_records = _dedupe_records(combined_records)
+    if requires_read_path_normalization:
+        combined_records = normalize_records(combined_records)
 
     insights = service.get_health_insights(records=combined_records) if combined_records else _empty_insights()
 
@@ -574,8 +647,8 @@ def get_combined_study_report(
     first_report = reports[0] if reports else None
     resolved_patient_info = PatientInfo(
         name=str(payload_patient_info.get("name") or profile.full_name or "N/A"),
-        age=str(payload_patient_info.get("age") or (first_report.patient_age if first_report else None) or "N/A"),
-        gender=str(payload_patient_info.get("gender") or (first_report.patient_gender if first_report else None) or "N/A"),
+        age=str(payload_patient_info.get("age") or "N/A"),
+        gender=str(payload_patient_info.get("gender") or "N/A"),
         patient_id=str(payload_patient_info.get("patient_id") or user.user_id or "N/A"),
         date=str(payload_patient_info.get("date") or (reports[-1].report_date.isoformat() if reports and reports[-1].report_date else "N/A")),
         lab_name=str(payload_patient_info.get("lab_name") or (first_report.lab_name if first_report else None) or "N/A"),

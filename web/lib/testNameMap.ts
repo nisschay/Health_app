@@ -215,31 +215,65 @@ function normalizeTestLookupKey(raw: string): string {
     .trim();
 }
 
+const NORMALIZED_TEST_NAME_MAP: Record<string, string> = Object.entries(TEST_NAME_MAP).reduce(
+  (acc, [mapKey, canonical]) => {
+    acc[normalizeTestLookupKey(mapKey)] = canonical;
+    return acc;
+  },
+  {} as Record<string, string>,
+);
+
+function hasRatioSignal(value: string): boolean {
+  return value.includes("ratio");
+}
+
 export function normalizeTestName(raw: string | null | undefined): string {
   if (!raw || !String(raw).trim()) return "Unknown Test";
 
   const original = String(raw).trim();
   const key = normalizeTestLookupKey(original);
-  const exact = TEST_NAME_MAP[key];
+  const exact = TEST_NAME_MAP[key] ?? NORMALIZED_TEST_NAME_MAP[key];
   if (exact) return exact;
 
   const compactKey = key.replace(/\s+/g, "");
-  for (const [mapKey, canonical] of Object.entries(TEST_NAME_MAP)) {
+  for (const [mapKey, canonical] of Object.entries(NORMALIZED_TEST_NAME_MAP)) {
     const compactMapKey = mapKey.replace(/\s+/g, "");
     if (compactKey === compactMapKey) {
       return canonical;
     }
   }
 
-  for (const [mapKey, canonical] of Object.entries(TEST_NAME_MAP)) {
+  for (const [mapKey, canonical] of Object.entries(NORMALIZED_TEST_NAME_MAP)) {
+    // Guardrail: avoid broad fuzzy aliasing across ratio/non-ratio tests.
+    if (hasRatioSignal(key) !== hasRatioSignal(mapKey)) {
+      continue;
+    }
+
     const compactMapKey = mapKey.replace(/\s+/g, "");
-    if (
-      key.includes(mapKey)
-      || mapKey.includes(key)
-      || compactKey.includes(compactMapKey)
-      || compactMapKey.includes(compactKey)
-    ) {
+
+    const [shorter, longer] = compactKey.length <= compactMapKey.length
+      ? [compactKey, compactMapKey]
+      : [compactMapKey, compactKey];
+    if (shorter.length < 8) {
+      continue;
+    }
+
+    // Allow long-prefix fuzzy matches to handle punctuation/noise variants.
+    if (longer.startsWith(shorter)) {
       return canonical;
+    }
+
+    // Allow multi-token subset matches (e.g., "fasting glucose" vs "fasting blood glucose").
+    const keyTokens = key.split(" ").filter(Boolean);
+    const mapTokens = mapKey.split(" ").filter(Boolean);
+    const [shortTokens, longTokens] = keyTokens.length <= mapTokens.length
+      ? [keyTokens, mapTokens]
+      : [mapTokens, keyTokens];
+    if (shortTokens.length >= 2) {
+      const longSet = new Set(longTokens);
+      if (shortTokens.every((token) => longSet.has(token))) {
+        return canonical;
+      }
     }
   }
 

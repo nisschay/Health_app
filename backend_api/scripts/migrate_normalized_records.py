@@ -14,6 +14,8 @@ from backend_api.app.database import Report, ReportAnalysis, SessionLocal
 from backend_api.app.normalization import normalize_records
 from backend_api.app.services import MedicalAnalysisService
 
+CURRENT_NORMALIZATION_VERSION = 1
+
 
 def _empty_insights() -> dict[str, Any]:
     return {
@@ -60,6 +62,11 @@ def main() -> None:
             before = _stable_json(payload)
             after_payload = _normalize_payload(payload, service)
             after = _stable_json(after_payload)
+
+            normalized_records = after_payload.get("records", []) if isinstance(after_payload, dict) else []
+            row.normalized_records = [item for item in normalized_records if isinstance(item, dict)]
+            row.is_normalized = True
+            row.normalization_version = CURRENT_NORMALIZATION_VERSION
 
             if before != after:
                 row.analysis_data = after_payload

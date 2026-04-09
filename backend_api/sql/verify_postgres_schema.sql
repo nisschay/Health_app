@@ -43,6 +43,30 @@ BEGIN
     missing := array_append(missing, 'column users.is_admin');
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'reports' AND column_name = 'normalized_records'
+  ) THEN
+    missing := array_append(missing, 'column reports.normalized_records');
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'reports' AND column_name = 'is_normalized'
+  ) THEN
+    missing := array_append(missing, 'column reports.is_normalized');
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'reports' AND column_name = 'normalization_version'
+  ) THEN
+    missing := array_append(missing, 'column reports.normalization_version');
+  END IF;
+
   -- Required indexes
   IF NOT EXISTS (
     SELECT 1 FROM pg_indexes

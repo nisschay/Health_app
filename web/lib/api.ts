@@ -18,6 +18,7 @@ const API_BASE_URL = (() => {
 })();
 
 const DIRECT_API_BASE_URL = getDirectApiBaseUrl().replace(/\/$/, "");
+const ENABLE_CLIENT_NORMALIZATION_FALLBACK = process.env.NEXT_PUBLIC_CLIENT_NORMALIZATION_FALLBACK === "true";
 
 if (process.env.NODE_ENV === "production") {
   console.log("[API] Base URL:", API_BASE_URL);
@@ -657,7 +658,7 @@ export async function fetchStudiesDashboard(): Promise<DashboardSummary> {
 export async function fetchStudyCombinedReport(studyId: string): Promise<AnalysisResponse> {
   const response = await authBackendFetch(`/api/v1/studies/${studyId}/combined-report`);
   const parsed = await parseJsonResponse<AnalysisResponse>(response);
-  return normalizeAnalysisPayload(parsed);
+  return ENABLE_CLIENT_NORMALIZATION_FALLBACK ? normalizeAnalysisPayload(parsed) : parsed;
 }
 
 export async function exportPdf(

@@ -126,8 +126,16 @@ CREATE TABLE IF NOT EXISTS reports (
   report_date DATE NOT NULL,
   lab_name VARCHAR(512) NULL,
   analysis_data JSONB NOT NULL,
+  normalized_records JSONB NULL,
+  is_normalized BOOLEAN NOT NULL DEFAULT FALSE,
+  normalization_version INTEGER NULL,
   uploaded_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE reports
+  ADD COLUMN IF NOT EXISTS normalized_records JSONB,
+  ADD COLUMN IF NOT EXISTS is_normalized BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS normalization_version INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_reports_study_id ON reports(study_id);
 CREATE INDEX IF NOT EXISTS idx_reports_report_date ON reports(report_date);

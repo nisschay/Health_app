@@ -10,6 +10,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from sqlalchemy import (
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -119,6 +120,9 @@ class Report(Base):
     report_date = Column(Date, nullable=False)
     lab_name = Column(String(512), nullable=True)
     analysis_data = Column(JSONB, nullable=False)
+    normalized_records = Column(JSONB, nullable=True)
+    is_normalized = Column(Boolean, nullable=False, default=False)
+    normalization_version = Column(Integer, nullable=True)
     uploaded_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -319,6 +323,9 @@ def create_report(
     report_date: date,
     analysis_data: dict[str, Any],
     lab_name: str | None = None,
+    normalized_records: list[dict[str, Any]] | None = None,
+    is_normalized: bool = False,
+    normalization_version: int | None = None,
 ) -> Report:
     row = Report(
         study_id=study_id,
@@ -327,6 +334,9 @@ def create_report(
         report_date=report_date,
         lab_name=lab_name,
         analysis_data=analysis_data,
+        normalized_records=normalized_records,
+        is_normalized=is_normalized,
+        normalization_version=normalization_version,
     )
     db.add(row)
 
