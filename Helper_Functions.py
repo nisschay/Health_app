@@ -70,11 +70,11 @@ def _env_bool(var_name: str, default: bool = False) -> bool:
 
 EXTRACTION_MODEL_CANDIDATES = _model_candidates_from_env(
     "GEMINI_EXTRACTION_MODELS",
-    "gemini-2.5-flash,gemini-1.5-flash",
+    "gemini-2.5-flash",
 )
 CHAT_MODEL_CANDIDATES = _model_candidates_from_env(
     "GEMINI_CHAT_MODELS",
-    "gemini-2.5-flash,gemini-1.5-flash",
+    "gemini-2.5-flash",
 )
 
 CHAT_HISTORY_LIMIT = max(1, int(os.getenv("CHAT_HISTORY_LIMIT", "8")))
