@@ -552,6 +552,44 @@ Format: "**Sources:** [Source Name](URL)"
   `.trim();
 }
 
+function isRateLimitMessage(text: string): boolean {
+  const lowered = text.toLowerCase();
+  return lowered.includes("rate limit") || lowered.includes("quota") || lowered.includes("429");
+}
+
+function buildRateLimitedFallbackAnswer(
+  analysis: AggregatedAnalysis,
+  userQuestion: string,
+): string {
+  const abnormal = analysis.findings
+    .filter((finding) => finding.latestStatus !== "NORMAL")
+    .slice(0, 5)
+    .map((finding) => {
+      const valueText = finding.unit
+        ? `${finding.latestValue} ${finding.unit}`
+        : finding.latestValue;
+      return `- ${finding.canonicalName}: **${valueText}** (${finding.latestStatus}) on ${finding.latestDate}`;
+    });
+
+  const summaryLines = abnormal.length > 0
+    ? abnormal.join("\n")
+    : "- No currently abnormal markers were detected in the latest snapshot.";
+
+  return [
+    "The live AI model is temporarily rate-limited, so I cannot generate a full Gemini answer right now.",
+    "",
+    "### Quick report-based summary",
+    summaryLines,
+    "",
+    "### What to discuss with your doctor",
+    `- Share your exact question: \"${userQuestion}\"`,
+    "- Prioritize the abnormal markers listed above, especially persistent or worsening values.",
+    `- Ask for trend interpretation across your report window (${analysis.dateRange.start} to ${analysis.dateRange.end}).`,
+    "",
+    "Retry in a little while for a full model-generated response.",
+  ].join("\n");
+}
+
 async function readErrorDetail(response: Response): Promise<string> {
   try {
     const payload = (await response.json()) as { detail?: string };
@@ -657,6 +695,13 @@ export async function POST(request: NextRequest) {
 
       if (!response.ok) {
         const detail = await readErrorDetail(response);
+        if (response.status === 429 || isRateLimitMessage(detail)) {
+          return {
+            answer: buildRateLimitedFallbackAnswer(analysis, message),
+            status: 200,
+            backendLatencyMs: Date.now() - backendCallStartedAt,
+          };
+        }
         if (response.status >= 500) {
           throw Object.assign(new Error(`Clinical assistant model error: ${detail}`), { status: 500 });
         }
@@ -668,10 +713,15 @@ export async function POST(request: NextRequest) {
         throw Object.assign(new Error("Clinical assistant returned an invalid response."), { status: 500 });
       }
 
+      const answerText = data.answer.trim();
+      const finalAnswer = isRateLimitMessage(answerText)
+        ? buildRateLimitedFallbackAnswer(analysis, message)
+        : answerText;
+
       const updatedHistory = [
         ...cappedHistory,
         { role: "user" as const, content: message },
-        { role: "assistant" as const, content: data.answer },
+        { role: "assistant" as const, content: finalAnswer },
       ].slice(-CHAT_HISTORY_LIMIT);
       sessionHistoryStore.set(sessionId, updatedHistory);
 
@@ -683,7 +733,7 @@ export async function POST(request: NextRequest) {
       }
 
       return {
-        answer: data.answer,
+        answer: finalAnswer,
         status: 200,
         backendLatencyMs: Date.now() - backendCallStartedAt,
       };

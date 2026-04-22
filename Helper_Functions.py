@@ -159,12 +159,32 @@ def _is_rate_limit_error(error_text: str) -> bool:
 def _extract_retry_delay(error_text: str) -> str | None:
     if not error_text:
         return None
+
+    def _format_delay(seconds: float) -> str:
+        if seconds < 1:
+            return "<1s"
+        if seconds < 120:
+            return f"{int(round(seconds))}s"
+        if seconds < 7200:
+            return f"{int(round(seconds / 60))}m"
+        if seconds < 172800:
+            return f"{int(round(seconds / 3600))}h"
+        return f"{int(round(seconds / 86400))}d"
+
     match_sec = re.search(r"retry in\s+([\d\.]+)s", error_text, flags=re.IGNORECASE)
     if match_sec:
-        return f"{match_sec.group(1)}s"
+        try:
+            return _format_delay(float(match_sec.group(1)))
+        except ValueError:
+            return f"{match_sec.group(1)}s"
+
     match_ms = re.search(r"retry in\s+([\d\.]+)ms", error_text, flags=re.IGNORECASE)
     if match_ms:
-        return f"{match_ms.group(1)}ms"
+        try:
+            return _format_delay(float(match_ms.group(1)) / 1000.0)
+        except ValueError:
+            return f"{match_ms.group(1)}ms"
+
     return None
 
 
@@ -1302,6 +1322,8 @@ Assistant Response (markdown):
             model_names_to_try.append(model_name)
 
     last_error_text = ""
+    saw_rate_limit = False
+    last_retry_delay = None
     for model_name in model_names_to_try:
         try:
             if model_name != _active_chat_model_name:
@@ -1329,12 +1351,21 @@ Assistant Response (markdown):
         except Exception as e:
             last_error_text = str(e)
             if _is_rate_limit_error(last_error_text):
-                retry_delay = _extract_retry_delay(last_error_text)
-                return (
-                    "Gemini chat rate limit reached. "
-                    + (f"Please retry after {retry_delay}." if retry_delay else "Please try again shortly.")
-                )
+                saw_rate_limit = True
+                last_retry_delay = _extract_retry_delay(last_error_text)
+                # Try fallback chat models before failing the whole request.
+                continue
             continue
+
+    if saw_rate_limit:
+        return (
+            "Gemini chat rate limit reached. "
+            + (
+                f"Please retry after about {last_retry_delay}."
+                if last_retry_delay
+                else "Please try again shortly."
+            )
+        )
 
     if last_error_text:
         _ui_error(f"Error getting chatbot response from Gemini: {last_error_text}")

@@ -10,7 +10,8 @@ import {
 import {
   type User,
   onAuthStateChanged,
-  signInWithPopup,
+  getRedirectResult,
+  signInWithRedirect,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
@@ -56,6 +57,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let isActive = true;
+
+    getRedirectResult(auth)
+      .then((result) => {
+        if (!isActive || !result?.user) {
+          return;
+        }
+        setAuthPresenceCookie();
+      })
+      .catch((error: unknown) => {
+        if (!isActive) {
+          return;
+        }
+        console.warn("[Auth] redirect sign-in failed", error);
+      });
 
     const unsub = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
@@ -164,8 +179,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function signInWithGoogle() {
-    await signInWithPopup(auth, googleProvider);
-    setAuthPresenceCookie();
+    await signInWithRedirect(auth, googleProvider);
   }
 
   async function signInWithEmail(email: string, password: string) {
