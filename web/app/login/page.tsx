@@ -97,7 +97,6 @@ export default function LoginPage() {
     setIsPending(true);
     try {
       await signInWithGoogle();
-      router.replace("/dashboard");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Google sign-in failed.";
       if (!msg.includes("popup-closed")) {

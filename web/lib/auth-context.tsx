@@ -11,6 +11,7 @@ import {
   type User,
   onAuthStateChanged,
   getRedirectResult,
+  signInWithPopup,
   signInWithRedirect,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -49,6 +50,20 @@ export type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: "select_account" });
+
+function shouldFallBackToRedirect(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.message.includes("auth/popup-blocked")
+    || error.message.includes("auth/popup-closed-by-user")
+    || error.message.includes("auth/cancelled-popup-request")
+    || error.message.includes("auth/operation-not-supported-in-this-environment")
+  );
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -179,7 +194,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function signInWithGoogle() {
-    await signInWithRedirect(auth, googleProvider);
+    try {
+      const credential = await signInWithPopup(auth, googleProvider);
+      if (credential.user) {
+        setAuthPresenceCookie();
+      }
+    } catch (error) {
+      if (shouldFallBackToRedirect(error)) {
+        await signInWithRedirect(auth, googleProvider);
+        return;
+      }
+      throw error;
+    }
   }
 
   async function signInWithEmail(email: string, password: string) {
