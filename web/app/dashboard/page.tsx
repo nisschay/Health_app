@@ -10,13 +10,12 @@ import { useAuth } from "@/lib/auth-context";
 import {
   AuthError,
   type AnalysisResponse,
-  type AnalyzeStreamEvent,
   type AnalysisHistoryItem,
   type ChatTurn,
   type DashboardSummary,
   type ProfileItem,
+  type ReportJob,
   type StudySummary,
-  analyzeReportsStream,
   createProfile,
   createStudy,
   fetchProfiles,
@@ -26,8 +25,8 @@ import {
   fetchStudyCombinedReport,
   fetchReportHistory,
   fetchReportById,
-  saveAnalysis,
-  saveStudyAnalysis,
+  startAnalysisJob,
+  waitForJob,
   exportExcel,
 } from "@/lib/api";
 import AlertsByCategory from "./AlertsByCategory";
@@ -106,6 +105,7 @@ const CITATION_COMPONENTS: Components = {
 };
 
 type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
+const ACTIVE_JOB_KEY = "health-app.active-job";
 type StudyAction = "add-existing" | "start-new";
 
 type StageState = "pending" | "active" | "complete" | "error";
@@ -943,53 +943,70 @@ export default function DashboardPage() {
     setProfileStudies([studyLike]);
   }
 
-  function handleAnalyzeStreamEvent(event: AnalyzeStreamEvent) {
-    console.log("[EVENT]", event);
+  function applyJobProgress(job: ReportJob) {
+    const { stage, files, processed, eta_seconds } = job.progress;
+    const stageOrder = ["processing", "saving", "done"];
+    const reached = stageOrder.indexOf(stage);
+    setStageStates({
+      validating: "complete",
+      uploading: "complete",
+      processing: reached >= 1 ? "complete" : "active",
+      saving: reached >= 2 ? "complete" : reached === 1 ? "active" : "pending",
+    });
+    setAnalyzeStep(stage === "saving" ? "saving" : "processing");
+    setFileProgress(Object.entries(files).map(([file, item]) => ({ file, percent: item.percent, status: item.step, error: item.error })));
+    setProcessedFilesCount(processed);
+    setEstimatedRemainingSeconds(typeof eta_seconds === "number" ? eta_seconds : null);
+    const active = Object.entries(files).find(([, item]) => item.step === "extracting" || item.step === "parsing");
+    setCurrentParsingFile(active ? active[0] : null);
+  }
 
-    if (event.type === "stage") {
-      const mapStep: Record<string, AnalyzeStep> = {
-        validating: "preparing",
-        uploading: "uploading",
-        processing: "processing",
-        saving: "saving",
-      };
-      if (event.status === "active") {
-        setAnalyzeStep(mapStep[event.step]);
+  /** Follows a job to the end and shows its result. The job id alone is enough, so a refresh resumes here. */
+  async function followJob(jobId: string, context: AnalyzeContext | null) {
+    window.localStorage.setItem(ACTIVE_JOB_KEY, jobId);
+    setView("analyze");
+    setIsAnalyzing(true);
+    setErrorMessage(null);
+    try {
+      const job = await runWithTokenRetry((_token) => waitForJob(jobId, applyJobProgress));
+      if (job.status !== "done") throw new Error(job.error ?? "Analysis failed.");
+      setSaveStatus("saved");
+      const result = job.study_id
+        ? await runWithTokenRetry((_token) => fetchStudyCombinedReport(job.study_id as string))
+        : await runWithTokenRetry((_token) => fetchReportById(job.analysis_id as number));
+      await loadDashboardData();
+      if (context?.mode === "existing") {
+        setStudySuccessMessage(`${job.source_filenames.length} new reports added to ${context.study.name}. Dashboard updated with new trends.`);
+      } else if (context) {
+        setStudySuccessMessage(`New study ${context.study.name} created for ${context.profile.full_name}.`);
+      } else {
+        setStudySuccessMessage(null);
       }
-      setStageStates((prev) => ({
-        ...prev,
-        [event.step]: event.status === "complete" ? "complete" : "active",
-      }));
-      return;
-    }
-
-    if (event.type === "file") {
-      setFileProgress((prev) => {
-        const next = [...prev];
-        const idx = next.findIndex((item) => item.file === event.file);
-        const item: FileProgressItem = {
-          file: event.file,
-          percent: event.percent,
-          status: event.step,
-          error: event.error,
-        };
-        if (idx === -1) next.push(item);
-        else next[idx] = item;
-        return next;
-      });
-
-      setProcessedFilesCount(event.processed);
-      if (typeof event.eta_seconds === "number") {
-        setEstimatedRemainingSeconds(event.eta_seconds);
-      }
-      if (event.step === "extracting" || event.step === "parsing") {
-        setCurrentParsingFile(event.file);
-      }
-      if (event.step === "done" || event.step === "failed") {
-        setCurrentParsingFile((prev) => (prev === event.file ? null : prev));
-      }
+      setResultStudyReportCount(job.study_id ? result.combined_report_file_names?.length ?? null : null);
+      setAnalysis(result);
+      setActiveAnalysisId(job.study_id ? `study-${job.study_id}` : `analysis-${job.analysis_id}`);
+      resetChatState();
+      setSelectedBodySystem("all");
+      setSelectedCategory("all");
+      setSelectedTest("");
+      setView("result");
+      setAnalyzeStep("idle");
+    } catch (err) {
+      setAnalyzeStep("error");
+      setStageStates((prev) => ({ ...prev, processing: prev.processing === "complete" ? "complete" : "error" }));
+      setErrorMessage(err instanceof Error ? err.message : "Analysis failed.");
+    } finally {
+      window.localStorage.removeItem(ACTIVE_JOB_KEY);
+      setIsAnalyzing(false);
+      setAnalysisStartedAt(null);
     }
   }
+
+  useEffect(() => {
+    const pending = user ? window.localStorage.getItem(ACTIVE_JOB_KEY) : null;
+    if (pending) void followJob(pending, null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   async function submitAnalysis() {
     setErrorMessage(null);
@@ -1021,65 +1038,16 @@ export default function DashboardPage() {
     const fd = new FormData();
     for (const f of pdfFiles) fd.append("pdf_files", f);
     if (existingDataFile) fd.append("existing_data", existingDataFile);
+    if (studyContext) fd.append("study_id", studyContext.study.id);
 
     try {
-      const result = await runWithTokenRetry((_token) => analyzeReportsStream(fd, handleAnalyzeStreamEvent));
-      let resultForView = result;
-
-      setAnalyzeStep("saving");
-      setSaveStatus("saving");
-      try {
-        if (studyContext) {
-          const saved = await runWithTokenRetry((_token) => saveStudyAnalysis(
-            studyContext.study.id,
-            result,
-            pdfFiles.map((f) => f.name),
-          ));
-          setStudySuccessMessage(
-            studyContext.mode === "existing"
-              ? `${saved.added_reports} new reports added to ${saved.study_name}. Dashboard updated with new trends.`
-              : `New study ${saved.study_name} created for ${studyContext.profile.full_name}.`,
-          );
-          setResultStudyReportCount(saved.total_reports);
-
-          if (studyContext.mode === "existing") {
-            resultForView = await runWithTokenRetry((_token) => fetchStudyCombinedReport(
-              studyContext.study.id,
-            ));
-          }
-        } else {
-          await runWithTokenRetry((_token) => saveAnalysis(result, pdfFiles.map((f) => f.name)));
-          setStudySuccessMessage(null);
-          setResultStudyReportCount(null);
-        }
-        setSaveStatus("saved");
-        await loadDashboardData();
-      } catch {
-        setSaveStatus("error");
-      }
-
-      setAnalysis(resultForView);
-      setActiveAnalysisId(studyContext ? `study-${studyContext.study.id}` : `analysis-${Date.now()}`);
-      resetChatState();
-      setSelectedBodySystem("all");
-      setSelectedCategory("all");
-      setSelectedTest("");
-      setView("result");
-
-      setAnalyzeStep("idle");
+      const job = await runWithTokenRetry((_token) => startAnalysisJob(fd));
+      await followJob(job.id, studyContext);
     } catch (err) {
       setAnalyzeStep("error");
-      setStageStates((prev) => ({
-        validating: prev.validating,
-        uploading: prev.uploading,
-        processing: prev.processing === "complete" ? "complete" : "error",
-        saving: prev.saving,
-      }));
-      setErrorMessage(err instanceof Error ? err.message : "Analysis failed.");
-    }
-    finally {
       setIsAnalyzing(false);
       setAnalysisStartedAt(null);
+      setErrorMessage(err instanceof Error ? err.message : "Analysis failed.");
     }
   }
 
