@@ -745,6 +745,13 @@ def normalize_test_name(raw: str | None) -> str:
 STATUS_NORMAL = "Normal"
 STATUS_NEGATIVE = "Negative"
 STATUS_NOT_APPLICABLE = "N/A"
+STATUS_HIGH = "High"
+STATUS_LOW = "Low"
+STATUS_CRITICAL = "Critical"
+STATUS_POSITIVE = "Positive"
+STATUS_FLAGGED = "Flagged"
+STATUS_BORDERLINE = "Borderline"
+STATUS_INSUFFICIENT = "Insufficient"
 
 # Phrases whose meaning a token scan would invert: "low normal" is in range.
 STATUS_EXACT_PHRASES = {
@@ -755,30 +762,28 @@ STATUS_EXACT_PHRASES = {
     "high normal": STATUS_NORMAL,
     "normal low": STATUS_NORMAL,
     "normal high": STATUS_NORMAL,
-    "h": "High",
-    "hi": "High",
-    "l": "Low",
-    "lo": "Low",
-    "pos": "Positive",
+    "h": STATUS_HIGH,
+    "hi": STATUS_HIGH,
+    "l": STATUS_LOW,
+    "lo": STATUS_LOW,
+    "pos": STATUS_POSITIVE,
     "neg": STATUS_NEGATIVE,
     "na": STATUS_NOT_APPLICABLE,
     "n/a": STATUS_NOT_APPLICABLE,
-    "not applicable": STATUS_NOT_APPLICABLE,
     "none": STATUS_NOT_APPLICABLE,
-    "unknown": STATUS_NOT_APPLICABLE,
 }
 
 # Ordered: the first whole-token match wins, so "critical" outranks "high" and
 # "abnormal" is resolved before "normal".
 STATUS_TOKEN_RULES = (
-    (r"critical|panic", "Critical"),
-    (r"abnormal|out\s*of\s*range|outside\s*range|flag(?:ged)?", "Flagged"),
-    (r"insufficien(?:t|cy)|deficien(?:t|cy)", "Insufficient"),
-    (r"borderline|equivocal|indeterminate", "Borderline"),
+    (r"critical|panic", STATUS_CRITICAL),
+    (r"abnormal|out\s*of\s*range|outside\s*range|flag(?:ged)?", STATUS_FLAGGED),
+    (r"insufficien(?:t|cy)|deficien(?:t|cy)", STATUS_INSUFFICIENT),
+    (r"borderline|equivocal|indeterminate", STATUS_BORDERLINE),
     (r"negative|non[-\s]?reactive|not\s+detected|absent", STATUS_NEGATIVE),
-    (r"positive|detected|reactive|present", "Positive"),
-    (r"high|elevated|increased|above\s+\w+", "High"),
-    (r"low|decreased|reduced|below\s+\w+", "Low"),
+    (r"positive|detected|reactive|present", STATUS_POSITIVE),
+    (r"high|elevated|increased|above\s+\w+", STATUS_HIGH),
+    (r"low|decreased|reduced|below\s+\w+", STATUS_LOW),
     (r"normal|within\s+\w+", STATUS_NORMAL),
     (r"not\s+applicable|unknown", STATUS_NOT_APPLICABLE),
 )
@@ -803,13 +808,13 @@ STATUS_HEALTH_WEIGHTS: dict[str, int] = {
     STATUS_NORMAL: 100,
     STATUS_NEGATIVE: 100,
     STATUS_NOT_APPLICABLE: 80,
-    "Borderline": 70,
-    "Low": 60,
-    "Insufficient": 55,
-    "Flagged": 50,
-    "High": 40,
-    "Positive": 30,
-    "Critical": 10,
+    STATUS_BORDERLINE: 70,
+    STATUS_LOW: 60,
+    STATUS_INSUFFICIENT: 55,
+    STATUS_FLAGGED: 50,
+    STATUS_HIGH: 40,
+    STATUS_POSITIVE: 30,
+    STATUS_CRITICAL: 10,
 }
 
 UNKNOWN_STATUS_HEALTH_WEIGHT = STATUS_HEALTH_WEIGHTS[STATUS_NOT_APPLICABLE]

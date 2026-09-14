@@ -29,10 +29,10 @@ The API now includes additive schema support for three new tables:
 - `studies`
 - `reports`
 
-Apply SQL migration manually when needed:
+Apply migrations in order, each recorded in `schema_migrations`:
 
 ```bash
-psql "$DATABASE_URL" -f backend_api/sql/2026_03_24_study_management.sql
+DATABASE_URL="postgresql://..." ./deploy/migrate_database.sh
 ```
 
 Notes:

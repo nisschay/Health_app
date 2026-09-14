@@ -3,7 +3,6 @@ from datetime import datetime
 import math
 import re
 import PyPDF2
-from xlsxwriter.utility import xl_col_to_name
 import io
 from collections import Counter
 import json
@@ -218,24 +217,6 @@ def extract_patient_info_from_excel_filename(filename):
         return extracted_name
     return "N/A"
 
-
-
-def standardize_value(value, mapping_dict, default_case='title'):
-    if not isinstance(value, str):
-        return value
-    original_value = value.strip()
-    for pattern, standard_form in mapping_dict.items():
-        if pattern.search(original_value):
-            if default_case == 'title':
-                return standard_form.title()
-            elif default_case == 'lower':
-                return standard_form.lower()
-            return standard_form
-    if default_case == 'title':
-        return original_value.title()
-    elif default_case == 'lower':
-        return original_value.lower()
-    return original_value
 
 
 def create_consolidated_info_with_smart_selection(patient_info_list):
@@ -526,7 +507,6 @@ def _clean_text_value(value, default: str = "N/A") -> str:
     return text if text else default
 
 
-_RESULT_COMPARATOR_PATTERN = re.compile(r"^\s*(<=|>=|=<|=>|<|>|≤|≥)\s*")
 _RESULT_NUMBER_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 _COMPARATOR_CANONICAL = {
     "<": "<",
@@ -538,6 +518,10 @@ _COMPARATOR_CANONICAL = {
     ">=": ">=",
     "=>": ">=",
 }
+# Longest first so "<=" is not shadowed by "<".
+_RESULT_COMPARATOR_PATTERN = re.compile(
+    r"^\s*(" + "|".join(re.escape(op) for op in sorted(_COMPARATOR_CANONICAL, key=len, reverse=True)) + r")\s*"
+)
 
 
 def parse_result_numeric(value) -> tuple[float | None, str | None]:
@@ -621,7 +605,7 @@ def _normalize_single_test_result(raw_result) -> dict | None:
         return None
 
     raw_category = _clean_text_value(raw_result.get("category"), default="Other")
-    normalized_category = canonicalize_category(standardize_value(raw_category, {}, default_case='title'))
+    normalized_category = canonicalize_category(raw_category.title())
 
     return {
         "test_name": test_name,
@@ -1073,7 +1057,7 @@ def create_structured_dataframe(
 
     all_rows = []
     for idx, test_result in enumerate(test_results):
-        raw_category = standardize_value(test_result.get('category', 'N/A'), {}, default_case='title')
+        raw_category = _clean_text_value(test_result.get('category'), default='N/A').title()
         raw_test_name = _clean_text_value(test_result.get('test_name'), default='UnknownTest')
         final_status = classified_statuses[idx] if idx < len(classified_statuses) else _canonical_status(test_result.get('status'))
         row = {
@@ -1580,6 +1564,8 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
 
 # Replace the existing function in your Medical_Project.py file with this enhanced version
 def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_sorted, patient_info):
+    from xlsxwriter.utility import xl_col_to_name
+
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
         # Write the data without headers first, starting from row 4 (index 3)
@@ -2167,38 +2153,6 @@ def validate_data_consistency(df):
     
     return issues
 
-def display_combination_summary(existing_count, new_count, total_count, patient_info):
-    """Display a nice summary of the data combination process"""
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric(
-            label="📋 Existing Records", 
-            value=existing_count,
-            help="Records from uploaded Excel/CSV file"
-        )
-    
-    with col2:
-        st.metric(
-            label="📄 New PDF Records", 
-            value=new_count,
-            help="Records extracted from new PDF reports"
-        )
-    
-    with col3:
-        st.metric(
-            label="📊 Total Records", 
-            value=total_count,
-            delta=f"+{new_count}" if new_count > 0 else None,
-            help="Combined total records available"
-        )
-    
-    # Show patient info summary
-    if patient_info:
-        st.info(f"👤 **Patient**: {patient_info.get('name', 'N/A')} | "
-                f"📅 **Latest Date**: {patient_info.get('date', 'N/A')} | "
-                f"🏥 **Primary Lab**: {patient_info.get('lab_name', 'N/A')}")
 def safe_file_processing(file_processor_func, file_obj, *args, **kwargs):
     """Safely process files with comprehensive error handling"""
     try:
@@ -2257,52 +2211,6 @@ def handle_patient_info_conflicts(existing_info, new_info_list):
         # No conflicts, proceed with normal consolidation
         return smart_consolidate_patient_info(existing_info, new_info_list)
 
-def enhanced_data_combination_workflow(uploaded_excel_file, new_pdf_data_list, new_patient_info_list):
-    """
-    FIXED: Ensure both Excel and PDF data are properly combined
-    """
-    
-    # Process existing Excel/CSV file
-    existing_df, existing_patient_info = process_existing_excel_csv(uploaded_excel_file, new_patient_info_list)
-    
-    print(f"Existing data: {len(existing_df)} rows")
-    print(f"New PDF data: {len(new_pdf_data_list)} DataFrames")
-    
-    # Start with existing data
-    if not existing_df.empty:
-        combined_df = existing_df.copy()
-    else:
-        combined_df = pd.DataFrame()
-    
-    # Add new PDF data
-    if new_pdf_data_list:
-        new_data_df = pd.concat(new_pdf_data_list, ignore_index=True)
-        
-        if not combined_df.empty:
-            # Make sure columns match before combining
-            all_cols = list(set(combined_df.columns.tolist() + new_data_df.columns.tolist()))
-            
-            # Add missing columns
-            for col in all_cols:
-                if col not in combined_df.columns:
-                    combined_df[col] = 'N/A'
-                if col not in new_data_df.columns:
-                    new_data_df[col] = 'N/A'
-            
-            # Reorder columns and combine
-            combined_df = combined_df[all_cols]
-            new_data_df = new_data_df[all_cols]
-            combined_df = pd.concat([combined_df, new_data_df], ignore_index=True)
-        else:
-            combined_df = new_data_df
-    
-    # Consolidate patient info
-    final_patient_info = smart_consolidate_patient_info(existing_patient_info, new_patient_info_list)
-    
-    print(f"Final combined data: {len(combined_df)} rows")
-    
-    return combined_df, final_patient_info
-
 def process_normalized_excel_data(df, filename, new_patient_info_list):
     """
     FIXED: Process Excel data that's already in normalized format
@@ -2348,131 +2256,7 @@ def process_normalized_excel_data(df, filename, new_patient_info_list):
     
     return df, existing_patient_info
 
-def debug_data_combination(existing_df, new_pdf_data_list, step_name=""):
-    """
-    Helper function to debug data combination issues
-    """
-    print(f"\n=== DEBUG: {step_name} ===")
-    
-    if not existing_df.empty:
-        print(f"Existing data: {existing_df.shape} rows")
-        print(f"Existing columns: {list(existing_df.columns)}")
-        print("Sample existing data:")
-        print(existing_df[['Test_Name', 'Result', 'Test_Date']].head(3).to_string())
-    else:
-        print("Existing data: EMPTY")
-    
-    if new_pdf_data_list:
-        total_new_rows = sum(len(df) for df in new_pdf_data_list)
-        print(f"New PDF data: {len(new_pdf_data_list)} dataframes, {total_new_rows} total rows")
-        if new_pdf_data_list:
-            sample_df = new_pdf_data_list[0]
-            print("Sample new data:")
-            print(sample_df[['Test_Name', 'Result', 'Test_Date']].head(3).to_string())
-    else:
-        print("New PDF data: NONE")
-    
-    print("=" * 50)
-
 # Add this debugging version of the main workflow
-def enhanced_data_combination_workflow_debug(uploaded_excel_file, new_pdf_data_list, new_patient_info_list):
-    """
-    DEBUG VERSION: Main workflow with extensive logging
-    """
-    print("=== STARTING DEBUG DATA COMBINATION WORKFLOW ===")
-    
-    # Step 1: Process existing Excel/CSV file
-    print(f"\nSTEP 1: Processing existing file: {uploaded_excel_file.name}")
-    existing_df, existing_patient_info = process_existing_excel_csv(uploaded_excel_file, new_patient_info_list)
-    
-    debug_data_combination(existing_df, new_pdf_data_list, "After processing existing file")
-    
-    # Step 2: Initialize combined dataframe
-    combined_df = pd.DataFrame()
-    
-    # Step 3: Add existing data
-    if not existing_df.empty:
-        print("\nSTEP 3: Adding existing data to combined dataset...")
-        combined_df = existing_df.copy()
-        print(f"Combined data after adding existing: {combined_df.shape}")
-        print("Sample combined data:")
-        if not combined_df.empty:
-            print(combined_df[['Test_Name', 'Result', 'Test_Date']].head(3).to_string())
-    else:
-        print("\nSTEP 3: No existing data to add (existing_df is empty)")
-    
-    # Step 4: Add new PDF data if available
-    if new_pdf_data_list:
-        print(f"\nSTEP 4: Processing {len(new_pdf_data_list)} new PDF datasets...")
-        new_data_df = pd.concat(new_pdf_data_list, ignore_index=True)
-        print(f"New PDF data shape: {new_data_df.shape}")
-        
-        if not combined_df.empty:
-            print("STEP 4a: Combining existing + new data...")
-            
-            # Show column comparison
-            existing_cols = set(combined_df.columns)
-            new_cols = set(new_data_df.columns)
-            print(f"Existing columns: {len(existing_cols)}")
-            print(f"New columns: {len(new_cols)}")
-            print(f"Common columns: {len(existing_cols & new_cols)}")
-            print(f"Missing from existing: {new_cols - existing_cols}")
-            print(f"Missing from new: {existing_cols - new_cols}")
-            
-            # Ensure both dataframes have the same columns
-            all_columns = list(existing_cols | new_cols)
-            
-            # Add missing columns to both dataframes
-            for col in all_columns:
-                if col not in combined_df.columns:
-                    combined_df[col] = 'N/A'
-                    print(f"Added column '{col}' to existing data")
-                if col not in new_data_df.columns:
-                    new_data_df[col] = 'N/A'
-                    print(f"Added column '{col}' to new data")
-            
-            # Reorder columns to match
-            combined_df = combined_df[all_columns]
-            new_data_df = new_data_df[all_columns]
-            
-            print(f"Before concat - Combined: {combined_df.shape}, New: {new_data_df.shape}")
-            
-            # Combine the data
-            combined_df = pd.concat([combined_df, new_data_df], ignore_index=True)
-            print(f"After concat - Final combined data shape: {combined_df.shape}")
-            
-        else:
-            print("STEP 4b: No existing data, using only new PDF data...")
-            combined_df = new_data_df
-    else:
-        print("\nSTEP 4: No new PDF data to add...")
-    
-    # Step 5: Final validation
-    print("\nSTEP 5: Final validation")
-    print(f"Final combined data shape: {combined_df.shape}")
-    
-    if not combined_df.empty:
-        print("Sample final data:")
-        print(combined_df[['Source_Filename', 'Test_Name', 'Result', 'Test_Date']].head(5).to_string())
-        
-        # Check data sources
-        source_counts = combined_df['Source_Filename'].value_counts()
-        print("\nData sources breakdown:")
-        for source, count in source_counts.items():
-            print(f"  {source}: {count} records")
-    else:
-        print("WARNING: Final combined data is EMPTY!")
-    
-    # Smart consolidation of patient info
-    final_patient_info = smart_consolidate_patient_info(existing_patient_info, new_patient_info_list)
-    
-    print("\n=== FINAL RESULTS ===")
-    print(f"Combined data shape: {combined_df.shape}")
-    print(f"Patient info: {final_patient_info}")
-    print("=== END DEBUG WORKFLOW ===\n")
-    
-    return combined_df, final_patient_info
-
 # Replace the existing parse_date_dd_mm_yyyy function if it has issues
 def parse_date_dd_mm_yyyy(date_str):
     """FIXED: Parse date string ensuring DD/MM/YYYY format"""
@@ -2499,7 +2283,7 @@ def parse_date_dd_mm_yyyy(date_str):
                     # Force dayfirst=True to ensure DD/MM/YYYY interpretation
                     return pd.to_datetime(date_str, dayfirst=True, errors='raise')
                 except:
-                    logger.debug(f"Could not parse date: {date_str}")
+                    logger.debug("Could not parse date: %s", date_str)
                     return None
 
 def process_pivoted_excel_data(df, filename, new_patient_info_list):
@@ -2809,14 +2593,14 @@ def process_existing_excel_csv(uploaded_excel_file, new_patient_info_list):
         # Read the file
         if filename.endswith('.csv'):
             df = pd.read_csv(uploaded_excel_file)
-            logger.debug(f"✓ Read CSV: {df.shape}")
+            logger.debug("✓ Read CSV: %s", df.shape)
         else:
             # For Excel - read the exact structure shown in your image
             logger.debug("Reading Excel with your specific structure...")
             
             # Read the entire first sheet without skipping rows initially
             full_df = pd.read_excel(uploaded_excel_file, sheet_name=0, header=None)
-            logger.debug(f"Full Excel shape: {full_df.shape}")
+            logger.debug("Full Excel shape: %s", full_df.shape)
             
             # Extract the date row (row 2, index 1)
             date_row = full_df.iloc[1, :].values
@@ -2856,7 +2640,7 @@ def process_existing_excel_csv(uploaded_excel_file, new_patient_info_list):
                     
                     new_columns.append(col_name)
             
-            logger.debug(f"Created column names: {new_columns}")
+            logger.debug("Created column names: %s", new_columns)
             
             # Extract the actual data (starting from row 5, index 4)
             data_df = full_df.iloc[4:].copy()
@@ -2871,8 +2655,8 @@ def process_existing_excel_csv(uploaded_excel_file, new_patient_info_list):
             data_df = data_df.dropna(how='all').reset_index(drop=True)
             
             df = data_df
-            logger.debug(f"✓ Processed Excel structure: {df.shape}")
-            logger.debug(f"Final columns: {list(df.columns)}")
+            logger.debug("✓ Processed Excel structure: %s", df.shape)
+            logger.debug("Final columns: %s", list(df.columns))
         
         if df is None or df.empty:
             logger.debug("❌ Could not extract any data")
@@ -2885,7 +2669,7 @@ def process_existing_excel_csv(uploaded_excel_file, new_patient_info_list):
         return process_excel_pivoted_format_fixed(df, filename, new_patient_info_list)
         
     except Exception as e:
-        logger.debug(f"❌ Error processing file: {str(e)}")
+        logger.debug("❌ Error processing file: %s", str(e))
         import traceback
         logger.debug(traceback.format_exc())
         return pd.DataFrame(), {}
@@ -2895,7 +2679,7 @@ def process_excel_pivoted_format_fixed(df, filename, new_patient_info_list):
     """
     FIXED: Process the pivoted Excel format without including unwanted columns
     """
-    logger.debug(f"Processing Excel pivoted format: {df.shape}")
+    logger.debug("Processing Excel pivoted format: %s", df.shape)
     
     # Get data columns - exclude Test_Category, Test_Name, and Reference_Ranges
     data_cols = []
@@ -2921,8 +2705,8 @@ def process_excel_pivoted_format_fixed(df, filename, new_patient_info_list):
         # This should be a data column
         data_cols.append(col)
     
-    logger.debug(f"Data columns to process: {data_cols}")
-    logger.debug(f"Excluded columns: {excluded_cols}")
+    logger.debug("Data columns to process: %s", data_cols)
+    logger.debug("Excluded columns: %s", excluded_cols)
     
     normalized_rows = []
     
@@ -2995,7 +2779,7 @@ def process_excel_pivoted_format_fixed(df, filename, new_patient_info_list):
             
             normalized_rows.append(normalized_row)
     
-    logger.debug(f"✅ Created {len(normalized_rows)} normalized rows from Excel")
+    logger.debug("✅ Created %s normalized rows from Excel", len(normalized_rows))
     
     if normalized_rows:
         result_df = pd.DataFrame(normalized_rows)
@@ -3014,9 +2798,9 @@ def process_excel_pivoted_format_fixed(df, filename, new_patient_info_list):
             }
         
         logger.debug("✅ Successfully processed Excel data:")
-        logger.debug(f"   - {len(result_df)} total records")
+        logger.debug("   - %s total records", len(result_df))
         if not result_df.empty:
-            logger.debug(f"   - Date range: {result_df['Test_Date'].min()} to {result_df['Test_Date'].max()}")
+            logger.debug("   - Date range: {result_df['Test_Date'].min()} to %s", result_df['Test_Date'].max())
         
         return result_df, patient_info
     else:

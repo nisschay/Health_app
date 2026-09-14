@@ -8,19 +8,43 @@ import time
 import uuid
 from collections import defaultdict, deque
 
-from fastapi import HTTPException, UploadFile, status
+from fastapi import HTTPException, Request, UploadFile, status
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 from .config import settings
 
 logger = logging.getLogger(__name__)
 
 PDF_MAGIC = b"%PDF-"
-EXISTING_DATA_SUFFIXES = (".csv", ".xlsx", ".xls")
+EXISTING_DATA_SUFFIXES = (".csv", ".xlsx")
 _MB = 1024 * 1024
+_CHUNK_BYTES = 64 * 1024
 
 
 def _too_large(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=detail)
+    return HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=detail)
+
+
+async def _read_within_limit(upload: UploadFile, limit: int, detail: str) -> bytes:
+    """Read an upload in chunks, stopping as soon as it passes the limit.
+
+    Reading first and measuring after still buffers an oversized file in memory.
+    """
+    if upload.size is not None and upload.size > limit:
+        raise _too_large(detail)
+
+    chunks: list[bytes] = []
+    read = 0
+    while True:
+        chunk = await upload.read(_CHUNK_BYTES)
+        if not chunk:
+            break
+        read += len(chunk)
+        if read > limit:
+            raise _too_large(detail)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 async def read_pdf_uploads(uploads: list[UploadFile] | None) -> list[tuple[str, bytes]]:
@@ -36,13 +60,15 @@ async def read_pdf_uploads(uploads: list[UploadFile] | None) -> list[tuple[str, 
 
     for upload in files:
         name = upload.filename or "uploaded.pdf"
-        payload = await upload.read()
-
-        if len(payload) > per_file_limit:
-            raise _too_large(f"'{name}' is larger than {settings.max_upload_file_mb} MB.")
+        remaining = total_limit - total
+        allowance = min(per_file_limit, remaining)
+        detail = (
+            f"'{name}' is larger than {settings.max_upload_file_mb} MB."
+            if allowance == per_file_limit
+            else f"Upload exceeds {settings.max_upload_total_mb} MB in total."
+        )
+        payload = await _read_within_limit(upload, allowance, detail)
         total += len(payload)
-        if total > total_limit:
-            raise _too_large(f"Upload exceeds {settings.max_upload_total_mb} MB in total.")
         if not payload.startswith(PDF_MAGIC):
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -65,9 +91,11 @@ async def read_existing_data_upload(upload: UploadFile | None) -> tuple[str, byt
             detail="Existing data must be a .csv or .xlsx file.",
         )
 
-    payload = await upload.read()
-    if len(payload) > settings.max_upload_file_mb * _MB:
-        raise _too_large(f"'{name}' is larger than {settings.max_upload_file_mb} MB.")
+    payload = await _read_within_limit(
+        upload,
+        settings.max_upload_file_mb * _MB,
+        f"'{name}' is larger than {settings.max_upload_file_mb} MB.",
+    )
     return name, payload
 
 
@@ -106,3 +134,17 @@ def internal_error(exc: Exception, context: str) -> HTTPException:
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=f"{context} failed. Quote reference {correlation_id} if you report this.",
     )
+
+
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject oversized bodies on every route, not just the upload endpoints."""
+
+    async def dispatch(self, request: Request, call_next):
+        declared = request.headers.get("content-length")
+        limit = settings.max_upload_total_mb * _MB
+        if declared and declared.isdigit() and int(declared) > limit:
+            return JSONResponse(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                content={"detail": f"Request body exceeds {settings.max_upload_total_mb} MB."},
+            )
+        return await call_next(request)

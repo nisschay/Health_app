@@ -14,7 +14,7 @@ import {
   YAxis,
 } from "recharts";
 import type { MedicalRecord } from "@/lib/api";
-import { parseMedicalDate } from "@/lib/clinical";
+import { parseMedicalDate } from "@/lib/medicalDate";
 import { canonicalizeCategory } from "@/lib/categoryMap";
 import { normalizeTestName } from "@/lib/testNameMap";
 

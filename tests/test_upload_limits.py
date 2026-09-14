@@ -45,11 +45,40 @@ async def test_rejects_too_many_files():
 
 @pytest.mark.asyncio
 async def test_rejects_a_batch_over_the_total_limit():
-    chunk = PDF + b"0" * (settings.max_upload_file_mb * 1024 * 1024 - len(PDF) - 1)
-    uploads = [_upload(f"r{i}.pdf", chunk) for i in range(settings.max_upload_total_mb + 1)]
+    """Stays under the file count and per-file caps, so only the total can fail it."""
+    per_file_mb = settings.max_upload_file_mb
+    count = settings.max_upload_total_mb // per_file_mb + 1
+    assert count <= settings.max_upload_files, "must not trip the file-count cap"
+
+    chunk = PDF + b"0" * (per_file_mb * 1024 * 1024 - len(PDF) - 1024)
+    uploads = [_upload(f"r{i}.pdf", chunk) for i in range(count)]
+    assert all(len(c) < per_file_mb * 1024 * 1024 for c in [chunk]), "must not trip the per-file cap"
+
     with pytest.raises(HTTPException) as excinfo:
         await read_pdf_uploads(uploads)
     assert excinfo.value.status_code == 413
+    assert "in total" in excinfo.value.detail
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_file_is_not_fully_buffered():
+    """Reading first and measuring after still held the whole file in memory."""
+    reads: list[int] = []
+    payload = PDF + b"0" * (settings.max_upload_file_mb * 1024 * 1024 * 2)
+    upload = _upload("huge.pdf", payload)
+
+    original_read = upload.read
+
+    async def counting_read(size: int = -1):
+        chunk = await original_read(size)
+        reads.append(len(chunk))
+        return chunk
+
+    upload.read = counting_read
+    with pytest.raises(HTTPException) as excinfo:
+        await read_pdf_uploads([upload])
+    assert excinfo.value.status_code == 413
+    assert sum(reads) < len(payload), "stopped before consuming the whole upload"
 
 
 @pytest.mark.asyncio

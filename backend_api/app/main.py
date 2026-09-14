@@ -57,6 +57,7 @@ from .schemas import (
     UserProfile,
 )
 from .security import (
+    BodySizeLimitMiddleware,
     internal_error,
     rate_limiter,
     read_existing_data_upload,
@@ -74,12 +75,16 @@ app = FastAPI(
 
 service = MedicalAnalysisService()
 CURRENT_NORMALIZATION_VERSION = 1
+# Raised by the extraction layer when the model provider throttles us.
+UPSTREAM_RATE_LIMIT_PREFIX = "RATE_LIMIT_EXCEEDED:"
 
 # Initialise DB tables on startup
 @app.on_event("startup")
 def startup_event() -> None:
     init_db()
 
+
+app.add_middleware(BodySizeLimitMiddleware)
 
 if settings.cors_origins:
     app.add_middleware(
@@ -97,7 +102,8 @@ if settings.cors_origins:
 def healthcheck() -> dict[str, str]:
     """Report database reachability too: the wake-up overlay polls this."""
     try:
-        database_status = "ok" if ping_database() else "unreachable"
+        ping_database()
+        database_status = "ok"
     except Exception:
         logger.exception("Health check could not reach the database")
         database_status = "unreachable"
@@ -284,6 +290,21 @@ def _infer_report_date_from_records(rows: list[dict[str, Any]]) -> date | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _resolve_report_date(
+    rows: list[dict[str, Any]],
+    fallback: date | None,
+    file_name: str,
+) -> date:
+    """Pick a report date, or refuse. Inventing today's date silently corrupted timelines."""
+    resolved = _infer_report_date_from_records(rows) or fallback
+    if resolved is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not read a report date for '{file_name}'. Set the report date and try again.",
+        )
+    return resolved
 
 
 def _dedupe_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -490,12 +511,7 @@ def save_analysis_to_study(
             # Insights must describe this report, not the whole upload batch.
             scoped_analysis.update(service.get_health_insights(scoped_records))
 
-        scoped_report_date = _infer_report_date_from_records(scoped_records) or report_date
-        if scoped_report_date is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Could not read a report date for '{name}'. Set the report date and try again.",
-            )
+        scoped_report_date = _resolve_report_date(scoped_records, report_date, name)
 
         create_report(
             db=db,
@@ -700,26 +716,22 @@ async def analyze_reports(
         result = _normalize_analysis_payload(result)
     except HTTPException:
         raise
-    except RuntimeError as exc:
-        if str(exc).startswith("RATE_LIMIT_EXCEEDED:"):
-            raise HTTPException(
-                status_code=429,
-                detail="The report reader is rate limited right now. Please retry shortly.",
-            ) from exc
-        raise internal_error(exc, "Analysis") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Could not read the uploaded reports.") from exc
     except Exception as exc:
-        raise internal_error(exc, "Analysis") from exc
+        code, message = _analysis_error(exc)
+        raise HTTPException(status_code=code, detail=message) from exc
 
     logger.info("Analyze complete: records=%d", result.get("total_records", 0))
 
     return AnalysisResponse(**result)
 
 
-def _stream_error(exc: Exception) -> dict[str, Any]:
-    """Mirror internal_error for the SSE channel, which cannot raise."""
-    return {"type": "error", "status": 500, "message": internal_error(exc, "Analysis").detail}
+def _analysis_error(exc: Exception) -> tuple[int, str]:
+    """Classify an analysis failure once for both the HTTP and SSE channels."""
+    if isinstance(exc, RuntimeError) and str(exc).startswith(UPSTREAM_RATE_LIMIT_PREFIX):
+        return 429, "The report reader is rate limited right now. Please retry shortly."
+    if isinstance(exc, ValueError):
+        return 400, "Could not read the uploaded reports."
+    return 500, internal_error(exc, "Analysis").detail
 
 
 @app.post(f"{settings.api_prefix}/reports/analyze/stream")
@@ -764,19 +776,9 @@ async def analyze_reports_stream(
             emit({"type": "stage", "step": "saving", "status": "active"})
             emit({"type": "stage", "step": "saving", "status": "complete"})
             emit({"type": "done", "result": result})
-        except RuntimeError as exc:
-            if str(exc).startswith("RATE_LIMIT_EXCEEDED:"):
-                emit({
-                    "type": "error",
-                    "status": 429,
-                    "message": "The report reader is rate limited right now. Please retry shortly.",
-                })
-                return
-            emit(_stream_error(exc))
-        except ValueError:
-            emit({"type": "error", "status": 400, "message": "Could not read the uploaded reports."})
         except Exception as exc:
-            emit(_stream_error(exc))
+            code, message = _analysis_error(exc)
+            emit({"type": "error", "status": code, "message": message})
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -883,6 +885,7 @@ def chat_about_report(
     payload: ChatRequest,
     user: RequestUser = Depends(get_request_user),
 ) -> ChatResponse:
+    rate_limiter.check(user.user_id)
     try:
         answer = service.get_chat_response(
             records=[record.model_dump() for record in payload.records],

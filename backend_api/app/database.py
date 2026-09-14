@@ -126,11 +126,10 @@ class Report(Base):
     uploaded_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
-def ping_database() -> bool:
-    """Cheap connectivity probe; a sleeping serverless database fails this fast."""
+def ping_database() -> None:
+    """Cheap connectivity probe; raises when the database is unreachable."""
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
-    return True
 
 
 def init_db() -> None:
