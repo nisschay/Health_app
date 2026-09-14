@@ -9,6 +9,7 @@ import time
 from collections import Counter, deque
 import json
 import google.generativeai as genai
+from google.api_core.exceptions import DeadlineExceeded
 
 # The API image ships without Streamlit and Plotly; only the legacy UI needs
 # them. Functions that draw or render check these before use.
@@ -50,7 +51,6 @@ from backend_api.app.normalization import (
 )
 import os
 import logging
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 try:
     from streamlit.runtime.scriptrunner import get_script_run_ctx
@@ -97,6 +97,7 @@ CHAT_PROMPT_MAX_ROWS = max(20, int(os.getenv("CHAT_PROMPT_MAX_ROWS", "80")))
 CHAT_TIMELINE_LIMIT = max(1, int(os.getenv("CHAT_TIMELINE_LIMIT", "12")))
 CHAT_SNAPSHOT_LIMIT = max(5, int(os.getenv("CHAT_SNAPSHOT_LIMIT", "40")))
 CHAT_MODEL_TIMEOUT_SECONDS = max(5, int(os.getenv("CHAT_MODEL_TIMEOUT_SECONDS", "50")))
+EXTRACTION_MODEL_TIMEOUT_SECONDS = max(30, int(os.getenv("EXTRACTION_MODEL_TIMEOUT_SECONDS", "120")))
 PDF_OCR_FALLBACK_ENABLED = _env_bool("PDF_OCR_FALLBACK_ENABLED", default=True)
 PDF_OCR_MIN_TEXT_CHARS = max(0, int(os.getenv("PDF_OCR_MIN_TEXT_CHARS", "120")))
 PDF_OCR_MAX_PAGES = max(1, int(os.getenv("PDF_OCR_MAX_PAGES", "5")))
@@ -458,7 +459,11 @@ def _generate_with_extraction_models(prompt: str, generation_config: dict | None
         for config in ((generation_config, None) if generation_config else (None,)):
             _model_call_pacer.wait()
             try:
-                response = model.generate_content(prompt, **({"generation_config": config} if config else {}))
+                response = model.generate_content(
+                    prompt,
+                    request_options={"timeout": EXTRACTION_MODEL_TIMEOUT_SECONDS},
+                    **({"generation_config": config} if config else {}),
+                )
                 response_text = _extract_text_from_response(response)
                 if response_text:
                     return response_text, None
@@ -1207,19 +1212,17 @@ Assistant Response (markdown):
                 gemini_model_chat = genai.GenerativeModel(model_name)
                 _active_chat_model_name = model_name
 
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                response_future = executor.submit(
-                    gemini_model_chat.generate_content,
-                    prompt,
-                    generation_config={"temperature": 0.3},
-                )
-                response = response_future.result(timeout=CHAT_MODEL_TIMEOUT_SECONDS)
+            response = gemini_model_chat.generate_content(
+                prompt,
+                generation_config={"temperature": 0.3},
+                request_options={"timeout": CHAT_MODEL_TIMEOUT_SECONDS},
+            )
             response_text = _response_text_from_model_response(response)
             if response_text:
                 return response_text
             last_error_text = "Gemini chat returned an empty response."
             continue
-        except FutureTimeoutError:
+        except DeadlineExceeded:
             last_error_text = (
                 f"Gemini chat timed out after {CHAT_MODEL_TIMEOUT_SECONDS}s "
                 f"for model {model_name}."
