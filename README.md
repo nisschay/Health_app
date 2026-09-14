@@ -1,3 +1,13 @@
+---
+title: Medical Report Analyzer API
+emoji: 🩺
+colorFrom: green
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Medical Report Analyzer
 
 Production URL: https://health-app-lovat-eta.vercel.app/
