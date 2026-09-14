@@ -11,10 +11,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from backend_api.app.database import Report, ReportAnalysis, SessionLocal  # noqa: E402
-from backend_api.app.normalization import normalize_records  # noqa: E402
+from backend_api.app.normalization import NORMALIZATION_VERSION, normalize_records  # noqa: E402
 from backend_api.app.services import MedicalAnalysisService  # noqa: E402
-
-CURRENT_NORMALIZATION_VERSION = 1
 
 
 def _empty_insights() -> dict[str, Any]:
@@ -66,7 +64,7 @@ def main() -> None:
             normalized_records = after_payload.get("records", []) if isinstance(after_payload, dict) else []
             row.normalized_records = [item for item in normalized_records if isinstance(item, dict)]
             row.is_normalized = True
-            row.normalization_version = CURRENT_NORMALIZATION_VERSION
+            row.normalization_version = NORMALIZATION_VERSION
 
             if before != after:
                 row.analysis_data = after_payload

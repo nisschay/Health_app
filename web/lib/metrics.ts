@@ -1,4 +1,3 @@
-import { normalizeTestName } from "./testNameMap";
 import { getPublicApiBaseUrl } from "./apiBaseUrl";
 
 const API_BASE_URL = getPublicApiBaseUrl();
@@ -305,7 +304,7 @@ export async function evaluateContextRetentionScore(args: {
 }
 
 function normalizedName(testName: string): string {
-  return normalizeTestName(testName).toLowerCase().trim();
+  return testName.toLowerCase().trim();
 }
 
 function isMatch(extracted: ExtractionFinding, expected: GroundTruthFinding): boolean {

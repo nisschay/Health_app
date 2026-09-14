@@ -32,7 +32,7 @@ import {
 } from "@/lib/api";
 import AlertsByCategory from "./AlertsByCategory";
 import OrganizedDataTree from "./OrganizedDataTree";
-import { CANONICAL_CATEGORIES, canonicalizeCategory } from "@/lib/categoryMap";
+import { CANONICAL_CATEGORIES } from "@/lib/categoryMap";
 import { parseMedicalDate } from "@/lib/medicalDate";
 
 const TrendChart = dynamic(() => import("./TrendChart"), { ssr: false });
@@ -1251,7 +1251,7 @@ export default function DashboardPage() {
 
   const derived = useMemo(() => {
     const records = analysis?.records ?? [];
-    const categoryOf = (record: AnalysisResponse["records"][number]) => canonicalizeCategory(record.Test_Category);
+    const categoryOf = (record: AnalysisResponse["records"][number]) => record.Test_Category ?? "Other";
     const allBodySystems = CANONICAL_CATEGORIES.filter((category) => records.some((record) => categoryOf(record) === category));
     const filteredBySystem = selectedBodySystem === "all" ? records : records.filter((record) => categoryOf(record) === selectedBodySystem);
     const allCategories = CANONICAL_CATEGORIES.filter((category) => filteredBySystem.some((record) => categoryOf(record) === category));

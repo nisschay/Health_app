@@ -36,7 +36,7 @@ from .database import (
     study_report_stats,
     upsert_user,
 )
-from .normalization import normalize_records
+from .normalization import NORMALIZATION_VERSION, normalize_records
 from .schemas import (
     AnalysisHistoryItem,
     AnalysisResponse,
@@ -77,7 +77,6 @@ app = FastAPI(
 )
 
 service = MedicalAnalysisService()
-CURRENT_NORMALIZATION_VERSION = 1
 # Raised by the extraction layer when the model provider throttles us.
 UPSTREAM_RATE_LIMIT_PREFIX = "RATE_LIMIT_EXCEEDED:"
 
@@ -526,7 +525,7 @@ def save_analysis_to_study(
             analysis_data=scoped_analysis,
             normalized_records=scoped_normalized_records,
             is_normalized=True,
-            normalization_version=CURRENT_NORMALIZATION_VERSION,
+            normalization_version=NORMALIZATION_VERSION,
         )
         added += 1
 
@@ -647,7 +646,7 @@ def get_combined_study_report(
         report_rows: list[dict[str, Any]] = []
         if (
             getattr(report, "is_normalized", False)
-            and getattr(report, "normalization_version", None) == CURRENT_NORMALIZATION_VERSION
+            and getattr(report, "normalization_version", None) == NORMALIZATION_VERSION
             and isinstance(getattr(report, "normalized_records", None), list)
         ):
             report_rows = [row for row in report.normalized_records if isinstance(row, dict)]
