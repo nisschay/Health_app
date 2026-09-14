@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from collections import Counter, defaultdict
@@ -7,6 +8,11 @@ from datetime import datetime
 from typing import Any
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+# Bump when normalisation output changes shape; the backfill re-normalises older rows.
+NORMALIZATION_VERSION = 2
 
 CANONICAL_CATEGORIES = [
     "Haematology",
@@ -383,7 +389,6 @@ MUST_NOT_MERGE_RAW = [
 _warned_categories: set[str] = set()
 _warned_tests: set[str] = set()
 _warned_other_category_tests: set[str] = set()
-_normalized_test_name_map_cache: dict[str, str] | None = None
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:
@@ -404,37 +409,36 @@ def _normalize_lookup_key(raw: str) -> str:
     key = re.sub(r"\\+", " ", key)
     key = re.sub(r"[_]+", " ", key)
     key = re.sub(r"\s*/\s*", " / ", key)
-    key = re.sub(r"[^a-z0-9\-&/+,.\s]", " ", key)
+    key = re.sub(r"[^a-z0-9%\-&/+,.\s]", " ", key)  # % separates a percentage from its absolute count
     key = re.sub(r"\s+", " ", key)
     return key.strip(" -")
 
 
-def _normalized_test_name_map() -> dict[str, str]:
-    global _normalized_test_name_map_cache
-    if _normalized_test_name_map_cache is not None:
-        return _normalized_test_name_map_cache
-
-    mapped: dict[str, str] = {}
-    for map_key, canonical in TEST_NAME_MAP.items():
+def _build_alias_index() -> tuple[dict[str, str], dict[str, str]]:
+    by_normalized: dict[str, str] = {}
+    by_compact: dict[str, str] = {}
+    # Index every alias and every canonical name under the same cleaning the
+    # lookup applies to input. Without this, an alias like "prostate specific
+    # antigen (psa)" was unreachable, and normalising twice changed the name.
+    canonicals = set(TEST_NAME_MAP.values())
+    entries = (
+        list(TEST_NAME_MAP.items())
+        + [(_normalize_test_map_key(alias), canonical) for alias, canonical in TEST_NAME_MAP.items()]
+        + [(c, c) for c in canonicals]
+        + [(_normalize_test_map_key(c), c) for c in canonicals]
+    )
+    for map_key, canonical in entries:
         normalized_key = _normalize_lookup_key(map_key)
         if normalized_key:
-            mapped[normalized_key] = canonical
-
-    _normalized_test_name_map_cache = mapped
-    return _normalized_test_name_map_cache
+            by_normalized.setdefault(normalized_key, canonical)
+            by_compact.setdefault(_compact(normalized_key), canonical)
+        by_compact.setdefault(_compact(map_key), canonical)
+    return by_normalized, by_compact
 
 
 def _canonical_from_lookup(value: str) -> str | None:
-    normalized_map = _normalized_test_name_map()
     lookup_key = _normalize_lookup_key(value)
-    if lookup_key in normalized_map:
-        return normalized_map[lookup_key]
-
-    compact_lookup = _compact(lookup_key)
-    for map_key, canonical in normalized_map.items():
-        if _compact(map_key) == compact_lookup:
-            return canonical
-    return None
+    return _ALIASES_BY_NORMALIZED.get(lookup_key) or _ALIASES_BY_COMPACT.get(_compact(lookup_key))
 
 
 def _titlecase_fallback(raw: str) -> str:
@@ -531,13 +535,10 @@ def _is_blocklisted(a: str, b: str) -> bool:
     a_norm = _normalized_blocklist_key(a)
     b_norm = _normalized_blocklist_key(b)
     shorter, longer = (a_norm, b_norm) if len(a_norm) <= len(b_norm) else (b_norm, a_norm)
-
-    for p1, p2 in MUST_NOT_MERGE_RAW:
-        p1_norm = _normalized_blocklist_key(p1)
-        p2_norm = _normalized_blocklist_key(p2)
-        if (p1_norm in shorter and p2_norm in longer) or (p2_norm in shorter and p1_norm in longer):
-            return True
-    return False
+    return any(
+        (p1 in shorter and p2 in longer) or (p2 in shorter and p1 in longer)
+        for p1, p2 in _MUST_NOT_MERGE
+    )
 
 
 def are_same_test(a: str, b: str) -> bool:
@@ -690,7 +691,7 @@ def canonicalize_category(raw: str | None) -> str:
 
     if raw_text not in _warned_categories:
         _warned_categories.add(raw_text)
-        print(f"[Category] Unmapped category: \"{raw_text}\" - add to CATEGORY_MAP")
+        logger.debug("Unmapped category: %s", raw_text)
 
     return "Other"
 
@@ -702,6 +703,12 @@ def _normalize_test_map_key(value: str) -> str:
     return key
 
 
+_ALIASES_BY_NORMALIZED, _ALIASES_BY_COMPACT = _build_alias_index()
+_MUST_NOT_MERGE = tuple(
+    (_normalized_blocklist_key(p1), _normalized_blocklist_key(p2)) for p1, p2 in MUST_NOT_MERGE_RAW
+)
+
+
 def normalize_test_name(raw: str | None) -> str:
     if raw is None:
         return "Unknown Test"
@@ -711,24 +718,9 @@ def normalize_test_name(raw: str | None) -> str:
         return "Unknown Test"
 
     key = _normalize_test_map_key(raw_text)
-    if key in TEST_NAME_MAP:
-        return TEST_NAME_MAP[key]
-
-    normalized_map = _normalized_test_name_map()
-    normalized_key = _normalize_lookup_key(key)
-    if normalized_key in normalized_map:
-        return normalized_map[normalized_key]
-
-    compact_key = _compact(key)
-    for map_key, canonical in TEST_NAME_MAP.items():
-        map_compact = _compact(map_key)
-        if compact_key == map_compact:
-            return canonical
-
-    for map_key, canonical in normalized_map.items():
-        map_compact = _compact(map_key)
-        if compact_key == map_compact:
-            return canonical
+    canonical = TEST_NAME_MAP.get(key) or _canonical_from_lookup(key)
+    if canonical:
+        return canonical
 
     if not NORMALIZATION_ALIAS_WHITELIST_ONLY:
         for map_key, canonical in TEST_NAME_MAP.items():
@@ -737,7 +729,7 @@ def normalize_test_name(raw: str | None) -> str:
 
     if raw_text not in _warned_tests:
         _warned_tests.add(raw_text)
-        print(f"[TestName] Unmapped test: \"{raw_text}\" - consider adding to TEST_NAME_MAP")
+        logger.debug("Unmapped test: %s", raw_text)
 
     return _display_name_from_key(key)
 
@@ -990,6 +982,38 @@ def normalize_record(record: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _cluster_keys(keys: list[str]) -> dict[str, list[str]]:
+    """Group structurally-cleaned names that denote the same test."""
+    if NORMALIZATION_ALIAS_WHITELIST_ONLY:
+        groups: dict[str, list[str]] = defaultdict(list)
+        for key in keys:
+            groups[_canonical_from_lookup(key) or key].append(key)
+        return {sorted(group, key=len, reverse=True)[0]: group for group in groups.values()}
+
+    adjacency: dict[str, set[str]] = {key: set() for key in keys}
+    for i, key in enumerate(keys):
+        for candidate in keys[i + 1:]:
+            if are_same_test(key, candidate):
+                adjacency[key].add(candidate)
+                adjacency[candidate].add(key)
+
+    clusters: dict[str, list[str]] = {}
+    visited: set[str] = set()
+    for key in keys:
+        if key in visited:
+            continue
+        stack, cluster = [key], []
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            cluster.append(current)
+            stack.extend(n for n in adjacency[current] if n not in visited)
+        clusters[sorted(cluster, key=len, reverse=True)[0]] = cluster
+    return clusters
+
+
 def deduplicate_findings(
     findings: list[dict[str, Any]],
     *,
@@ -1014,36 +1038,7 @@ def deduplicate_findings(
         key_map[key].append(normalized_row)
 
     keys = list(key_map.keys())
-    adjacency: dict[str, set[str]] = {key: set() for key in keys}
-
-    for i, key in enumerate(keys):
-        for j in range(i + 1, len(keys)):
-            candidate = keys[j]
-            if are_same_test(key, candidate):
-                adjacency[key].add(candidate)
-                adjacency[candidate].add(key)
-
-    clusters: dict[str, list[str]] = {}
-    visited: set[str] = set()
-
-    for key in keys:
-        if key in visited:
-            continue
-
-        stack = [key]
-        cluster: list[str] = []
-        while stack:
-            current = stack.pop()
-            if current in visited:
-                continue
-            visited.add(current)
-            cluster.append(current)
-            for neighbor in adjacency[current]:
-                if neighbor not in visited:
-                    stack.append(neighbor)
-
-        canonical_key = sorted(cluster, key=len, reverse=True)[0]
-        clusters[canonical_key] = cluster
+    clusters = _cluster_keys(keys)
 
     deduped_rows: list[dict[str, Any]] = []
 
@@ -1071,10 +1066,7 @@ def deduplicate_findings(
         )
 
         if len(alias_keys) > 1:
-            print(
-                f"[Dedup] Merged {len(alias_keys)} variants -> \"{canonical_name}\": "
-                + ", ".join(f'\"{key}\"' for key in alias_keys)
-            )
+            logger.debug("Merged %d variants -> %s", len(alias_keys), canonical_name)
 
         merged_rows = merge_readings_by_date(all_rows)
         for row in merged_rows:
@@ -1086,9 +1078,6 @@ def deduplicate_findings(
             if not merged.get("Original_Test_Name"):
                 merged["Original_Test_Name"] = previous_name or canonical_name
 
-            if previous_name and previous_name != canonical_name:
-                date_text = str(merged.get("Test_Date") or "N/A")
-                print(f"[MERGE] \"{previous_name}\" -> \"{canonical_name}\" ({date_text})")
 
             deduped_rows.append(merged)
 
@@ -1096,12 +1085,7 @@ def deduplicate_findings(
             category_warning_key = f"{canonical_name}|{canonical_key}"
             if category_warning_key not in _warned_other_category_tests:
                 _warned_other_category_tests.add(category_warning_key)
-                raw_category = str(all_rows[0].get("Test_Category") or "N/A") if all_rows else "N/A"
-                print(
-                    "[Normalization] Unknown category for: "
-                    f"\"{canonical_name}\" - raw category was: \"{raw_category}\". "
-                    "Add to CATEGORY_MAP."
-                )
+                logger.debug("Unknown category for %s", canonical_name)
 
     deduped_rows.sort(
         key=lambda row: (

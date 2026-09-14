@@ -15,8 +15,6 @@ import {
 } from "recharts";
 import type { MedicalRecord } from "@/lib/api";
 import { parseMedicalDate } from "@/lib/medicalDate";
-import { canonicalizeCategory } from "@/lib/categoryMap";
-import { normalizeTestName } from "@/lib/testNameMap";
 
 type FindingSeverity = "HIGH" | "BORDERLINE" | "NORMAL";
 type MetricTrend = "improving" | "worsening" | "stable" | "insufficient_data";
@@ -205,7 +203,7 @@ function isLowerBetterMetric(testName: string): boolean {
 function buildFindingEntries(records: MedicalRecord[]): FindingEntry[] {
   return records
     .map((record) => {
-      const testName = normalizeTestName(record.Test_Name ?? record.Original_Test_Name ?? "Unknown Test");
+      const testName = record.Test_Name ?? record.Original_Test_Name ?? "Unknown Test";
       const status = normalizeStatus(record.Status);
       const severity = toSeverity(status);
       const valueNumeric = parseNumeric(record.Result_Numeric ?? record.Result);
@@ -213,7 +211,7 @@ function buildFindingEntries(records: MedicalRecord[]): FindingEntry[] {
 
       return {
         testName,
-        category: canonicalizeCategory(record.Test_Category),
+        category: record.Test_Category ?? "Other",
         valueText: formatValue(record.Result, record.Unit),
         valueNumeric,
         unit: record.Unit ?? "",
@@ -433,7 +431,7 @@ function categoryComparison(records: MedicalRecord[]) {
   const map = new Map<string, number>();
   for (const record of records) {
     if (!isAbnormalStatus(record.Status)) continue;
-    const category = canonicalizeCategory(record.Test_Category);
+    const category = record.Test_Category ?? "Other";
     map.set(category, (map.get(category) ?? 0) + 1);
   }
   return Array.from(map.entries())

@@ -1,4 +1,3 @@
-import { normalizeAnalysisPayload } from "./normalizeTest";
 import { getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
 
 // Token provider - set by AuthContext on login
@@ -18,7 +17,6 @@ const API_BASE_URL = (() => {
 })();
 
 const DIRECT_API_BASE_URL = getDirectApiBaseUrl().replace(/\/$/, "");
-const ENABLE_CLIENT_NORMALIZATION_FALLBACK = process.env.NEXT_PUBLIC_CLIENT_NORMALIZATION_FALLBACK === "true";
 
 function shouldRetryDirect(response: Response): boolean {
   if (DIRECT_API_BASE_URL === API_BASE_URL) {
@@ -341,7 +339,7 @@ export async function analyzeReports(
   }
 
   const parsed = await parseJsonResponse<AnalysisResponse>(response);
-  return normalizeAnalysisPayload(parsed);
+  return parsed;
 }
 
 const STREAM_IDLE_TIMEOUT_MS = 120_000;
@@ -369,7 +367,7 @@ export async function analyzeReportsStream(
   if (!response.ok) {
     if (idleTimer) clearTimeout(idleTimer);
     const parsed = await parseJsonResponse<AnalysisResponse>(response);
-    return normalizeAnalysisPayload(parsed);
+    return parsed;
   }
 
   const reader = response.body?.getReader();
@@ -427,7 +425,7 @@ export async function analyzeReportsStream(
     throw new Error("Analysis stream ended without a final result.");
   }
 
-  return normalizeAnalysisPayload(finalResult);
+  return finalResult;
 }
 
 export async function fetchInsights(
@@ -546,7 +544,7 @@ export async function fetchReportHistory(): Promise<AnalysisHistoryItem[]> {
 export async function fetchReportById(id: number): Promise<AnalysisResponse> {
   const response = await authBackendFetch(`/api/v1/reports/history/${id}`);
   const parsed = await parseJsonResponse<AnalysisResponse>(response);
-  return normalizeAnalysisPayload(parsed);
+  return parsed;
 }
 
 export async function saveAnalysis(
@@ -613,7 +611,7 @@ export async function fetchStudiesDashboard(): Promise<DashboardSummary> {
 export async function fetchStudyCombinedReport(studyId: string): Promise<AnalysisResponse> {
   const response = await authBackendFetch(`/api/v1/studies/${studyId}/combined-report`);
   const parsed = await parseJsonResponse<AnalysisResponse>(response);
-  return ENABLE_CLIENT_NORMALIZATION_FALLBACK ? normalizeAnalysisPayload(parsed) : parsed;
+  return parsed;
 }
 
 export async function exportPdf(
