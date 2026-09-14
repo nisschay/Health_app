@@ -126,6 +126,28 @@ class Report(Base):
     uploaded_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class ExtractionCache(Base):
+    """Model output keyed by report-text hash; survives Space restarts, unlike a dict."""
+
+    __tablename__ = "extraction_cache"
+
+    text_hash = Column(String(64), primary_key=True)
+    payload = Column(JSONB, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+def get_cached_extraction(text_hash: str) -> dict[str, Any] | None:
+    with SessionLocal() as db:
+        row = db.get(ExtractionCache, text_hash)
+        return dict(row.payload) if row else None
+
+
+def store_cached_extraction(text_hash: str, payload: dict[str, Any]) -> None:
+    with SessionLocal() as db:
+        db.merge(ExtractionCache(text_hash=text_hash, payload=payload))
+        db.commit()
+
+
 def ping_database() -> None:
     """Cheap connectivity probe; raises when the database is unreachable."""
     with engine.connect() as connection:

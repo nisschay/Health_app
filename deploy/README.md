@@ -31,6 +31,7 @@ Optional limits, with their defaults:
 - `MAX_UPLOAD_FILES` (20), `MAX_UPLOAD_FILE_MB` (10), `MAX_UPLOAD_TOTAL_MB` (25)
 - `RATE_LIMIT_PER_MINUTE` (20)
 - `PDF_OCR_FALLBACK_ENABLED` (true), `PDF_OCR_MAX_PAGES` (5)
+- `GEMINI_EXTRACTION_MODELS`, `GEMINI_CHAT_MODELS` (gemini-3-flash), `GEMINI_RPM` (10), `EXTRACTION_WORKERS` (4)
 
 ## Keeping the Space awake
 

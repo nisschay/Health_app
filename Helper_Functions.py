@@ -4,7 +4,9 @@ import math
 import re
 import PyPDF2
 import io
-from collections import Counter
+import threading
+import time
+from collections import Counter, deque
 import json
 import google.generativeai as genai
 
@@ -35,14 +37,18 @@ from backend_api.app.normalization import (
     CANONICAL_STATUS_VALUES,
     CONCERNING_STATUS_VALUES,
     STATUS_HEALTH_WEIGHTS,
+    STATUS_HIGH,
+    STATUS_LOW,
+    STATUS_NEGATIVE,
+    STATUS_NORMAL,
+    STATUS_NOT_APPLICABLE,
+    STATUS_POSITIVE,
     UNKNOWN_STATUS_HEALTH_WEIGHT,
     canonicalize_category,
     normalize_status,
     normalize_test_name,
 )
 import os
-import hashlib
-import copy
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
@@ -57,13 +63,10 @@ logging.getLogger("streamlit").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 
-gemini_model_extraction = None
 gemini_model_chat = None
-_last_extraction_error = ""
-_analysis_cache: dict[str, dict] = {}
-_analysis_cache_max_items = 128
-_active_extraction_model_name = ""
 _active_chat_model_name = ""
+_genai_configured_key: str | None = None
+_genai_configure_lock = threading.Lock()
 
 
 def _model_candidates_from_env(var_name: str, default: str) -> list[str]:
@@ -80,12 +83,14 @@ def _env_bool(var_name: str, default: bool = False) -> bool:
 
 EXTRACTION_MODEL_CANDIDATES = _model_candidates_from_env(
     "GEMINI_EXTRACTION_MODELS",
-    "gemini-2.5-flash",
+    "gemini-3-flash",
 )
 CHAT_MODEL_CANDIDATES = _model_candidates_from_env(
     "GEMINI_CHAT_MODELS",
-    "gemini-2.5-flash",
+    "gemini-3-flash",
 )
+GEMINI_RPM = max(1, int(os.getenv("GEMINI_RPM", "10")))
+EXTRACTION_MAX_CHARS = 120000
 
 CHAT_HISTORY_LIMIT = max(1, int(os.getenv("CHAT_HISTORY_LIMIT", "8")))
 CHAT_PROMPT_MAX_ROWS = max(20, int(os.getenv("CHAT_PROMPT_MAX_ROWS", "80")))
@@ -147,10 +152,6 @@ def _ui_debug_text(label: str, value: str, height: int = 150) -> None:
         logger.debug("%s (%d chars withheld)", label, len(value))
 
 
-def get_last_extraction_error() -> str:
-    return _last_extraction_error
-
-
 def _is_rate_limit_error(error_text: str) -> bool:
     lowered = (error_text or "").lower()
     return "429" in lowered or "quota exceeded" in lowered or "rate limit" in lowered
@@ -188,17 +189,39 @@ def _extract_retry_delay(error_text: str) -> str | None:
     return None
 
 
-def _cache_get(cache_key: str):
-    cached = _analysis_cache.get(cache_key)
-    return copy.deepcopy(cached) if cached is not None else None
+class _CallPacer:
+    """Sliding-window limiter shared by all threads, paced to the provider's RPM."""
+
+    def __init__(self, per_minute: int) -> None:
+        self._per_minute = per_minute
+        self._calls: deque[float] = deque()
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._calls and now - self._calls[0] >= 60:
+                    self._calls.popleft()
+                if len(self._calls) < self._per_minute:
+                    self._calls.append(now)
+                    return
+                delay = 60 - (now - self._calls[0])
+            time.sleep(max(delay, 0.05))
 
 
-def _cache_set(cache_key: str, payload: dict) -> None:
-    if len(_analysis_cache) >= _analysis_cache_max_items:
-        oldest_key = next(iter(_analysis_cache))
-        _analysis_cache.pop(oldest_key, None)
-    _analysis_cache[cache_key] = copy.deepcopy(payload)
+_model_call_pacer = _CallPacer(GEMINI_RPM)
 
+
+def _ensure_genai_configured(api_key: str | None) -> bool:
+    global _genai_configured_key
+    if not api_key:
+        return False
+    with _genai_configure_lock:
+        if _genai_configured_key != api_key:
+            genai.configure(api_key=api_key)
+            _genai_configured_key = api_key
+    return True
 
 
 def format_date_dd_mm_yyyy(date_obj):
@@ -353,53 +376,24 @@ def extract_text_from_pdf(file_content):
         return None
 
 def init_gemini_models(api_key_for_gemini):
-    global gemini_model_extraction, gemini_model_chat, _active_extraction_model_name, _active_chat_model_name
-    try:
-        if not api_key_for_gemini:
-            _ui_error("Gemini API key is missing. Cannot initialize models.")
-            return False
-        
-        genai.configure(api_key=api_key_for_gemini)
-
-        last_error = None
-        for model_name in EXTRACTION_MODEL_CANDIDATES:
-            try:
-                gemini_model_extraction = genai.GenerativeModel(model_name)
-                _active_extraction_model_name = model_name
-                break
-            except Exception as model_exc:
-                last_error = model_exc
-                continue
-
-        if gemini_model_extraction is None:
-            _ui_error(f"Could not initialize Gemini extraction model: {last_error}")
-            gemini_model_chat = None
-            return False
-
-        chat_last_error = None
-        for model_name in CHAT_MODEL_CANDIDATES:
-            try:
-                gemini_model_chat = genai.GenerativeModel(model_name)
-                _active_chat_model_name = model_name
-                return True
-            except Exception as model_exc:
-                chat_last_error = model_exc
-                continue
-
-        _ui_error(f"Could not initialize Gemini chat model: {chat_last_error}")
-        gemini_model_extraction = None
-        gemini_model_chat = None
-        _active_extraction_model_name = ""
-        _active_chat_model_name = ""
+    global gemini_model_chat, _active_chat_model_name
+    if not _ensure_genai_configured(api_key_for_gemini):
+        _ui_error("Gemini API key is missing. Cannot initialize models.")
         return False
-        
-    except Exception as e:
-        _ui_error(f"Error configuring Gemini: {e}. Please ensure your API key is correct and valid.")
-        gemini_model_extraction = None
-        gemini_model_chat = None
-        _active_extraction_model_name = ""
-        _active_chat_model_name = ""
-        return False
+
+    last_error = None
+    for model_name in CHAT_MODEL_CANDIDATES:
+        try:
+            gemini_model_chat = genai.GenerativeModel(model_name)
+            _active_chat_model_name = model_name
+            return True
+        except Exception as model_exc:
+            last_error = model_exc
+
+    _ui_error(f"Could not initialize Gemini chat model: {last_error}")
+    gemini_model_chat = None
+    _active_chat_model_name = ""
+    return False
 
 
 def _extract_first_json_object(response_text: str) -> str | None:
@@ -452,51 +446,26 @@ def _extract_text_from_response(response) -> str:
 
 
 def _generate_with_extraction_models(prompt: str, generation_config: dict | None = None) -> tuple[str, Exception | None]:
-    global gemini_model_extraction
-    global _active_extraction_model_name
-
-    response_text = ""
+    """Try each candidate model once; a fresh model per call keeps threads independent."""
     last_exception = None
-    models_to_try = []
-
-    if _active_extraction_model_name:
-        models_to_try.append(_active_extraction_model_name)
     for model_name in EXTRACTION_MODEL_CANDIDATES:
-        if model_name not in models_to_try:
-            models_to_try.append(model_name)
-
-    for model_name in models_to_try:
-        if model_name != _active_extraction_model_name:
-            try:
-                gemini_model_extraction = genai.GenerativeModel(model_name)
-                _active_extraction_model_name = model_name
-            except Exception as model_exc:
-                last_exception = model_exc
-                continue
-
         try:
-            call_kwargs = {}
-            if generation_config:
-                call_kwargs["generation_config"] = generation_config
-            response = gemini_model_extraction.generate_content(prompt, **call_kwargs)
-            response_text = _extract_text_from_response(response)
-            if response_text:
-                return response_text, None
-        except Exception as call_exc:
-            last_exception = call_exc
-            if _is_rate_limit_error(str(call_exc)):
-                continue
-            if generation_config:
-                try:
-                    # Retry once without structured output hints for model compatibility.
-                    response = gemini_model_extraction.generate_content(prompt)
-                    response_text = _extract_text_from_response(response)
-                    if response_text:
-                        return response_text, None
-                except Exception as fallback_exc:
-                    last_exception = fallback_exc
+            model = genai.GenerativeModel(model_name)
+        except Exception as model_exc:
+            last_exception = model_exc
             continue
 
+        for config in ((generation_config, None) if generation_config else (None,)):
+            _model_call_pacer.wait()
+            try:
+                response = model.generate_content(prompt, **({"generation_config": config} if config else {}))
+                response_text = _extract_text_from_response(response)
+                if response_text:
+                    return response_text, None
+            except Exception as call_exc:
+                last_exception = call_exc
+                if _is_rate_limit_error(str(call_exc)):
+                    break
     return "", last_exception
 
 
@@ -815,222 +784,116 @@ def auto_detect_and_process(df, filename, new_patient_info_list):
 
 
 
-def analyze_medical_report_with_gemini(text_content, api_key_for_gemini):
-    global gemini_model_extraction
-    global _last_extraction_error
-    _last_extraction_error = ""
-    if not gemini_model_extraction and not init_gemini_models(api_key_for_gemini):
-        _last_extraction_error = "Gemini extraction model not initialized. API key may be invalid or missing."
-        _ui_error(_last_extraction_error)
-        return None
+_STATUS_ENUM = sorted(CANONICAL_STATUS_VALUES)
 
-    if not text_content or not text_content.strip():
-        _last_extraction_error = "No extractable text was provided to Gemini."
-        _ui_warn(_last_extraction_error)
-        return None
-
-    # Keep prompt size bounded to reduce timeout/limit failures on very large PDFs.
-    max_chars = 120000
-    bounded_text = text_content[:max_chars]
-    cache_key = hashlib.md5(bounded_text.encode("utf-8", errors="ignore")).hexdigest()
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    validation_feedback = ""
-    last_response_text = ""
-    last_exception = None
-    try:
-        for attempt in range(2):
-            prompt = _build_structured_extraction_prompt(
-                bounded_text,
-                validation_feedback=validation_feedback,
-            )
-            response_text, last_exception = _generate_with_extraction_models(
-                prompt,
-                generation_config={
-                    "response_mime_type": "application/json",
-                    "temperature": 0.0,
-                },
-            )
-            last_response_text = response_text
-
-            if not response_text:
-                if last_exception and _is_rate_limit_error(str(last_exception)):
-                    retry_delay = _extract_retry_delay(str(last_exception))
-                    _last_extraction_error = (
-                        f"Rate limit reached for Gemini extraction ({_active_extraction_model_name or 'configured models'})."
-                        + (f" Retry after {retry_delay}." if retry_delay else "")
-                    )
-                    _ui_error(_last_extraction_error)
-                    return None
-                if attempt == 0:
-                    validation_feedback = "Empty response from model."
-                    continue
-                break
-
-            match_json_block = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
-            if match_json_block:
-                json_str = match_json_block.group(1)
-            else:
-                json_str = _extract_first_json_object(response_text)
-                if not json_str:
-                    validation_feedback = "Response did not contain a valid JSON object."
-                    if attempt == 0:
-                        _ui_warn("Gemini extraction response was not valid JSON; retrying with corrective instructions.")
-                        continue
-                    _last_extraction_error = validation_feedback
-                    _ui_error(_last_extraction_error)
-                    _ui_debug_text("Gemini API Response (text)", response_text, height=150)
-                    return None
-
-            try:
-                parsed = json.loads(json_str)
-            except json.JSONDecodeError as json_e:
-                validation_feedback = f"JSON parse error: {json_e}"
-                if attempt == 0:
-                    _ui_warn("Gemini extraction JSON parse failed; retrying once with corrective instructions.")
-                    continue
-                _last_extraction_error = f"JSON parse error from Gemini response: {json_e}"
-                _ui_error(_last_extraction_error)
-                _ui_debug_text("Problematic JSON string", json_str, height=150)
-                _ui_debug_text("Full Gemini Response (text)", response_text, height=150)
-                return None
-
-            is_valid, normalized_payload, validation_issues = _validate_extraction_payload(parsed)
-            if is_valid:
-                _cache_set(cache_key, normalized_payload)
-                return normalized_payload
-
-            validation_feedback = "; ".join(validation_issues[:6]) or "Schema validation failed."
-            if attempt == 0:
-                _ui_warn("Gemini extraction response failed schema validation; retrying once with corrective instructions.")
-                continue
-
-            _last_extraction_error = f"Gemini JSON failed validation after retry: {validation_feedback}"
-            _ui_error(_last_extraction_error)
-            _ui_debug_text("Gemini JSON payload", json.dumps(parsed)[:2500], height=180)
-            return None
-
-        if last_exception and _is_rate_limit_error(str(last_exception)):
-                retry_delay = _extract_retry_delay(str(last_exception))
-                _last_extraction_error = (
-                    f"Rate limit reached for Gemini extraction ({_active_extraction_model_name or 'configured models'})."
-                    + (f" Retry after {retry_delay}." if retry_delay else "")
-                )
-                _ui_error(_last_extraction_error)
-                return None
-
-        _last_extraction_error = "Gemini extraction failed after retry attempts."
-        if last_exception:
-            _last_extraction_error = f"Gemini extraction exception: {str(last_exception)}"
-        _ui_error(_last_extraction_error)
-        if last_response_text:
-            _ui_debug_text("Last Gemini Response (text)", last_response_text, height=150)
-        return None
-    except Exception as e:
-        _last_extraction_error = f"Gemini extraction exception: {str(e)}"
-        _ui_error(_last_extraction_error)
-        if "API key not valid" in str(e) or "PERMISSION_DENIED" in str(e):
-            _ui_error("Please ensure your Gemini API key is correct and has the necessary permissions.")
-        return None
-
-def _classify_test_statuses_with_gemini(test_results: list[dict], api_key_for_gemini: str | None) -> list[str]:
-    fallback_statuses = [_canonical_status(item.get("status")) for item in test_results]
-    if not test_results:
-        return fallback_statuses
-
-    if not api_key_for_gemini:
-        return fallback_statuses
-
-    if not gemini_model_extraction and not init_gemini_models(api_key_for_gemini):
-        return fallback_statuses
-
-    classifier_input = []
-    for idx, test_result in enumerate(test_results):
-        classifier_input.append(
-            {
-                "index": idx,
-                "test_name": _clean_text_value(test_result.get("test_name"), default="N/A"),
-                "result": _clean_text_value(test_result.get("result"), default="N/A"),
-                "unit": _clean_text_value(test_result.get("unit"), default=""),
-                "reference_range": _clean_text_value(test_result.get("reference_range"), default="N/A"),
-                "reported_status": _canonical_status(test_result.get("status")),
-            }
-        )
-
-    prompt = f"""
-Classify the clinical status for each laboratory finding.
-Return ONLY JSON in this shape:
-{{
-  "classifications": [
-    {{"index": 0, "status": "Low|Normal|High|Critical|Positive|Negative|N/A", "reason": "short rationale"}}
-  ]
-}}
-
-Rules:
-- Use each finding's result and reference_range.
-- Respect textual outcomes like Positive/Negative/Detected/Not Detected.
-- If data is insufficient, use N/A.
-- Do not skip indexes.
-
-Findings:
-{json.dumps(classifier_input)}
-"""
-
-    response_text, last_exception = _generate_with_extraction_models(
-        prompt,
-        generation_config={
-            "response_mime_type": "application/json",
-            "temperature": 0.1,
+EXTRACTION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "required": ["patient_info", "test_results", "abnormal_findings_summary_from_report"],
+    "properties": {
+        "patient_info": {
+            "type": "object",
+            "required": ["name", "age", "gender", "patient_id", "date", "lab_name"],
+            "properties": {key: {"type": "string"} for key in ("name", "age", "gender", "patient_id", "date", "lab_name")},
         },
-    )
-    if not response_text:
-        if last_exception:
-            _ui_warn(f"Severity classification fallback used due to model error: {last_exception}")
-        return fallback_statuses
+        "test_results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["test_name", "result", "unit", "reference_range", "status", "category"],
+                "properties": {
+                    "test_name": {"type": "string"},
+                    "result": {"type": "string"},
+                    "unit": {"type": "string"},
+                    "reference_range": {"type": "string"},
+                    "status": {"type": "string", "enum": _STATUS_ENUM},
+                    "category": {"type": "string", "enum": CANONICAL_CATEGORY_VALUES},
+                },
+            },
+        },
+        "abnormal_findings_summary_from_report": {"type": "array", "items": {"type": "string"}},
+    },
+}
 
-    match_json_block = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
-    json_str = match_json_block.group(1) if match_json_block else _extract_first_json_object(response_text)
+_EXTRACTION_GENERATION_CONFIG = {
+    "response_mime_type": "application/json",
+    "response_schema": EXTRACTION_RESPONSE_SCHEMA,
+    "temperature": 0.0,
+}
+
+
+def _parse_extraction_response(response_text: str) -> tuple[dict | None, str]:
+    fenced = re.search(r"```json\s*(\{.*?\})\s*```", response_text, re.DOTALL)
+    json_str = fenced.group(1) if fenced else _extract_first_json_object(response_text)
     if not json_str:
-        return fallback_statuses
-
+        return None, "Response did not contain a JSON object."
     try:
         parsed = json.loads(json_str)
-    except Exception:
-        return fallback_statuses
+    except json.JSONDecodeError as exc:
+        return None, f"JSON parse error: {exc}"
+    is_valid, payload, issues = _validate_extraction_payload(parsed)
+    if is_valid:
+        return payload, ""
+    return None, "; ".join(issues[:6]) or "Schema validation failed."
 
-    raw_classifications = parsed.get("classifications") if isinstance(parsed, dict) else None
-    if not isinstance(raw_classifications, list):
-        return fallback_statuses
 
-    final_statuses = list(fallback_statuses)
-    for item in raw_classifications:
-        if not isinstance(item, dict):
+def analyze_medical_report_with_gemini(text_content, api_key_for_gemini) -> tuple[dict | None, str]:
+    """Extract structured findings from report text. Returns (payload, "") or (None, reason).
+
+    Thread-safe: holds no module state, so worker threads never see each
+    other's errors.
+    """
+    if not _ensure_genai_configured(api_key_for_gemini):
+        return None, "Gemini API key is missing or invalid."
+    if not text_content or not text_content.strip():
+        return None, "No extractable text was provided."
+
+    bounded_text = text_content[:EXTRACTION_MAX_CHARS]
+    feedback = ""
+    last_exception = None
+    for attempt in range(2):
+        prompt = _build_structured_extraction_prompt(bounded_text, validation_feedback=feedback)
+        response_text, last_exception = _generate_with_extraction_models(prompt, _EXTRACTION_GENERATION_CONFIG)
+
+        if not response_text:
+            if last_exception and _is_rate_limit_error(str(last_exception)):
+                break
+            feedback = "Empty response from model."
             continue
-        index_val = item.get("index")
-        if isinstance(index_val, bool):
-            continue
-        try:
-            idx = int(index_val)
-        except (TypeError, ValueError):
-            continue
-        if idx < 0 or idx >= len(final_statuses):
-            continue
 
-        candidate_status = _canonical_status(item.get("status"))
-        if candidate_status == "N/A" and fallback_statuses[idx] != "N/A":
-            candidate_status = fallback_statuses[idx]
-        final_statuses[idx] = candidate_status
+        payload, feedback = _parse_extraction_response(response_text)
+        if payload is not None:
+            return payload, ""
 
-    return final_statuses
+    if last_exception and _is_rate_limit_error(str(last_exception)):
+        delay = _extract_retry_delay(str(last_exception))
+        return None, "Rate limit reached for extraction." + (f" Retry after {delay}." if delay else "")
+    if last_exception:
+        return None, f"Extraction error: {last_exception}"
+    return None, feedback or "Extraction failed after retry."
 
 
-def create_structured_dataframe(
-    ai_results_json,
-    source_filename="Uploaded PDF",
-    api_key_for_gemini=None,
-):
+def derive_status(result, reference_range, reported_status) -> str:
+    """Trust the report's own flag; only compute one from the numbers when it has none."""
+    reported = _canonical_status(reported_status)
+    if reported != STATUS_NOT_APPLICABLE:
+        return reported
+
+    value, _ = parse_result_numeric(result)
+    low, high, kind = parse_reference_range(reference_range)
+    if value is not None and kind in {"range", "less_than", "greater_than"}:
+        if low is not None and value < low:
+            return STATUS_LOW
+        if high is not None and value > high:
+            return STATUS_HIGH
+        return STATUS_NORMAL
+
+    textual = _canonical_status(result)
+    if textual in {STATUS_POSITIVE, STATUS_NEGATIVE}:
+        return textual
+    return reported
+
+
+def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF"):
     if not ai_results_json or not isinstance(ai_results_json, dict):
         return pd.DataFrame(), {}
 
@@ -1051,15 +914,13 @@ def create_structured_dataframe(
     if not test_results:
         return pd.DataFrame(), patient_info_dict
 
-    classified_statuses = _classify_test_statuses_with_gemini(test_results, api_key_for_gemini)
-    if len(classified_statuses) != len(test_results):
-        classified_statuses = [_canonical_status(item.get('status')) for item in test_results]
-
     all_rows = []
-    for idx, test_result in enumerate(test_results):
+    for test_result in test_results:
         raw_category = _clean_text_value(test_result.get('category'), default='N/A').title()
         raw_test_name = _clean_text_value(test_result.get('test_name'), default='UnknownTest')
-        final_status = classified_statuses[idx] if idx < len(classified_statuses) else _canonical_status(test_result.get('status'))
+        final_status = derive_status(
+            test_result.get('result'), test_result.get('reference_range'), test_result.get('status')
+        )
         row = {
             'Source_Filename': source_filename,
             'Patient_ID': patient_info_dict.get('patient_id', 'N/A'),
@@ -1658,7 +1519,6 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                 
                 # Use the most common reference range or the first valid one
                 if ref_values:
-                    from collections import Counter
                     most_common_ref = Counter(ref_values).most_common(1)[0][0]
                     worksheet.write(row_num + 4, ref_col_idx, most_common_ref, ref_format)
                 else:
