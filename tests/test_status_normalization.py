@@ -41,9 +41,8 @@ def test_normalize_status(raw, expected):
     assert normalize_status(raw) == expected
 
 
-def test_abnormal_is_never_normal():
-    """The substring 'normal' inside 'abnormal' must not read as in-range."""
-    assert normalize_status("Abnormal") != "Normal"
+def test_abnormal_is_flagged_as_concerning():
+    """The parametrize row proves the mapping; this proves it reaches the alerts."""
     assert normalize_status("Abnormal") in CONCERNING_STATUS_VALUES
 
 

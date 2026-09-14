@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { MedicalRecord } from "@/lib/api";
-import { parseMedicalDate } from "@/lib/clinical";
+import { parseMedicalDate } from "@/lib/medicalDate";
 
 function badgeTone(status: string | null | undefined) {
   const normalized = (status ?? "").toLowerCase();

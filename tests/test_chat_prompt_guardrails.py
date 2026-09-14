@@ -38,11 +38,7 @@ class _CapturingModel:
 
 
 def _captured_prompt(monkeypatch, **kwargs):
-    """Capture the prompt without any network call.
-
-    The chat loop rebuilds the model from genai on each fallback, so the class
-    itself is the only stable seam.
-    """
+    """Capture the prompt offline; genai is the only stable seam to patch."""
     seen = {}
     monkeypatch.setattr(helpers.genai, "GenerativeModel", lambda *a, **k: _CapturingModel(seen))
     monkeypatch.setattr(helpers, "init_gemini_models", lambda *a, **k: True, raising=False)

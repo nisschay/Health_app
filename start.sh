@@ -9,8 +9,6 @@ FRONTEND_LOG="$RUN_DIR/frontend.log"
 BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
 TAIL_LINES="${TAIL_LINES:-40}"
-CLOCK_SYNC_ENABLED="${CLOCK_SYNC_ENABLED:-1}"
-CLOCK_DRIFT_MAX_SECONDS="${CLOCK_DRIFT_MAX_SECONDS:-120}"
 
 log_event() {
   local file="$1"
@@ -38,30 +36,6 @@ wait_for_backend() {
     ((attempts--))
   done
   return 1
-}
-
-find_port_pid() {
-  local port="$1"
-  local pid=""
-
-  if command -v lsof >/dev/null 2>&1; then
-    pid="$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
-    if [[ -n "$pid" ]]; then
-      echo "$pid"
-      return
-    fi
-  fi
-
-  if command -v ss >/dev/null 2>&1; then
-    pid="$(ss -ltnpH "sport = :$port" 2>/dev/null | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | head -n 1 || true)"
-    if [[ -n "$pid" ]]; then
-      echo "$pid"
-      return
-    fi
-    return
-  fi
-
-  echo ""
 }
 
 mkdir -p "$RUN_DIR"

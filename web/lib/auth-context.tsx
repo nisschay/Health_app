@@ -23,9 +23,6 @@ import { auth } from "./firebase";
 import { buildApiUrl, getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
 import { setAuthTokenProvider } from "./api";
 
-// Presence hint only: it tells middleware whether to bother rendering a
-// protected route. It proves nothing. Every request is authorised by the
-// Firebase ID token the backend verifies.
 const AUTH_PRESENCE_COOKIE = "mra_auth";
 const AUTH_PRESENCE_MAX_AGE_SECONDS = 60 * 60 * 12;
 

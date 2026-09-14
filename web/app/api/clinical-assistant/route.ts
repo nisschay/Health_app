@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { retrieveRelevantGuidelines } from "@/lib/ragRetrieval";
 import { buildApiUrl, getServerBackendBaseUrl } from "@/lib/apiBaseUrl";
-import { parseMedicalDate as parseSortableDate } from "@/lib/medicalDate";
+import { parseMedicalDate } from "@/lib/medicalDate";
 
 type ChatTurnPayload = {
   role: "user" | "assistant";
@@ -87,8 +87,6 @@ type BackendAnalysisPayload = {
 };
 
 const CHAT_HISTORY_LIMIT = 8;
-const REPORT_TIMELINE_LIMIT = 12;
-const FINDINGS_SNAPSHOT_LIMIT = 40;
 const CHAT_BACKEND_TIMEOUT_MS = 55_000;
 const STREAM_CHUNK_SIZE = 140;
 
@@ -179,7 +177,7 @@ function summarizeRecords(reportContext: ReportContextPayload): AggregatedAnalys
       referenceRange,
     });
 
-    const sortKey = parseSortableDate(date);
+    const sortKey = parseMedicalDate(date);
     const existing = latestByCanonical.get(canonicalName);
     if (!existing || sortKey >= existing.sortKey) {
       latestByCanonical.set(canonicalName, {
@@ -196,23 +194,23 @@ function summarizeRecords(reportContext: ReportContextPayload): AggregatedAnalys
   }
 
   const reports = [...groupedReports.values()].sort(
-    (a, b) => parseSortableDate(a.date) - parseSortableDate(b.date),
+    (a, b) => parseMedicalDate(a.date) - parseMedicalDate(b.date),
   );
 
   const datedReports = reports
-    .map((report) => parseSortableDate(report.date))
+    .map((report) => parseMedicalDate(report.date))
     .filter((sortKey) => Number.isFinite(sortKey) && sortKey !== Number.MAX_SAFE_INTEGER);
 
   const dateRange = {
     start: reports.length === 0
       ? "Unknown"
       : datedReports.length > 0
-        ? reports.find((report) => parseSortableDate(report.date) === Math.min(...datedReports))?.date ?? reports[0]!.date
+        ? reports.find((report) => parseMedicalDate(report.date) === Math.min(...datedReports))?.date ?? reports[0]!.date
         : reports[0]!.date,
     end: reports.length === 0
       ? "Unknown"
       : datedReports.length > 0
-        ? reports.find((report) => parseSortableDate(report.date) === Math.max(...datedReports))?.date ?? reports[reports.length - 1]!.date
+        ? reports.find((report) => parseMedicalDate(report.date) === Math.max(...datedReports))?.date ?? reports[reports.length - 1]!.date
         : reports[reports.length - 1]!.date,
   };
 
@@ -471,11 +469,6 @@ export async function POST(request: NextRequest) {
   const sessionId = asText(payload.sessionId, "session-default");
 
   const cappedHistory = sanitizeHistory(payload.history).slice(-CHAT_HISTORY_LIMIT);
-  const messages = [
-    ...cappedHistory.map((h) => ({ role: h.role, content: h.content })),
-    { role: "user" as const, content: message },
-  ];
-
   const resolvedContext = await resolveReportContext(
     analysisId,
     reportContext,
@@ -496,7 +489,6 @@ export async function POST(request: NextRequest) {
     analysis_id: analysisId,
     session_id: sessionId,
     guidelines,
-    messages,
     report_context: resolvedContext,
   };
 

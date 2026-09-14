@@ -1,8 +1,6 @@
 import type { AnalysisConcern, MedicalRecord } from "./api";
 import { parseMedicalDate } from "./medicalDate";
 
-export { parseMedicalDate };
-
 export type SeverityLevel = "critical" | "high" | "low" | "normal";
 
 export type GroupedCategoryAlert = {

@@ -1,6 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
+from backend_api.app.config import settings
 from backend_api.app.security import RateLimiter, internal_error
 
 
@@ -36,3 +37,27 @@ def test_internal_error_hides_the_cause_but_keeps_a_reference():
     assert "Analysis failed" in http_exc.detail
     reference = http_exc.detail.split("reference ")[1].split()[0]
     assert len(reference) == 12
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["analyze_reports", "analyze_reports_stream", "chat_about_report"],
+)
+def test_every_model_spending_endpoint_is_rate_limited(endpoint):
+    """Chat was left unlimited, and it is the endpoint that spends the API key."""
+    import inspect
+
+    from backend_api.app import main
+
+    source = inspect.getsource(getattr(main, endpoint))
+    assert "rate_limiter.check(user.user_id)" in source
+
+
+def test_the_limiter_uses_the_configured_limit():
+    assert settings.rate_limit_per_minute >= 1
+    limiter = RateLimiter(settings.rate_limit_per_minute)
+    for _ in range(settings.rate_limit_per_minute):
+        limiter.check("user-1")
+    with pytest.raises(HTTPException) as excinfo:
+        limiter.check("user-1")
+    assert excinfo.value.status_code == 429
