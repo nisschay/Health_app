@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,9 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, load_only, sessionmaker
+
+LAST_LOGIN_TOUCH_INTERVAL = timedelta(minutes=10)
 
 # Keep DB URL loading consistent with app config so persistence target is stable.
 _APP_DIR = Path(__file__).resolve().parent
@@ -179,7 +181,7 @@ def _default_self_profile_name(display_name: str | None, email: str | None) -> s
     return "My Profile"
 
 
-def _ensure_self_profile(db: Session, user: User) -> None:
+def _ensure_self_profile(db: Session, user: User) -> bool:
     existing = (
         db.query(Profile)
         .filter(
@@ -189,7 +191,7 @@ def _ensure_self_profile(db: Session, user: User) -> None:
         .first()
     )
     if existing:
-        return
+        return False
 
     db.add(
         Profile(
@@ -198,23 +200,31 @@ def _ensure_self_profile(db: Session, user: User) -> None:
             relationship="self",
         )
     )
+    return True
 
 def upsert_user(db: Session, firebase_uid: str, email: str | None, display_name: str | None) -> User:
     user = db.query(User).filter(User.firebase_uid == firebase_uid).first()
+    now = datetime.utcnow()
+    changed = False
     if user:
-        if email is not None:
+        if email is not None and user.email != email:
             user.email = email
-        if display_name is not None:
+            changed = True
+        if display_name is not None and user.display_name != display_name:
             user.display_name = display_name
-        user.last_login = datetime.utcnow()
+            changed = True
+        if user.last_login is None or now - user.last_login >= LAST_LOGIN_TOUCH_INTERVAL:
+            user.last_login = now
+            changed = True
     else:
-        user = User(firebase_uid=firebase_uid, email=email, display_name=display_name)
+        user = User(firebase_uid=firebase_uid, email=email, display_name=display_name, last_login=now)
         db.add(user)
+        changed = True
 
     db.flush()
-    _ensure_self_profile(db, user)
-    db.commit()
-    db.refresh(user)
+    if _ensure_self_profile(db, user) or changed:
+        db.commit()
+        db.refresh(user)
     return user
 
 
@@ -243,11 +253,27 @@ def save_analysis(
     return record
 
 
-def get_user_analyses(db: Session, firebase_uid: str) -> list[ReportAnalysis]:
+def get_user_analyses(db: Session, firebase_uid: str, limit: int, offset: int) -> list[ReportAnalysis]:
+    """A page of history rows without the full analysis text, which the list never shows."""
     return (
         db.query(ReportAnalysis)
+        .options(
+            load_only(
+                ReportAnalysis.id,
+                ReportAnalysis.patient_name,
+                ReportAnalysis.patient_age,
+                ReportAnalysis.patient_gender,
+                ReportAnalysis.lab_name,
+                ReportAnalysis.report_date,
+                ReportAnalysis.total_records,
+                ReportAnalysis.source_filenames,
+                ReportAnalysis.created_at,
+            )
+        )
         .filter(ReportAnalysis.firebase_uid == firebase_uid)
         .order_by(ReportAnalysis.created_at.desc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
 
@@ -333,16 +359,39 @@ def count_reports_for_study(db: Session, study_id: uuid.UUID) -> int:
     return db.query(Report).filter(Report.study_id == study_id).count()
 
 
-def get_study_report_date_range(db: Session, study_id: uuid.UUID) -> tuple[date | None, date | None]:
+def study_report_stats(db: Session, study_ids: list[uuid.UUID]) -> dict[uuid.UUID, tuple[int, date | None, date | None]]:
+    """(count, first date, last date) per study in one grouped query."""
+    if not study_ids:
+        return {}
     rows = (
-        db.query(Report.report_date)
-        .filter(Report.study_id == study_id)
-        .order_by(Report.report_date.asc())
+        db.query(Report.study_id, func.count(Report.id), func.min(Report.report_date), func.max(Report.report_date))
+        .filter(Report.study_id.in_(study_ids))
+        .group_by(Report.study_id)
         .all()
     )
-    if not rows:
-        return (None, None)
-    return (rows[0][0], rows[-1][0])
+    return {study_id: (count, first, last) for study_id, count, first, last in rows}
+
+
+def list_studies_for_owner(db: Session, account_owner_id: int) -> list[Study]:
+    return (
+        db.query(Study)
+        .join(Profile, Profile.id == Study.profile_id)
+        .filter(Profile.account_owner_id == account_owner_id)
+        .order_by(Study.updated_at.desc(), Study.created_at.desc())
+        .all()
+    )
+
+
+def list_dashboard_report_rows(db: Session, account_owner_id: int):
+    """Every report under the owner in one query; the dashboard aggregates in memory."""
+    return (
+        db.query(Report.study_id, Report.report_date, Report.lab_name, Report.analysis_data)
+        .join(Study, Study.id == Report.study_id)
+        .join(Profile, Profile.id == Study.profile_id)
+        .filter(Profile.account_owner_id == account_owner_id)
+        .order_by(Report.report_date.asc(), Report.uploaded_at.asc())
+        .all()
+    )
 
 
 def create_report(
