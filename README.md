@@ -290,7 +290,7 @@ Repository deployment paths:
   - Configured by web/vercel.json and deploy/deploy_frontend_vercel.sh.
 - Backend hosting
   - Cloud Run workflow script: deploy/deploy_backend_cloudrun.sh.
-  - Dockerized backend via root Dockerfile and backend_api/Dockerfile.
+  - Dockerized backend via the root Dockerfile.
 - Database
   - PostgreSQL-compatible environments (Supabase/Neon patterns included).
   - Migration and verification scripts in deploy/.
@@ -301,13 +301,19 @@ Additional runbook:
 
 ## 15) Testing
 
-Frontend and integration-oriented tests:
+Every pull request runs lint, typecheck and both test suites via GitHub Actions
+(`.github/workflows/ci.yml`). To run them locally:
 
 ```bash
+# backend and shared Python code
+pytest
+ruff check .
+
+# frontend
 cd web
-npx vitest
-npx vitest run tests/clinical-assistant-context-retention.test.ts
-npx vitest run tests/extraction-f1.test.ts
+npm run typecheck
+npm run test
+npm run lint
 ```
 
 Optional metric-log test prerequisite:
@@ -332,7 +338,7 @@ Legacy artifacts retained in repository:
 
 - Streamlit entry points: main.py and Medical_Project.py.
 - Shared extraction and analytics utilities: Helper_Functions.py.
-- Legacy normalization helpers and mapping tests: unify_test_names.py and test_category_mapping.py.
+- Lab name, unit and body-system lookup tables: category_mapping.py.
 
 The production path is Next.js + FastAPI, while legacy files remain useful for experimentation and reference implementations.
 

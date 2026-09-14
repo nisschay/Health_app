@@ -1,9 +1,8 @@
 import os
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from dotenv import load_dotenv
-
 
 # Load central project .env first, with fallback to backend_api/.env.
 _APP_DIR = Path(__file__).resolve().parent

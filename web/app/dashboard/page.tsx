@@ -1386,7 +1386,7 @@ export default function DashboardPage() {
             <div className="analyze-header">
               <button className="back-btn" onClick={() => setView("home")} type="button">Back</button>
               <h2>Upload Medical Reports</h2>
-              <p>Select your PDF reports and we'll extract and analyze all the test data.</p>
+              <p>Select your PDF reports and we&apos;ll extract and analyze all the test data.</p>
               {studyContext && (
                 <div className="study-upload-summary">
                   {studyContext.mode === "existing"
@@ -1662,7 +1662,7 @@ export default function DashboardPage() {
                 <div className="assistant-chat-history" role="log" aria-live="polite">
                   {chatHistory.length === 0 && (
                     <div className="assistant-chat-empty">
-                      Start with a question like "What changed the most in the latest report?"
+                      Start with a question like &quot;What changed the most in the latest report?&quot;
                     </div>
                   )}
 

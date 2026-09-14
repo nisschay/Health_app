@@ -1,4 +1,4 @@
-import re 
+import re
 
 TEST_CATEGORY_TO_BODY_PARTS = {
     "Haematology": ["Blood", "Bone Marrow"],

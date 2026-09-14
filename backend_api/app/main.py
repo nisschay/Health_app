@@ -1,5 +1,5 @@
-import json
 import asyncio
+import json
 import threading
 import traceback
 from datetime import date
@@ -20,15 +20,15 @@ from .database import (
     create_report,
     create_study,
     get_analysis_by_id,
+    get_db,
     get_profile_by_id,
     get_study_by_id,
     get_study_report_date_range,
-    get_db,
     get_user_analyses,
+    init_db,
     list_profiles_for_owner,
     list_reports_for_study,
     list_studies_for_profile,
-    init_db,
     save_analysis,
     upsert_user,
 )
@@ -56,7 +56,6 @@ from .schemas import (
     UserProfile,
 )
 from .services import MedicalAnalysisService
-
 
 app = FastAPI(
     title=settings.app_name,
@@ -977,7 +976,6 @@ async def export_excel(
 ) -> StreamingResponse:
     if not user.authenticated:
         raise HTTPException(status_code=401, detail="Authentication required.")
-    from .services import dataframe_from_records
     excel_bytes = service.export_excel_report(
         records=[record.model_dump() for record in payload.records],
         patient_info=payload.patient_info.model_dump(),

@@ -10,7 +10,7 @@ from collections import Counter
 import json
 import plotly.graph_objs as go
 import google.generativeai as genai
-from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI
+from category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI
 try:
     import pytesseract
 except Exception:  # pragma: no cover - optional OCR dependency
@@ -30,9 +30,7 @@ from backend_api.app.normalization import (
     normalize_status,
     normalize_test_name,
 )
-import sys
 import os
-from collections import Counter
 import hashlib
 import copy
 import logging
@@ -1675,7 +1673,7 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                 else:
                     worksheet.write(row_num + 4, ref_col_idx, '', ref_format)
                     
-            except Exception as e:
+            except Exception:
                 worksheet.write(row_num + 4, ref_col_idx, '', ref_format)
         
         # Set row heights
@@ -1925,11 +1923,7 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
                             'line': {'color': '#228B22', 'width': 2, 'dash_type': 'dash'},
                             'marker': {'type': 'none'},
                         })
-                    
-                    # Adjust Y-axis range to include reference ranges
-                    min_val = min(valid_data_points)
-                    max_val = max(valid_data_points)
-                    
+
                     # Include reference range values in axis calculation
                     all_values = valid_data_points[:]
                     if low_ref is not None:
@@ -2349,139 +2343,6 @@ def process_normalized_excel_data(df, filename, new_patient_info_list):
     
     return df, existing_patient_info
 
-def process_pivoted_excel_data(df, filename, new_patient_info_list):
-    """
-    FIXED: Process Excel data that's in pivoted format (organized by date)
-    """
-    print("Processing pivoted Excel data...")
-    
-    # Remove header rows if they exist (Date and Lab rows)
-    original_shape = df.shape
-    
-    # Check for and remove header rows that contain dates or lab info
-    rows_to_skip = 0
-    for idx in range(min(3, len(df))):  # Check first 3 rows
-        row_content = str(df.iloc[idx, 0]).lower() if not pd.isna(df.iloc[idx, 0]) else ""
-        if any(indicator in row_content for indicator in ['📅', 'date', '🏥', 'lab']):
-            rows_to_skip = idx + 1
-    
-    if rows_to_skip > 0:
-        df = df.iloc[rows_to_skip:].reset_index(drop=True)
-        print(f"Skipped {rows_to_skip} header rows. New shape: {df.shape}")
-    
-    # Identify date-lab columns (everything except Test_Category and Test_Name)
-    non_date_cols = ['Test_Category', 'Test_Name']
-    date_lab_cols = [col for col in df.columns if col not in non_date_cols and not col.startswith('Unnamed')]
-    
-    print(f"Found {len(date_lab_cols)} date-lab columns: {date_lab_cols[:5]}...")  # Show first 5
-    
-    if not date_lab_cols:
-        print("No date columns found in pivoted data")
-        return pd.DataFrame(), {}
-    
-    # Convert from pivoted to normalized format
-    normalized_rows = []
-    
-    print(f"Processing {len(df)} test rows...")
-    
-    for idx, row in df.iterrows():
-        if idx % 10 == 0:  # Progress indicator
-            print(f"Processing row {idx}/{len(df)}")
-            
-        test_category = row.get('Test_Category', 'N/A')
-        test_name = row.get('Test_Name', 'N/A')
-        
-        # Skip if test name is not valid
-        if pd.isna(test_name) or test_name in ['N/A', '', 'Test_Name'] or str(test_name).strip() == '':
-            continue
-        
-        for date_lab_col in date_lab_cols:
-            result_value = row.get(date_lab_col, '')
-            
-            # Skip empty results
-            if pd.isna(result_value) or result_value in ['', 'N/A'] or str(result_value).strip() == '':
-                continue
-            
-            # Parse date and lab from column name
-            if '_' in str(date_lab_col):
-                parts = str(date_lab_col).split('_', 1)
-                test_date = parts[0] if len(parts) > 0 else 'N/A'
-                lab_name = parts[1] if len(parts) > 1 else 'N/A'
-            else:
-                # If no underscore, assume it's just a date
-                test_date = str(date_lab_col)
-                lab_name = 'N/A'
-            
-            # Normalize the date format
-            parsed_date = parse_date_dd_mm_yyyy(test_date)
-            formatted_date = format_date_dd_mm_yyyy(parsed_date) if parsed_date else test_date
-            
-            # Determine patient info - use from new PDFs if available, otherwise extract from filename
-            patient_name = 'N/A'
-            patient_age = 'N/A'
-            patient_gender = 'N/A'
-            patient_id = 'N/A'
-            
-            if new_patient_info_list:
-                # Use the most recent patient info from new PDFs
-                latest_info = new_patient_info_list[-1]  # Assuming the last one is most recent
-                patient_name = latest_info.get('name', extract_patient_info_from_excel_filename(filename))
-                patient_age = latest_info.get('age', 'N/A')
-                patient_gender = latest_info.get('gender', 'N/A')
-                patient_id = latest_info.get('patient_id', 'N/A')
-            else:
-                patient_name = extract_patient_info_from_excel_filename(filename)
-            
-            normalized_row = {
-                'Source_Filename': filename,
-                'Patient_ID': patient_id,
-                'Patient_Name': patient_name,
-                'Age': patient_age,
-                'Gender': patient_gender,
-                'Test_Date': formatted_date,
-                'Lab_Name': lab_name,
-                'Test_Category': test_category,
-                'Original_Test_Name': test_name,
-                'Test_Name': test_name,  # Will be standardized later if needed
-                'Result': str(result_value),
-                'Unit': 'N/A',  # Not available in pivoted format
-                'Reference_Range': 'N/A',  # Not available in pivoted format
-                'Status': 'N/A',  # Not available in pivoted format
-                'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'Result_Numeric': parse_result_numeric(result_value)[0],
-                'Test_Date_dt': parsed_date
-            }
-            
-            normalized_rows.append(normalized_row)
-    
-    print(f"Created {len(normalized_rows)} normalized rows")
-    
-    if not normalized_rows:
-        print("No valid data found in pivoted format")
-        return pd.DataFrame(), {}
-    
-    normalized_df = pd.DataFrame(normalized_rows)
-    
-    # Extract patient info (use the most recent date)
-    if normalized_df.empty:
-        existing_patient_info = {}
-    else:
-        # Get the most recent date entry for patient info
-        most_recent_idx = normalized_df['Test_Date_dt'].idxmax() if normalized_df['Test_Date_dt'].notna().any() else 0
-        recent_row = normalized_df.iloc[most_recent_idx] if most_recent_idx is not None else normalized_df.iloc[0]
-        
-        existing_patient_info = {
-            'name': recent_row['Patient_Name'],
-            'age': recent_row['Age'],
-            'gender': recent_row['Gender'],
-            'patient_id': recent_row['Patient_ID'],
-            'date': recent_row['Test_Date'],
-            'lab_name': recent_row['Lab_Name']
-        }
-    
-    print(f"Final normalized data shape: {normalized_df.shape}")
-    return normalized_df, existing_patient_info
-
 def debug_data_combination(existing_df, new_pdf_data_list, step_name=""):
     """
     Helper function to debug data combination issues
@@ -2491,7 +2352,7 @@ def debug_data_combination(existing_df, new_pdf_data_list, step_name=""):
     if not existing_df.empty:
         print(f"Existing data: {existing_df.shape} rows")
         print(f"Existing columns: {list(existing_df.columns)}")
-        print(f"Sample existing data:")
+        print("Sample existing data:")
         print(existing_df[['Test_Name', 'Result', 'Test_Date']].head(3).to_string())
     else:
         print("Existing data: EMPTY")
@@ -2501,7 +2362,7 @@ def debug_data_combination(existing_df, new_pdf_data_list, step_name=""):
         print(f"New PDF data: {len(new_pdf_data_list)} dataframes, {total_new_rows} total rows")
         if new_pdf_data_list:
             sample_df = new_pdf_data_list[0]
-            print(f"Sample new data:")
+            print("Sample new data:")
             print(sample_df[['Test_Name', 'Result', 'Test_Date']].head(3).to_string())
     else:
         print("New PDF data: NONE")
@@ -2526,14 +2387,14 @@ def enhanced_data_combination_workflow_debug(uploaded_excel_file, new_pdf_data_l
     
     # Step 3: Add existing data
     if not existing_df.empty:
-        print(f"\nSTEP 3: Adding existing data to combined dataset...")
+        print("\nSTEP 3: Adding existing data to combined dataset...")
         combined_df = existing_df.copy()
         print(f"Combined data after adding existing: {combined_df.shape}")
-        print(f"Sample combined data:")
+        print("Sample combined data:")
         if not combined_df.empty:
             print(combined_df[['Test_Name', 'Result', 'Test_Date']].head(3).to_string())
     else:
-        print(f"\nSTEP 3: No existing data to add (existing_df is empty)")
+        print("\nSTEP 3: No existing data to add (existing_df is empty)")
     
     # Step 4: Add new PDF data if available
     if new_pdf_data_list:
@@ -2579,10 +2440,10 @@ def enhanced_data_combination_workflow_debug(uploaded_excel_file, new_pdf_data_l
             print("STEP 4b: No existing data, using only new PDF data...")
             combined_df = new_data_df
     else:
-        print(f"\nSTEP 4: No new PDF data to add...")
+        print("\nSTEP 4: No new PDF data to add...")
     
     # Step 5: Final validation
-    print(f"\nSTEP 5: Final validation")
+    print("\nSTEP 5: Final validation")
     print(f"Final combined data shape: {combined_df.shape}")
     
     if not combined_df.empty:
@@ -2591,7 +2452,7 @@ def enhanced_data_combination_workflow_debug(uploaded_excel_file, new_pdf_data_l
         
         # Check data sources
         source_counts = combined_df['Source_Filename'].value_counts()
-        print(f"\nData sources breakdown:")
+        print("\nData sources breakdown:")
         for source, count in source_counts.items():
             print(f"  {source}: {count} records")
     else:
@@ -2600,7 +2461,7 @@ def enhanced_data_combination_workflow_debug(uploaded_excel_file, new_pdf_data_l
     # Smart consolidation of patient info
     final_patient_info = smart_consolidate_patient_info(existing_patient_info, new_patient_info_list)
     
-    print(f"\n=== FINAL RESULTS ===")
+    print("\n=== FINAL RESULTS ===")
     print(f"Combined data shape: {combined_df.shape}")
     print(f"Patient info: {final_patient_info}")
     print("=== END DEBUG WORKFLOW ===\n")
@@ -2923,7 +2784,7 @@ def process_excel_pivoted_format(df, filename, new_patient_info_list):
                 'lab_name': lab_part
             }
         
-        print(f"✅ Successfully processed Excel data:")
+        print("✅ Successfully processed Excel data:")
         print(f"   - {len(result_df)} total records")
         print(f"   - Patient: {patient_info.get('name', 'N/A')}")
         print(f"   - Date range: {result_df['Test_Date'].min()} to {result_df['Test_Date'].max()}")
@@ -3017,7 +2878,7 @@ def process_existing_excel_csv(uploaded_excel_file, new_patient_info_list):
         
         # Show what we extracted
         print(f"Final dataframe shape: {df.shape}")
-        print(f"Sample data:")
+        print("Sample data:")
         if not df.empty and len(df.columns) >= 2:
             print(df[['Test_Category', 'Test_Name']].head(3).to_string())
         
@@ -3154,7 +3015,7 @@ def process_excel_pivoted_format_fixed(df, filename, new_patient_info_list):
                 'lab_name': lab_part if 'lab_part' in locals() else 'N/A'
             }
         
-        print(f"✅ Successfully processed Excel data:")
+        print("✅ Successfully processed Excel data:")
         print(f"   - {len(result_df)} total records")
         print(f"   - Patient: {patient_info.get('name', 'N/A')}")
         if not result_df.empty:
@@ -3419,7 +3280,6 @@ def generate_health_summary_with_ai(df, patient_info, api_key):
     
     # Prepare summary data
     health_data = calculate_health_score(df)
-    body_systems = get_body_system_analysis(df)
     
     # Create a concise data summary for the AI
     data_summary = f"""
@@ -3461,8 +3321,6 @@ def create_pdf_report(df, patient_info, api_key):
     Generate a comprehensive PDF health report with charts and insights.
     Returns PDF bytes.
     """
-    from io import BytesIO
-    import base64
     
     # Get analysis data
     health_data = calculate_health_score(df)
@@ -3915,7 +3773,7 @@ def generate_health_insights_dashboard(df):
                         if status in ['High', 'Low', 'Critical']:
                             status_badge = f"⚠️ {status}"
                         elif status == 'Normal':
-                            status_badge = f"✓ Normal"
+                            status_badge = "✓ Normal"
                         else:
                             status_badge = f"— {status}"
                         
