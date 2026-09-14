@@ -86,8 +86,6 @@ type BackendAnalysisPayload = {
   combined_report_file_names?: unknown;
 };
 
-const sessionHistoryStore = new Map<string, ChatTurnPayload[]>();
-
 const CHAT_HISTORY_LIMIT = 8;
 const REPORT_TIMELINE_LIMIT = 12;
 const FINDINGS_SNAPSHOT_LIMIT = 40;
@@ -118,27 +116,6 @@ function sanitizeHistory(value: unknown): ChatTurnPayload[] {
       return { role, content };
     })
     .filter((item): item is ChatTurnPayload => item !== null);
-}
-
-function decodeBase64Url(value: string): string {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized + "=".repeat((4 - (normalized.length % 4 || 4)) % 4);
-  return Buffer.from(padded, "base64").toString("utf8");
-}
-
-function resolveUserId(authHeader: string): string {
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-  if (!token) return "authenticated-user";
-
-  try {
-    const payloadSegment = token.split(".")[1];
-    if (!payloadSegment) return "authenticated-user";
-    const payload = JSON.parse(decodeBase64Url(payloadSegment)) as Record<string, unknown>;
-    const value = payload.user_id ?? payload.uid ?? payload.sub ?? payload.email;
-    return asText(value, "authenticated-user");
-  } catch {
-    return "authenticated-user";
-  }
 }
 
 function asText(value: unknown, fallback = ""): string {
@@ -317,119 +294,20 @@ async function fetchFullAnalysis(
   }
 }
 
-async function getFullAnalysis(
+async function resolveReportContext(
   analysisId: string,
-  userId: string,
   reportContext: ReportContextPayload,
   backendBaseUrl: string,
   authHeader: string,
-): Promise<AggregatedAnalysis> {
-  // userId is part of the function contract for profile-scoped resolution and auditing context.
-  void userId;
-
+): Promise<ReportContextPayload> {
   const hasContextRecords = Array.isArray(reportContext.records)
     && reportContext.records.some((row) => row && typeof row === "object");
   if (hasContextRecords) {
-    return summarizeRecords(reportContext);
+    return reportContext;
   }
 
   const fetched = await fetchFullAnalysis(analysisId, backendBaseUrl, authHeader);
-  if (fetched) {
-    return summarizeRecords(toReportContextFromBackend(fetched));
-  }
-  return summarizeRecords(reportContext);
-}
-
-function buildBaseSystemPrompt(
-  analysis: AggregatedAnalysis,
-  analysisId: string,
-  userId: string,
-): string {
-
-  const reportSlice = analysis.reports.slice(-REPORT_TIMELINE_LIMIT);
-
-  const reportTimeline = reportSlice
-    .map((r) => {
-      const abnormalFindings = r.findings
-        .filter((f) => f.severity !== "NORMAL")
-        .slice(0, 8)
-        .map((f) => `${f.name}: ${f.value}${f.unit ? ` ${f.unit}` : ""} (${f.severity})`)
-        .join(", ");
-
-      return `
-      Date: ${r.date} | Lab: ${r.labName}
-      Tests performed: ${r.findings.length}
-      Abnormal findings: ${abnormalFindings || "None"}
-    `;
-    })
-    .join("\n---\n");
-
-  const concernMap = new Map<string, number>();
-  for (const r of reportSlice) {
-    for (const f of r.findings) {
-      if (f.severity !== "NORMAL") {
-        concernMap.set(f.canonicalName, (concernMap.get(f.canonicalName) || 0) + 1);
-      }
-    }
-  }
-
-  const persistentConcerns = [...concernMap.entries()]
-    .filter(([, count]) => count >= 2)
-    .sort((a, b) => b[1] - a[1])
-    .map(([name, count]) => `${name} (abnormal in ${count} reports)`)
-    .join("\n");
-
-  const latestValues = analysis.findings
-    .slice(0, FINDINGS_SNAPSHOT_LIMIT)
-    .map((f) => `${f.canonicalName}: ${f.latestValue}${f.unit ? ` ${f.unit}` : ""} [${f.latestStatus}] as of ${f.latestDate}`)
-    .join("\n");
-
-  return `
-You are a Clinical Assistant helping a patient named ${analysis.patientName}
-understand their medical test results. You have access to their complete
-medical history across ${analysis.reports.length} reports from
-${analysis.dateRange.start} to ${analysis.dateRange.end}.
-
-REQUEST CONTEXT:
-- Analysis ID: ${analysisId}
-- User ID: ${userId}
-
-PATIENT PROFILE:
-- Name: ${analysis.patientName}
-- Total reports: ${analysis.reports.length}
-- Labs used: ${[...new Set(analysis.reports.map((r) => r.labName))].join(", ") || "Unknown"}
-- Date range: ${analysis.dateRange.start} to ${analysis.dateRange.end}
-
-CHRONOLOGICAL REPORT HISTORY:
-${reportTimeline || "No report timeline available"}
-
-PERSISTENT CONCERNS (abnormal in multiple reports):
-${persistentConcerns || "None identified across multiple reports"}
-
-LATEST VALUES SNAPSHOT:
-${latestValues || "No latest values available"}
-
-INSTRUCTIONS:
-- Answer in clear, plain language a non-medical person can understand
-- When citing values, always include the number, unit, and date
-- Distinguish between "historically abnormal but recently normal" vs
-  "currently abnormal" - these are very different clinical situations
-- For tests not re-evaluated recently, explicitly flag them as
-  "last tested on [date] - current status unknown"
-- When a value is borderline, explain what it means in plain English
-- Never diagnose. Always recommend consulting a clinician for
-  interpretation and treatment decisions
-- Format responses in markdown: use **bold** for important values,
-  bullet lists for multiple findings, headers for sections
-- Keep responses under 300 words unless the question requires detail
-- If asked about a test not in the data, say clearly
-  "This test was not found in your uploaded reports"
-
-IMPORTANT - about reference ranges:
-Different labs in this patient's history use slightly different reference
-ranges. Always use the reference range from the SAME report as the value
-being discussed. If ranges conflict across reports, note the discrepancy.
-  `.trim();
+  return fetched ? toReportContextFromBackend(fetched) : reportContext;
 }
 
 function wantsEventStream(request: NextRequest, payload: ClinicalAssistantPayload): boolean {
@@ -478,11 +356,11 @@ function streamAnswerChunks(answer: string): string[] {
   return chunks;
 }
 
-function buildGuidelinesSection(
+function buildGuidelineSnippets(
   userMessage: string,
   activeFindings: string[],
   conversationHistory: ChatTurnPayload[],
-): string {
+): string[] {
   const relevantGuidelines = retrieveRelevantGuidelines(
     userMessage,
     activeFindings,
@@ -492,49 +370,21 @@ function buildGuidelinesSection(
       minScore: 15,
     },
   );
-  if (relevantGuidelines.length === 0) {
-    return "";
-  }
-
-  return `
-RELEVANT MEDICAL GUIDELINES (use these to ground your answer):
-${relevantGuidelines
-  .map(({ entry, score, matchedTerms, rationale }) => `
-[${entry.source}]  [retrieval score: ${score}]
-${entry.title}
-Category: ${entry.category}
-Core content:
+  return relevantGuidelines.map(({ entry, matchedTerms }) => `[${entry.source}] ${entry.title} (${entry.category})
 ${entry.content}
-
 Interpretation bands:
 ${entry.interpretationBands
   .map((band) => `- ${band.label} (${band.range}): ${band.interpretation}. Typical action: ${band.typicalAction}`)
   .join("\n")}
-
-Trend interpretation rules:
-${entry.trendSignals.map((signal) => `- ${signal}`).join("\n")}
-
-Known confounders:
-${entry.confounders.map((factor) => `- ${factor}`).join("\n")}
-
-Escalation triggers:
-${entry.escalationTriggers.map((trigger) => `- ${trigger}`).join("\n")}
-
-Patient-friendly action points:
-${entry.patientFriendlyActions.map((action) => `- ${action}`).join("\n")}
-
-Matched retrieval terms: ${matchedTerms.join(", ") || "none"}
-Retrieval rationale: ${rationale.join(", ") || "semantic overlap"}
+Trend rules: ${entry.trendSignals.join("; ")}
+Confounders: ${entry.confounders.join("; ")}
+Escalation triggers: ${entry.escalationTriggers.join("; ")}
+Patient actions: ${entry.patientFriendlyActions.join("; ")}
+Matched terms: ${matchedTerms.join(", ") || "none"}
 Evidence level: ${entry.evidenceLevel}
-Cite as: "${entry.source}" - ${entry.sourceUrl}
-`)
-  .join("\n")}
-
-IMPORTANT: When your answer is informed by one of the above guidelines,
-end your response with a "Sources" section listing the citation(s) used.
-Format: "**Sources:** [Source Name](URL)"
-  `.trim();
+Cite as: "${entry.source}" - ${entry.sourceUrl}`.trim());
 }
+
 
 function isRateLimitMessage(text: string): boolean {
   const lowered = text.toLowerCase();
@@ -619,42 +469,35 @@ export async function POST(request: NextRequest) {
 
   const analysisId = asText(payload.analysisId, "unknown-analysis");
   const sessionId = asText(payload.sessionId, "session-default");
-  const userId = resolveUserId(authHeader);
 
-  const incomingHistory = sanitizeHistory(payload.history).slice(-CHAT_HISTORY_LIMIT);
-  const storedHistory = sessionHistoryStore.get(sessionId) ?? [];
-  const cappedHistory = (incomingHistory.length > 0 ? incomingHistory : storedHistory).slice(-CHAT_HISTORY_LIMIT);
+  const cappedHistory = sanitizeHistory(payload.history).slice(-CHAT_HISTORY_LIMIT);
   const messages = [
     ...cappedHistory.map((h) => ({ role: h.role, content: h.content })),
     { role: "user" as const, content: message },
   ];
 
-  const analysis = await getFullAnalysis(
+  const resolvedContext = await resolveReportContext(
     analysisId,
-    userId,
     reportContext,
     backendBaseUrl,
     authHeader,
   );
-  const baseSystemPrompt = buildBaseSystemPrompt(analysis, analysisId, userId);
-  const guidelinesSection = buildGuidelinesSection(
+  const analysis = summarizeRecords(resolvedContext);
+  const guidelines = buildGuidelineSnippets(
     message,
     analysis.findings.map((finding) => finding.canonicalName),
     cappedHistory,
   );
-  const fullSystemPrompt = guidelinesSection
-    ? `${baseSystemPrompt}\n\n${guidelinesSection}`
-    : baseSystemPrompt;
 
   const backendPayload = {
-    records,
+    records: Array.isArray(resolvedContext.records) ? resolvedContext.records : records,
     question: message,
     history: cappedHistory,
     analysis_id: analysisId,
     session_id: sessionId,
-    system_prompt: fullSystemPrompt,
+    guidelines,
     messages,
-    report_context: reportContext,
+    report_context: resolvedContext,
   };
 
   const executeChatRequest = async (): Promise<{ answer: string; status: number; backendLatencyMs: number }> => {
@@ -701,20 +544,6 @@ export async function POST(request: NextRequest) {
       const finalAnswer = isRateLimitMessage(answerText)
         ? buildRateLimitedFallbackAnswer(analysis, message)
         : answerText;
-
-      const updatedHistory = [
-        ...cappedHistory,
-        { role: "user" as const, content: message },
-        { role: "assistant" as const, content: finalAnswer },
-      ].slice(-CHAT_HISTORY_LIMIT);
-      sessionHistoryStore.set(sessionId, updatedHistory);
-
-      if (sessionHistoryStore.size > 500) {
-        const firstKey = sessionHistoryStore.keys().next().value;
-        if (firstKey) {
-          sessionHistoryStore.delete(firstKey);
-        }
-      }
 
       return {
         answer: finalAnswer,

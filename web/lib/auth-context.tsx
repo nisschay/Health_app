@@ -23,17 +23,25 @@ import { auth } from "./firebase";
 import { buildApiUrl, getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
 import { setAuthTokenProvider } from "./api";
 
+// Presence hint only: it tells middleware whether to bother rendering a
+// protected route. It proves nothing. Every request is authorised by the
+// Firebase ID token the backend verifies.
 const AUTH_PRESENCE_COOKIE = "mra_auth";
 const AUTH_PRESENCE_MAX_AGE_SECONDS = 60 * 60 * 12;
 
+function cookieFlags(): string {
+  const secure = typeof location !== "undefined" && location.protocol === "https:" ? "; Secure" : "";
+  return `Path=/; SameSite=Lax${secure}`;
+}
+
 function setAuthPresenceCookie(): void {
   if (typeof document === "undefined") return;
-  document.cookie = `${AUTH_PRESENCE_COOKIE}=1; Path=/; Max-Age=${AUTH_PRESENCE_MAX_AGE_SECONDS}; SameSite=Lax`;
+  document.cookie = `${AUTH_PRESENCE_COOKIE}=1; ${cookieFlags()}; Max-Age=${AUTH_PRESENCE_MAX_AGE_SECONDS}`;
 }
 
 function clearAuthPresenceCookie(): void {
   if (typeof document === "undefined") return;
-  document.cookie = `${AUTH_PRESENCE_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`;
+  document.cookie = `${AUTH_PRESENCE_COOKIE}=; ${cookieFlags()}; Max-Age=0`;
 }
 
 export type AuthContextValue = {

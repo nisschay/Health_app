@@ -1,7 +1,7 @@
 import asyncio
 import json
+import logging
 import threading
-import traceback
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -55,7 +55,15 @@ from .schemas import (
     StudySummaryResponse,
     UserProfile,
 )
+from .security import (
+    internal_error,
+    rate_limiter,
+    read_existing_data_upload,
+    read_pdf_uploads,
+)
 from .services import MedicalAnalysisService
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title=settings.app_name,
@@ -69,10 +77,7 @@ CURRENT_NORMALIZATION_VERSION = 1
 # Initialise DB tables on startup
 @app.on_event("startup")
 def startup_event() -> None:
-    try:
-        init_db()
-    except Exception as exc:  # pragma: no cover
-        print(f"[WARN] DB init failed: {exc}")
+    init_db()
 
 
 if settings.cors_origins:
@@ -106,14 +111,6 @@ def sync_user(
     db: Session = Depends(get_db),
 ) -> UserProfile:
     """Called after Firebase sign-in to upsert the user in PostgreSQL."""
-    if not user.authenticated:
-        if settings.require_auth:
-            raise HTTPException(status_code=401, detail="Authentication required.")
-        return UserProfile(
-            firebase_uid="anonymous",
-            email=None,
-            display_name=display_name,
-        )
     row = upsert_user(db, user.user_id, user.email, display_name)
     return UserProfile(
         firebase_uid=row.firebase_uid,
@@ -122,10 +119,7 @@ def sync_user(
     )
 
 
-def _require_authenticated_user(user: RequestUser, db: Session):
-    if not user.authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required.")
-
+def _current_account_owner(user: RequestUser, db: Session):
     # Keep user row fresh and ensure default self profile exists.
     return upsert_user(db, user.user_id, user.email, None)
 
@@ -338,7 +332,7 @@ def list_profiles(
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
 ) -> list[ProfileResponse]:
-    owner = _require_authenticated_user(user, db)
+    owner = _current_account_owner(user, db)
     rows = list_profiles_for_owner(db, owner.id)
     return [
         ProfileResponse(
@@ -359,7 +353,7 @@ def create_profile_endpoint(
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
 ) -> ProfileResponse:
-    owner = _require_authenticated_user(user, db)
+    owner = _current_account_owner(user, db)
     row = create_profile(
         db=db,
         account_owner_id=owner.id,
@@ -386,7 +380,7 @@ def list_profile_studies(
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
 ) -> list[StudySummaryResponse]:
-    owner = _require_authenticated_user(user, db)
+    owner = _current_account_owner(user, db)
     profile = get_profile_by_id(db, profile_id)
     if not profile or profile.account_owner_id != owner.id:
         raise HTTPException(status_code=404, detail="Profile not found.")
@@ -401,7 +395,7 @@ def create_study_endpoint(
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
 ) -> StudySummaryResponse:
-    owner = _require_authenticated_user(user, db)
+    owner = _current_account_owner(user, db)
     profile = get_profile_by_id(db, payload.profile_id)
     if not profile or profile.account_owner_id != owner.id:
         raise HTTPException(status_code=404, detail="Profile not found.")
@@ -432,7 +426,7 @@ def save_analysis_to_study(
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
 ) -> SaveStudyAnalysisResponse:
-    owner = _require_authenticated_user(user, db)
+    owner = _current_account_owner(user, db)
     study = get_study_by_id(db, study_id)
     if not study:
         raise HTTPException(status_code=404, detail="Study not found.")
@@ -528,7 +522,7 @@ def studies_dashboard_summary(
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
 ) -> DashboardSummaryResponse:
-    owner = _require_authenticated_user(user, db)
+    owner = _current_account_owner(user, db)
     profile_rows = list_profiles_for_owner(db, owner.id)
 
     total_reports = 0
@@ -597,7 +591,7 @@ def get_combined_study_report(
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
 ) -> AnalysisResponse:
-    owner = _require_authenticated_user(user, db)
+    owner = _current_account_owner(user, db)
     study = get_study_by_id(db, study_id)
     if not study:
         raise HTTPException(status_code=404, detail="Study not found.")
@@ -665,7 +659,6 @@ def get_combined_study_report(
         user=RequestUserModel(
             user_id=user.user_id,
             email=user.email,
-            authenticated=user.authenticated,
         ),
         patient_info=resolved_patient_info,
         total_records=len(combined_records),
@@ -684,34 +677,11 @@ async def analyze_reports(
     include_raw_texts: bool = Form(default=False),
     user: RequestUser = Depends(get_request_user),
 ) -> AnalysisResponse:
-    if not user.authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required.")
+    rate_limiter.check(user.user_id)
+    logger.info("Analyze request: files=%d", len(pdf_files or []))
 
-    print(
-        f"[ANALYZE] Request received: pdf_count={len(pdf_files or [])}, "
-        f"has_existing_data={existing_data is not None}, user={user.user_id}"
-    )
-
-    queue_mode_active = (
-        settings.enable_batch_ingestion_queue
-        and len(pdf_files or []) >= settings.batch_queue_min_files
-    )
-    if queue_mode_active:
-        print(
-            "[ANALYZE] Phase C batch mode active "
-            f"(min_files={settings.batch_queue_min_files}, workers={settings.batch_ingestion_workers})"
-        )
-
-    pdf_payloads: list[tuple[str, bytes]] = []
-    for upload in pdf_files or []:
-        pdf_payloads.append((upload.filename or "uploaded.pdf", await upload.read()))
-
-    existing_payload: tuple[str, bytes] | None = None
-    if existing_data is not None:
-        existing_payload = (
-            existing_data.filename or "medical-data.xlsx",
-            await existing_data.read(),
-        )
+    pdf_payloads = await read_pdf_uploads(pdf_files)
+    existing_payload = await read_existing_data_upload(existing_data)
 
     try:
         result = service.analyze_reports(
@@ -721,24 +691,28 @@ async def analyze_reports(
             user=user,
         )
         result = _normalize_analysis_payload(result)
+    except HTTPException:
+        raise
     except RuntimeError as exc:
-        detail = str(exc)
-        if detail.startswith("RATE_LIMIT_EXCEEDED:"):
-            raise HTTPException(status_code=429, detail=detail) from exc
-        raise HTTPException(status_code=500, detail=detail) from exc
+        if str(exc).startswith("RATE_LIMIT_EXCEEDED:"):
+            raise HTTPException(
+                status_code=429,
+                detail="The report reader is rate limited right now. Please retry shortly.",
+            ) from exc
+        raise internal_error(exc, "Analysis") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail="Could not read the uploaded reports.") from exc
     except Exception as exc:
-        print(f"[ANALYZE] Failed with unexpected error: {exc}")
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Analysis failed: {str(exc)}",
-        ) from exc
+        raise internal_error(exc, "Analysis") from exc
 
-    print(f"[ANALYZE] Completed successfully: total_records={result.get('total_records', 0)}")
+    logger.info("Analyze complete: records=%d", result.get("total_records", 0))
 
     return AnalysisResponse(**result)
+
+
+def _stream_error(exc: Exception) -> dict[str, Any]:
+    """Mirror internal_error for the SSE channel, which cannot raise."""
+    return {"type": "error", "status": 500, "message": internal_error(exc, "Analysis").detail}
 
 
 @app.post(f"{settings.api_prefix}/reports/analyze/stream")
@@ -748,29 +722,10 @@ async def analyze_reports_stream(
     include_raw_texts: bool = Form(default=False),
     user: RequestUser = Depends(get_request_user),
 ) -> StreamingResponse:
-    if not user.authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required.")
+    rate_limiter.check(user.user_id)
 
-    queue_mode_active = (
-        settings.enable_batch_ingestion_queue
-        and len(pdf_files or []) >= settings.batch_queue_min_files
-    )
-    if queue_mode_active:
-        print(
-            "[ANALYZE:STREAM] Phase C batch mode active "
-            f"(min_files={settings.batch_queue_min_files}, workers={settings.batch_ingestion_workers})"
-        )
-
-    pdf_payloads: list[tuple[str, bytes]] = []
-    for upload in pdf_files or []:
-        pdf_payloads.append((upload.filename or "uploaded.pdf", await upload.read()))
-
-    existing_payload: tuple[str, bytes] | None = None
-    if existing_data is not None:
-        existing_payload = (
-            existing_data.filename or "medical-data.xlsx",
-            await existing_data.read(),
-        )
+    pdf_payloads = await read_pdf_uploads(pdf_files)
+    existing_payload = await read_existing_data_upload(existing_data)
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -803,16 +758,18 @@ async def analyze_reports_stream(
             emit({"type": "stage", "step": "saving", "status": "complete"})
             emit({"type": "done", "result": result})
         except RuntimeError as exc:
-            detail = str(exc)
-            if detail.startswith("RATE_LIMIT_EXCEEDED:"):
-                emit({"type": "error", "status": 429, "message": detail})
+            if str(exc).startswith("RATE_LIMIT_EXCEEDED:"):
+                emit({
+                    "type": "error",
+                    "status": 429,
+                    "message": "The report reader is rate limited right now. Please retry shortly.",
+                })
                 return
-            emit({"type": "error", "status": 500, "message": detail})
-        except ValueError as exc:
-            emit({"type": "error", "status": 400, "message": str(exc)})
+            emit(_stream_error(exc))
+        except ValueError:
+            emit({"type": "error", "status": 400, "message": "Could not read the uploaded reports."})
         except Exception as exc:
-            traceback.print_exc()
-            emit({"type": "error", "status": 500, "message": f"Analysis failed: {str(exc)}"})
+            emit(_stream_error(exc))
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -842,7 +799,7 @@ def save_report_analysis(
     db: Session = Depends(get_db),
 ) -> AnalysisHistoryItem:
     """Save an analysis result to PostgreSQL for the authenticated user."""
-    owner = _require_authenticated_user(user, db)
+    owner = _current_account_owner(user, db)
 
     analysis_dict = _normalize_analysis_payload(payload.analysis.model_dump())
     row = save_analysis(
@@ -873,7 +830,7 @@ def list_report_history(
     db: Session = Depends(get_db),
 ) -> list[AnalysisHistoryItem]:
     """Return all past analyses for the authenticated user."""
-    owner = _require_authenticated_user(user, db)
+    owner = _current_account_owner(user, db)
 
     rows = get_user_analyses(db, owner.firebase_uid)
     return [
@@ -902,7 +859,7 @@ def get_report_by_id(
     db: Session = Depends(get_db),
 ) -> AnalysisResponse:
     """Return the full AnalysisResponse for a previously saved report."""
-    owner = _require_authenticated_user(user, db)
+    owner = _current_account_owner(user, db)
 
     row = get_analysis_by_id(db, analysis_id, owner.firebase_uid)
     if not row:
@@ -919,8 +876,6 @@ def chat_about_report(
     payload: ChatRequest,
     user: RequestUser = Depends(get_request_user),
 ) -> ChatResponse:
-    if not user.authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required.")
     try:
         answer = service.get_chat_response(
             records=[record.model_dump() for record in payload.records],
@@ -928,14 +883,12 @@ def chat_about_report(
             history=[item.model_dump() for item in payload.history],
             analysis_id=payload.analysis_id,
             session_id=payload.session_id,
-            system_prompt=payload.system_prompt,
+            guidelines=payload.guidelines,
             report_context=payload.report_context,
         )
         return ChatResponse(answer=answer)
     except Exception as exc:
-        print(f"[CHAT] Failed: {exc}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Chat processing failed: {str(exc)}") from exc
+        raise internal_error(exc, "Chat") from exc
 
 
 @app.post(f"{settings.api_prefix}/reports/insights", response_model=InsightsResponse)
@@ -943,8 +896,6 @@ def get_report_insights(
     payload: InsightsRequest,
     user: RequestUser = Depends(get_request_user),
 ) -> InsightsResponse:
-    if not user.authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required.")
     result = service.get_health_insights(
         records=[record.model_dump() for record in payload.records]
     )
@@ -956,8 +907,6 @@ def export_pdf(
     payload: ExportPdfRequest,
     user: RequestUser = Depends(get_request_user),
 ) -> StreamingResponse:
-    if not user.authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required.")
     pdf_bytes = service.export_pdf_report(
         records=[record.model_dump() for record in payload.records],
         patient_info=payload.patient_info.model_dump(),
@@ -974,8 +923,6 @@ async def export_excel(
     payload: ExportPdfRequest,
     user: RequestUser = Depends(get_request_user),
 ) -> StreamingResponse:
-    if not user.authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required.")
     excel_bytes = service.export_excel_report(
         records=[record.model_dump() for record in payload.records],
         patient_info=payload.patient_info.model_dump(),

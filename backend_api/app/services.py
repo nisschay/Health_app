@@ -373,7 +373,7 @@ class MedicalAnalysisService:
         history: list[dict[str, str]],
         analysis_id: str | None = None,
         session_id: str | None = None,
-        system_prompt: str | None = None,
+        guidelines: list[str] | None = None,
         report_context: dict[str, Any] | None = None,
     ) -> str:
         api_key = self._require_api_key()
@@ -385,7 +385,7 @@ class MedicalAnalysisService:
             api_key,
             analysis_id=analysis_id,
             session_id=session_id,
-            system_prompt=system_prompt,
+            guidelines=guidelines or [],
             report_context=report_context or {},
         )
 
