@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -24,14 +24,16 @@ from .database import (
     get_db,
     get_profile_by_id,
     get_study_by_id,
-    get_study_report_date_range,
     get_user_analyses,
     init_db,
+    list_dashboard_report_rows,
     list_profiles_for_owner,
     list_reports_for_study,
+    list_studies_for_owner,
     list_studies_for_profile,
     ping_database,
     save_analysis,
+    study_report_stats,
     upsert_user,
 )
 from .normalization import normalize_records
@@ -142,9 +144,8 @@ def _date_to_iso(value: date | None) -> str | None:
     return value.isoformat() if value else None
 
 
-def _study_summary(db: Session, study) -> StudySummaryResponse:
-    report_count = count_reports_for_study(db, study.id)
-    range_start, range_end = get_study_report_date_range(db, study.id)
+def _study_summary(study, stats: tuple[int, date | None, date | None]) -> StudySummaryResponse:
+    report_count, range_start, range_end = stats
     return StudySummaryResponse(
         id=study.id,
         profile_id=study.profile_id,
@@ -415,7 +416,8 @@ def list_profile_studies(
         raise HTTPException(status_code=404, detail="Profile not found.")
 
     rows = list_studies_for_profile(db, profile_id)
-    return [_study_summary(db, row) for row in rows]
+    stats = study_report_stats(db, [row.id for row in rows])
+    return [_study_summary(row, stats.get(row.id, (0, None, None))) for row in rows]
 
 
 @app.post(f"{settings.api_prefix}/studies", response_model=StudySummaryResponse)
@@ -442,7 +444,7 @@ def create_study_endpoint(
             raise HTTPException(status_code=409, detail="A study with this name already exists for this profile.") from exc
         raise
 
-    return _study_summary(db, row)
+    return _study_summary(row, study_report_stats(db, [row.id]).get(row.id, (0, None, None)))
 
 
 @app.post(
@@ -528,7 +530,7 @@ def save_analysis_to_study(
         )
         added += 1
 
-    total_reports = len(list_reports_for_study(db, study_id))
+    total_reports = count_reports_for_study(db, study_id)
     refreshed = get_study_by_id(db, study_id)
     return SaveStudyAnalysisResponse(
         study_id=study_id,
@@ -548,28 +550,31 @@ def studies_dashboard_summary(
 ) -> DashboardSummaryResponse:
     owner = _current_account_owner(user, db)
     profile_rows = list_profiles_for_owner(db, owner.id)
+    studies_by_profile: dict[UUID, list] = {}
+    for study in list_studies_for_owner(db, owner.id):
+        studies_by_profile.setdefault(study.profile_id, []).append(study)
+
+    # One query for every report the owner has; aggregate per study in memory.
+    reports_by_study: dict[UUID, list] = {}
+    for row in list_dashboard_report_rows(db, owner.id):
+        reports_by_study.setdefault(row.study_id, []).append(row)
 
     total_reports = 0
     total_alerts = 0
     groups: list[DashboardProfileGroup] = []
 
     for profile in profile_rows:
-        studies = list_studies_for_profile(db, profile.id)
         study_items: list[DashboardStudyItem] = []
-        for study in studies:
-            reports = list_reports_for_study(db, study.id)
+        for study in studies_by_profile.get(profile.id, []):
+            reports = reports_by_study.get(study.id, [])
             report_count = len(reports)
             total_reports += report_count
 
-            if reports:
-                range_start = reports[0].report_date.isoformat() if reports[0].report_date else None
-                range_end = reports[-1].report_date.isoformat() if reports[-1].report_date else None
-            else:
-                range_start = None
-                range_end = None
+            range_start = reports[0].report_date.isoformat() if reports else None
+            range_end = reports[-1].report_date.isoformat() if reports else None
 
-            lab_values = sorted({(r.lab_name or "").strip() for r in reports if (r.lab_name or "").strip()})
-            consistent_lab_name = lab_values[0] if len(lab_values) == 1 else None
+            lab_values = {(r.lab_name or "").strip() for r in reports if (r.lab_name or "").strip()}
+            consistent_lab_name = next(iter(lab_values)) if len(lab_values) == 1 else None
 
             alerts_count = sum(_extract_alerts_count(report) for report in reports)
             total_alerts += alerts_count
@@ -839,11 +844,13 @@ def save_report_analysis(
 def list_report_history(
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ) -> list[AnalysisHistoryItem]:
-    """Return all past analyses for the authenticated user."""
+    """Return a page of past analyses for the authenticated user, newest first."""
     owner = _current_account_owner(user, db)
 
-    rows = get_user_analyses(db, owner.firebase_uid)
+    rows = get_user_analyses(db, owner.firebase_uid, limit=limit, offset=offset)
     return [
         AnalysisHistoryItem(
             id=row.id,
@@ -876,7 +883,9 @@ def get_report_by_id(
     if not row:
         raise HTTPException(status_code=404, detail="Analysis not found.")
 
-    data = _normalize_analysis_payload(json.loads(row.analysis_json))
+    data = json.loads(row.analysis_json)
+    if "health_summary" not in data:
+        data = _normalize_analysis_payload(data)  # rows saved before insights were stored
     return AnalysisResponse(**data)
 
 
