@@ -31,3 +31,16 @@ web/.turbo/
 
 # Optional heavy local artifacts
 archive/notebooks/
+
+# Frontend, docs and the legacy UI are not part of the API image.
+web/
+docs/
+archive/
+deploy/
+tests/
+*.md
+style.css
+Medical_Project.py
+requirements-ui.txt
+requirements-dev.txt
+.github/

@@ -29,6 +29,7 @@ from .database import (
     list_profiles_for_owner,
     list_reports_for_study,
     list_studies_for_profile,
+    ping_database,
     save_analysis,
     upsert_user,
 )
@@ -94,7 +95,13 @@ if settings.cors_origins:
 
 @app.get("/health")
 def healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
+    """Report database reachability too: the wake-up overlay polls this."""
+    try:
+        database_status = "ok" if ping_database() else "unreachable"
+    except Exception:
+        logger.exception("Health check could not reach the database")
+        database_status = "unreachable"
+    return {"status": "ok", "database": database_status}
 
 
 # ── Auth ───────────────────────────────────────────────────────────────────────

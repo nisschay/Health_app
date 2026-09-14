@@ -1,4 +1,3 @@
-import streamlit as st
 import pandas as pd
 from datetime import datetime
 import math
@@ -8,8 +7,19 @@ from xlsxwriter.utility import xl_col_to_name
 import io
 from collections import Counter
 import json
-import plotly.graph_objs as go
 import google.generativeai as genai
+
+# The API image ships without Streamlit and Plotly; only the legacy UI needs
+# them. Functions that draw or render check these before use.
+try:
+    import streamlit as st
+except ImportError:  # pragma: no cover - absent in the API image
+    st = None
+
+try:
+    import plotly.graph_objs as go
+except ImportError:  # pragma: no cover - absent in the API image
+    go = None
 from category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI
 try:
     import pytesseract
@@ -106,7 +116,7 @@ CANONICAL_CATEGORY_VALUES = [
 
 
 def _has_streamlit_context() -> bool:
-    if get_script_run_ctx is None:
+    if st is None or get_script_run_ctx is None:
         return False
     try:
         return get_script_run_ctx() is not None
