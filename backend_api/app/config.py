@@ -38,7 +38,6 @@ class Settings:
     api_prefix: str = "/api/v1"
     app_name: str = "Medical Project API"
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY")
-    require_auth: bool = _as_bool(os.getenv("API_REQUIRE_AUTH"), default=False)
     enable_batch_ingestion_queue: bool = _as_bool(
         os.getenv("ENABLE_BATCH_INGESTION_QUEUE"),
         default=True,
@@ -70,6 +69,10 @@ class Settings:
         max(0, _as_int(os.getenv("FIREBASE_CLOCK_SKEW_SECONDS"), default=60)),
     )
     cors_origins: list[str] = field(default_factory=lambda: _as_list(os.getenv("API_CORS_ORIGINS")))
+    max_upload_files: int = max(1, _as_int(os.getenv("MAX_UPLOAD_FILES"), default=20))
+    max_upload_file_mb: int = max(1, _as_int(os.getenv("MAX_UPLOAD_FILE_MB"), default=10))
+    max_upload_total_mb: int = max(1, _as_int(os.getenv("MAX_UPLOAD_TOTAL_MB"), default=25))
+    rate_limit_per_minute: int = max(1, _as_int(os.getenv("RATE_LIMIT_PER_MINUTE"), default=20))
 
 
 settings = Settings()

@@ -246,7 +246,7 @@ Normalization entry points:
 
 - backend_api/app/normalization.py
 - web/lib/normalizeTest.ts
-- scripts/migrateNormalize.ts
+- backend_api/scripts/migrate_normalized_records.py
 
 ## 12) Clinical Assistant
 

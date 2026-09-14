@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 class RequestUser:
     user_id: str
     email: str | None = None
-    authenticated: bool = False
 
 
 def _extract_bearer_token(authorization: str | None) -> str | None:
@@ -157,5 +156,4 @@ def get_request_user(authorization: str | None = Header(default=None)) -> Reques
     return RequestUser(
         user_id=decoded_token["uid"],
         email=decoded_token.get("email"),
-        authenticated=True,
     )

@@ -38,6 +38,10 @@ const nextConfig: NextConfig = {
   // Keep dev and production artifacts isolated so running `next build`
   // does not invalidate chunks served by `next dev`.
   distDir: process.env.NODE_ENV === "development" ? ".next-dev" : ".next",
+  compiler: {
+    // Report content was reaching the browser console in production.
+    removeConsole: process.env.NODE_ENV === "production" ? { exclude: ["error"] } : false,
+  },
   experimental: {
     optimizePackageImports: ["firebase"],
     // Keep client upload limits generous for local proxy/dev flows.

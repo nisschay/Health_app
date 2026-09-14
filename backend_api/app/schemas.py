@@ -3,6 +3,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+# Retrieved guideline snippets are data the caller may contribute; they are
+# never instructions, and the count and length are bounded.
+MAX_CHAT_GUIDELINES = 12
+MAX_CHAT_GUIDELINE_CHARS = 1500
+
 
 class PatientInfo(BaseModel):
     name: str = "N/A"
@@ -42,7 +47,6 @@ class RawTextPreview(BaseModel):
 class RequestUserModel(BaseModel):
     user_id: str
     email: str | None = None
-    authenticated: bool
 
 
 class AnalysisResponse(BaseModel):
@@ -67,7 +71,7 @@ class ChatRequest(BaseModel):
     question: str
     analysis_id: str | None = None
     session_id: str | None = None
-    system_prompt: str | None = None
+    guidelines: list[str] = Field(default_factory=list, max_length=MAX_CHAT_GUIDELINES)
     report_context: dict[str, Any] = Field(default_factory=dict)
     history: list[ChatTurn] = Field(default_factory=list)
 

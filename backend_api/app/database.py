@@ -32,10 +32,9 @@ _LOCAL_ENV_PATH = _APP_DIR.parent / ".env"
 load_dotenv(dotenv_path=_ROOT_ENV_PATH)
 load_dotenv(dotenv_path=_LOCAL_ENV_PATH)
 
-DEFAULT_DATABASE_URL = "postgresql://medical_user:medical_pass@localhost:5432/medical_project"
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
-if os.getenv("DATABASE_URL") is None:
-    print("[WARN] DATABASE_URL not set; using local default PostgreSQL URL.")
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set. Point it at your PostgreSQL database.")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

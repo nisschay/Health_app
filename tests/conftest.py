@@ -9,7 +9,9 @@ if str(REPO_ROOT) not in sys.path:
 # backend_api.app.database builds its engine at import time, so the URL has to
 # be in place before any backend module is imported.
 os.environ.setdefault("DATABASE_URL", "sqlite://")
-os.environ.setdefault("GEMINI_API_KEY", "test-key-not-used")
+# Overwrite, never setdefault: a real key in the developer's shell would
+# otherwise let a test reach the live Gemini API.
+os.environ["GEMINI_API_KEY"] = "test-key-not-used"
 
 from sqlalchemy.dialects.postgresql import JSONB, UUID  # noqa: E402
 from sqlalchemy.ext.compiler import compiles  # noqa: E402
