@@ -23,5 +23,6 @@ jobs:
           git config user.name github-actions
           git config user.email github-actions@github.com
           git checkout -q --orphan deploy
+          git ls-files -z -ci --exclude-from=.dockerignore | grep -zv '^README.md$' | xargs -0 -r git rm -q --cached
           git commit -q -m "Deploy ${GITHUB_SHA}"
           git push --force "https://oauth2:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" deploy:main
