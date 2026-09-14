@@ -13,6 +13,7 @@ import {
   AreaChart,
 } from "recharts";
 import type { MedicalRecord } from "@/lib/api";
+import { parseMedicalDate } from "@/lib/medicalDate";
 
 type Props = {
   records: MedicalRecord[];
@@ -33,20 +34,9 @@ function parseRefRange(ref: string | null | undefined): { low: number | null; hi
 
 export default function TrendChart({ records, testName }: Props) {
   // Sort by date
-  const sorted = [...records].sort((a, b) => {
-    const da = a.Test_Date ?? "";
-    const db = b.Test_Date ?? "";
-    // Try to parse dd-mm-yyyy
-    const parse = (d: string) => {
-      const parts = d.split(/[-/]/);
-      if (parts.length === 3) {
-        const [d1, m1, y1] = parts;
-        return new Date(`${y1}-${m1!.padStart(2, "0")}-${d1!.padStart(2, "0")}`).getTime();
-      }
-      return new Date(d).getTime();
-    };
-    return parse(da) - parse(db);
-  });
+  const sorted = [...records].sort(
+    (a, b) => parseMedicalDate(a.Test_Date) - parseMedicalDate(b.Test_Date)
+  );
 
   const chartData = sorted
     .map((r) => {

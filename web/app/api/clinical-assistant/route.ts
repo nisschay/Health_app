@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { retrieveRelevantGuidelines } from "@/lib/ragRetrieval";
 import { buildApiUrl, getServerBackendBaseUrl } from "@/lib/apiBaseUrl";
+import { parseMedicalDate as parseSortableDate } from "@/lib/medicalDate";
 
 type ChatTurnPayload = {
   role: "user" | "assistant";
@@ -144,23 +145,6 @@ function asText(value: unknown, fallback = ""): string {
   if (value === null || value === undefined) return fallback;
   const text = String(value).trim();
   return text || fallback;
-}
-
-function parseSortableDate(value: string): number {
-  const clean = value.trim();
-  if (!clean) return Number.MAX_SAFE_INTEGER;
-
-  const ddmmyyyy = clean.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
-  if (ddmmyyyy) {
-    const day = ddmmyyyy[1]!.padStart(2, "0");
-    const month = ddmmyyyy[2]!.padStart(2, "0");
-    const year = ddmmyyyy[3]!.length === 2 ? `20${ddmmyyyy[3]}` : ddmmyyyy[3]!;
-    const parsed = new Date(`${year}-${month}-${day}`).getTime();
-    return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
-  }
-
-  const parsed = new Date(clean).getTime();
-  return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
 }
 
 function canonicalizeTestName(value: string): string {

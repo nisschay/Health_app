@@ -1,4 +1,5 @@
 import { canonicalizeCategory } from "./categoryMap";
+import { parseMedicalDate } from "./medicalDate";
 import { normalizeTestName } from "./testNameMap";
 
 export type NormalizableMedicalRecord = {
@@ -262,20 +263,6 @@ function parseNumeric(value: unknown): number | null {
   }
   const parsed = Number.parseFloat(String(value ?? "").replace(/,/g, "").trim());
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseMedicalDate(value: string | null | undefined): number {
-  if (!value) return Number.MAX_SAFE_INTEGER;
-  const raw = value.trim();
-  const ddmmyyyy = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
-  if (ddmmyyyy) {
-    const day = ddmmyyyy[1]!.padStart(2, "0");
-    const month = ddmmyyyy[2]!.padStart(2, "0");
-    const year = ddmmyyyy[3]!.length === 2 ? `20${ddmmyyyy[3]}` : ddmmyyyy[3]!;
-    return new Date(`${year}-${month}-${day}`).getTime();
-  }
-  const parsed = new Date(raw).getTime();
-  return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
 }
 
 function rowCompletenessScore(row: NormalizableMedicalRecord): number {

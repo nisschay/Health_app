@@ -37,6 +37,7 @@ import OrganizedDataTree from "./OrganizedDataTree";
 import ClinicalChatPanel from "./ClinicalChatPanel";
 import { generateClinicalPdfReport } from "@/lib/pdf";
 import { CANONICAL_CATEGORIES, canonicalizeCategory } from "@/lib/categoryMap";
+import { parseMedicalDate } from "@/lib/medicalDate";
 
 type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
 type StudyAction = "add-existing" | "start-new";
@@ -90,20 +91,6 @@ function toApiChatHistory(messages: ChatMessage[]): ChatTurn[] {
       role: message.role === "assistant" ? "assistant" : "user",
       content: message.content,
     }));
-}
-
-function parseMedicalDate(value: string | null | undefined): number {
-  if (!value) return Number.MAX_SAFE_INTEGER;
-  const raw = value.trim();
-  const ddmmyyyy = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
-  if (ddmmyyyy) {
-    const day = ddmmyyyy[1]!.padStart(2, "0");
-    const month = ddmmyyyy[2]!.padStart(2, "0");
-    const year = ddmmyyyy[3]!.length === 2 ? `20${ddmmyyyy[3]}` : ddmmyyyy[3]!;
-    return new Date(`${year}-${month}-${day}`).getTime();
-  }
-  const parsed = new Date(raw).getTime();
-  return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
 }
 
 function isConcerningStatus(status: string | null | undefined): boolean {
