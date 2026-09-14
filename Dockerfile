@@ -18,8 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 user
 WORKDIR $HOME/app
 
-COPY --chown=user requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --chown=user requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
 
 COPY --chown=user . .
 

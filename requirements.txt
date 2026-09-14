@@ -1,5 +1,7 @@
 # Backend API runtime. Keep this lean: every package here is imported on a
 # cold start of the Hugging Face Space.
+# Edit this file, then regenerate the lock:
+#   uv pip compile requirements.txt --python-version 3.11 -o requirements.lock
 pandas>=2.0.0
 numpy>=1.24.0
 python-dateutil>=2.8.2
