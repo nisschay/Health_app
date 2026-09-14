@@ -20,14 +20,8 @@ if [[ ! -f "$VERIFY_FILE" ]]; then
 fi
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
-  if [[ -n "${GCP_PROJECT_ID:-}" ]] && [[ -n "${DATABASE_SECRET_NAME:-}" ]]; then
-    require_cmd gcloud
-    echo "Reading DATABASE_URL from Secret Manager"
-    DATABASE_URL="$(gcloud secrets versions access latest --secret "$DATABASE_SECRET_NAME" --project "$GCP_PROJECT_ID")"
-  else
-    echo "DATABASE_URL is required (or set GCP_PROJECT_ID + DATABASE_SECRET_NAME)."
-    exit 1
-  fi
+  echo "DATABASE_URL is required."
+  exit 1
 fi
 
 echo "Running schema verification: $VERIFY_FILE"

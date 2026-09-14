@@ -36,7 +36,7 @@ Medical Report Analyzer helps families and caregivers organize medical reports t
 - Auth: Firebase Authentication + Firebase Admin token verification.
 - Database: PostgreSQL with JSONB payload storage for report analysis.
 - AI: Google Gemini API for extraction, chat, and insight generation.
-- Deployment: Vercel (frontend), containerized backend (Cloud Run-compatible scripts).
+- Deployment: Vercel (frontend), Hugging Face Docker Space (backend), Neon (database).
 
 ## 6) Getting Started / Local Development
 
@@ -132,11 +132,12 @@ Most important runtime variables by layer:
 - Backend
   - DATABASE_URL
   - GEMINI_API_KEY
-  - API_REQUIRE_AUTH
   - API_CORS_ORIGINS
   - FIREBASE_PROJECT_ID
   - FIREBASE_CREDENTIALS_PATH or FIREBASE_SERVICE_ACCOUNT_JSON
   - FIREBASE_CLOCK_SKEW_SECONDS
+  - MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_MB, MAX_UPLOAD_TOTAL_MB
+  - RATE_LIMIT_PER_MINUTE
 
 ## 8) Backend API Reference
 
@@ -205,9 +206,8 @@ Main relational entities (PostgreSQL):
 
 Schema assets:
 
-- backend_api/sql/2026_03_24_study_management.sql
-- backend_api/sql/2026_03_31_firebase_postgres_bootstrap.sql
-- backend_api/sql/verify_postgres_schema.sql
+- backend_api/sql/*.sql, applied in filename order by deploy/migrate_database.sh
+  and recorded in a schema_migrations table.
 
 ## 11) Ingestion Pipeline
 
@@ -289,8 +289,8 @@ Repository deployment paths:
   - Vercel with web/ as project root.
   - Configured by web/vercel.json and deploy/deploy_frontend_vercel.sh.
 - Backend hosting
-  - Cloud Run workflow script: deploy/deploy_backend_cloudrun.sh.
-  - Dockerized backend via the root Dockerfile.
+  - Hugging Face Space (Docker SDK) built from the root Dockerfile on push.
+  - Keep the free Space awake with an uptime monitor on /health; see deploy/README.md.
 - Database
   - PostgreSQL-compatible environments (Supabase/Neon patterns included).
   - Migration and verification scripts in deploy/.

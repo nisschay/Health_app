@@ -100,8 +100,8 @@ Frontend env values required:
 - [ ] Enforce SSL in connection string
 
 Schema bootstrapping:
-- [ ] Apply SQL files used by backend:
-  - backend_api/sql/2026_03_24_study_management.sql
+- [ ] Apply every migration in filename order, recorded in `schema_migrations`:
+  - `DATABASE_URL="postgresql://..." ./deploy/migrate_database.sh`
 
 If migrating existing production data:
 - [ ] Export old Postgres
@@ -122,7 +122,8 @@ If migrating existing production data:
 ## 6.2 Backend container requirements
 
 - [ ] Docker image runs FastAPI app via uvicorn
-- [ ] Container listens on the port expected by Hugging Face Space runtime
+- [ ] Container listens on $PORT, defaulting to 7860
+- [ ] Container runs as uid 1000, which is what Spaces require
 - [ ] Health endpoint stays available:
   - /health
 
@@ -131,15 +132,12 @@ If migrating existing production data:
 Set as Hugging Face Space Secrets:
 - [ ] DATABASE_URL (Neon pooled URL)
 - [ ] GEMINI_API_KEY
-- [ ] API_REQUIRE_AUTH=true
 - [ ] FIREBASE_PROJECT_ID
 - [ ] API_CORS_ORIGINS=https://your-frontend-domain
 - [ ] FIREBASE_CLOCK_SKEW_SECONDS=60
 - [ ] FIREBASE_SERVICE_ACCOUNT_JSON (raw JSON string)
 
-Important code adjustment:
-- [ ] Backend currently expects FIREBASE_CREDENTIALS_PATH file path.
-- [ ] Add support for FIREBASE_SERVICE_ACCOUNT_JSON so backend can initialize Firebase Admin directly from env secret.
+FIREBASE_SERVICE_ACCOUNT_JSON is already supported; see `backend_api/app/auth.py`.
 
 ## 6.4 Backend CORS and auth
 
@@ -258,3 +256,15 @@ When to upgrade:
 - [ ] Phase 5: Announce production and monitor usage limits
 
 This sequence keeps architecture changes minimal while meeting your exact platform choice.
+
+---
+
+## 12) Keeping the free Space awake
+
+A free Space sleeps when idle, and the next visitor pays a full cold start.
+There is no paid always-on instance in this setup, so:
+
+- [ ] Point a free uptime monitor (UptimeRobot, cron-job.org) at
+      `https://<user>-<space>.hf.space/health` every 5 minutes
+- [ ] Confirm the response reads `{"status":"ok","database":"ok"}`; a sleeping
+      Neon branch reports `"database":"unreachable"`

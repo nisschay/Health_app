@@ -1,104 +1,75 @@
-# Deployment Toolkit
+# Deployment
 
-This folder contains repeatable deployment helpers for this project.
+One target, all free tier:
 
-## 1) Deploy Backend (Cloud Run)
+| Piece | Host |
+|---|---|
+| Frontend | Vercel, project root `web/` |
+| Backend API | Hugging Face Space, Docker SDK, port 7860 |
+| Database | Neon PostgreSQL |
+| Auth | Firebase Authentication (Spark) |
 
-Script: `deploy/deploy_backend_cloudrun.sh`
+The full runbook, including first-time setup, is
+[`PRODUCTION_DEPLOYMENT_VERCEL_FIREBASE.md`](../PRODUCTION_DEPLOYMENT_VERCEL_FIREBASE.md).
+This file covers the scripts in this folder.
 
-Required environment variables:
+## Backend
 
-- `GCP_PROJECT_ID`
-- `FIREBASE_PROJECT_ID`
-- `API_CORS_ORIGINS`
+The Space builds the root `Dockerfile` on push. There is no deploy script:
+push to the branch the Space tracks and it rebuilds.
+
+Secrets to set in the Space (Settings, then Variables and secrets):
+
 - `GEMINI_API_KEY`
-- `DATABASE_URL`
-- `FIREBASE_SERVICE_ACCOUNT_FILE` (path to Firebase Admin JSON)
+- `DATABASE_URL` (Neon connection string, `sslmode=require`)
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_SERVICE_ACCOUNT_JSON` (the whole Admin SDK JSON, pasted)
+- `API_CORS_ORIGINS` (comma-separated, including the Vercel URL)
 
-Optional variables:
+Optional limits, with their defaults:
 
-- `GCP_REGION` (default: `us-central1`)
-- `AR_REPOSITORY` (default: `medical-project`)
-- `CLOUD_RUN_SERVICE` (default: `medical-backend`)
-- `IMAGE_NAME` (default: `medical-backend`)
-- `IMAGE_TAG` (default: timestamp)
-- `CLOUD_SQL_CONNECTION` (for Cloud SQL socket attach)
-- `FIREBASE_CLOCK_SKEW_SECONDS` (default: `60`)
-- `GEMINI_SECRET_NAME` (default: `medical-gemini-api-key`)
-- `DATABASE_SECRET_NAME` (default: `medical-database-url`)
-- `FIREBASE_SECRET_NAME` (default: `medical-firebase-admin`)
+- `MAX_UPLOAD_FILES` (20), `MAX_UPLOAD_FILE_MB` (10), `MAX_UPLOAD_TOTAL_MB` (25)
+- `RATE_LIMIT_PER_MINUTE` (20)
+- `PDF_OCR_FALLBACK_ENABLED` (true), `PDF_OCR_MAX_PAGES` (5)
 
-Example:
+## Keeping the Space awake
 
-```bash
-export GCP_PROJECT_ID="your-project-id"
-export FIREBASE_PROJECT_ID="your-project-id"
-export API_CORS_ORIGINS="https://your-app.vercel.app"
-export GEMINI_API_KEY="your-gemini-api-key"
-export DATABASE_URL="postgresql+psycopg2://user:password@/medical_project?host=/cloudsql/PROJECT:REGION:INSTANCE"
-export FIREBASE_SERVICE_ACCOUNT_FILE="$PWD/backend_api/serviceAccountKey.json"
-export CLOUD_SQL_CONNECTION="PROJECT:REGION:INSTANCE"
+A free Space sleeps when idle, and the first visitor afterwards waits through a
+cold start. Point a free uptime monitor at the health endpoint every 5 minutes:
 
-./deploy/deploy_backend_cloudrun.sh
+```
+https://<user>-<space>.hf.space/health
 ```
 
-## 2) Run Database Migration
+[UptimeRobot](https://uptimerobot.com) and [cron-job.org](https://cron-job.org)
+both do this on a free plan. The endpoint returns the database status too, so a
+sleeping Neon branch shows up as `{"status":"ok","database":"unreachable"}`.
 
-Script: `deploy/migrate_database.sh`
-
-Requirements:
-
-- `DATABASE_URL`, or
-- `GCP_PROJECT_ID` + `DATABASE_SECRET_NAME` (to read URL from Secret Manager)
-
-Example:
+## Frontend
 
 ```bash
-export DATABASE_URL="postgresql://user:password@host:5432/medical_project"
-./deploy/migrate_database.sh
+VERCEL_TOKEN=... ./deploy/deploy_frontend_vercel.sh
 ```
 
-## 3) Deploy Frontend (Vercel)
+## Database
 
-Script: `deploy/deploy_frontend_vercel.sh`
-
-Before running:
-
-- Configure Vercel project root as `web`
-- Ensure Vercel env vars are set (`NEXT_PUBLIC_*` values)
-
-Example:
+Migrations live in `backend_api/sql/` and are applied in filename order, each
+recorded in a `schema_migrations` table so re-running is safe:
 
 ```bash
-./deploy/deploy_frontend_vercel.sh
+DATABASE_URL="postgresql://..." ./deploy/migrate_database.sh
 ```
 
-Skip local build check:
+Verify the result:
 
 ```bash
-SKIP_LOCAL_BUILD=1 ./deploy/deploy_frontend_vercel.sh
+DATABASE_URL="postgresql://..." ./deploy/verify_database_schema.sh
 ```
 
-## 4) Smoke Test Production
-
-Script: `deploy/smoke_test.sh`
-
-Required variables:
-
-- `BACKEND_URL`
-- `FRONTEND_URL`
-
-Example:
+## Smoke test
 
 ```bash
-BACKEND_URL="https://your-backend.run.app" \
-FRONTEND_URL="https://your-app.vercel.app" \
+BACKEND_URL="https://<user>-<space>.hf.space" \
+FRONTEND_URL="https://<app>.vercel.app" \
 ./deploy/smoke_test.sh
 ```
-
-## 5) Env Templates
-
-- Backend template: `backend_api/.env.example`
-- Frontend template: `web/.env.example`
-
-Use these as starting points for local and production environment configuration.

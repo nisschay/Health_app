@@ -21,6 +21,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -123,6 +124,13 @@ class Report(Base):
     is_normalized = Column(Boolean, nullable=False, default=False)
     normalization_version = Column(Integer, nullable=True)
     uploaded_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+def ping_database() -> bool:
+    """Cheap connectivity probe; a sleeping serverless database fails this fast."""
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+    return True
 
 
 def init_db() -> None:

@@ -1,0 +1,5 @@
+# Legacy Streamlit app only (Medical_Project.py). Not installed in the API image.
+-r requirements.txt
+
+streamlit>=1.31.0
+plotly>=5.18.0
