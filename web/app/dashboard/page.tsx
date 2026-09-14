@@ -1,15 +1,14 @@
 "use client";
 
-import { useState, useTransition, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import dynamic from "next/dynamic";
+import type { Components } from "react-markdown";
 import { useRouter } from "next/navigation";
-import dayjs from "dayjs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
-import { DatePicker } from "@mui/x-date-pickers/DatePicker";
-import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { useAuth } from "@/lib/auth-context";
 import {
+  AuthError,
   type AnalysisResponse,
   type AnalyzeStreamEvent,
   type AnalysisHistoryItem,
@@ -31,13 +30,80 @@ import {
   saveStudyAnalysis,
   exportExcel,
 } from "@/lib/api";
-import TrendChart from "./TrendChart";
 import AlertsByCategory from "./AlertsByCategory";
 import OrganizedDataTree from "./OrganizedDataTree";
-import ClinicalChatPanel from "./ClinicalChatPanel";
-import { generateClinicalPdfReport } from "@/lib/pdf";
 import { CANONICAL_CATEGORIES, canonicalizeCategory } from "@/lib/categoryMap";
 import { parseMedicalDate } from "@/lib/medicalDate";
+
+const TrendChart = dynamic(() => import("./TrendChart"), { ssr: false });
+const ClinicalChatPanel = dynamic(() => import("./ClinicalChatPanel"), { ssr: false });
+
+const MARKDOWN_COMPONENTS: Components = {
+  p: ({ children }) => (
+    <p style={{ margin: "0 0 10px 0", lineHeight: 1.7, color: "#d4b483", fontSize: 14 }}>{children}</p>
+  ),
+  strong: ({ children }) => (
+    <strong style={{ color: "#fef3c7", fontWeight: 600 }}>
+      {children}
+    </strong>
+  ),
+  em: ({ children }) => (
+    <em style={{ color: "#fbbf24", fontStyle: "italic" }}>
+      {children}
+    </em>
+  ),
+  ul: ({ children }) => (
+    <ul style={{ margin: "8px 0", paddingLeft: 20, color: "#d4b483" }}>{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol style={{ margin: "8px 0", paddingLeft: 20, color: "#d4b483" }}>{children}</ol>
+  ),
+  li: ({ children }) => (
+    <li style={{ margin: "4px 0", fontSize: 14, lineHeight: 1.6 }}>{children}</li>
+  ),
+  h1: ({ children }) => (
+    <h1 style={{ fontSize: 16, fontWeight: 600, color: "#fef3c7", margin: "12px 0 6px" }}>{children}</h1>
+  ),
+  h2: ({ children }) => (
+    <h2 style={{ fontSize: 15, fontWeight: 600, color: "#fef3c7", margin: "10px 0 6px" }}>{children}</h2>
+  ),
+  h3: ({ children }) => (
+    <h3 style={{ fontSize: 14, fontWeight: 600, color: "#fbbf24", margin: "8px 0 4px" }}>{children}</h3>
+  ),
+  code: ({ children, className }) => {
+    const isInline = !className;
+    return isInline ? (
+      <code style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#fbbf24", background: "#2d1f08", padding: "1px 5px", borderRadius: 4 }}>{children}</code>
+    ) : (
+      <pre style={{ background: "#1c1917", border: "1px solid #292524", borderRadius: 8, padding: "10px 14px", overflowX: "auto", margin: "8px 0" }}>
+        <code style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#d4b483" }}>{children}</code>
+      </pre>
+    );
+  },
+  blockquote: ({ children }) => (
+    <blockquote style={{ borderLeft: "3px solid #d97706", marginLeft: 0, paddingLeft: 12, color: "#a8a29e", fontStyle: "italic" }}>{children}</blockquote>
+  ),
+  table: ({ children }) => (
+    <div style={{ overflowX: "auto", margin: "8px 0" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th style={{ padding: "6px 10px", textAlign: "left", borderBottom: "1px solid #44403c", color: "#fbbf24", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>{children}</th>
+  ),
+  td: ({ children }) => (
+    <td style={{ padding: "6px 10px", borderBottom: "1px solid #292524", color: "#d4b483" }}>{children}</td>
+  ),
+};
+
+const CITATION_COMPONENTS: Components = {
+  p: ({ children }) => <p>{children}</p>,
+  a: ({ children, href }) => (
+    <a href={href || "#"} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  ),
+};
 
 type AnalyzeStep = "idle" | "preparing" | "uploading" | "processing" | "saving" | "error";
 type StudyAction = "add-existing" | "start-new";
@@ -141,10 +207,7 @@ function normalizeSourceFileName(value: string | null | undefined): string {
 }
 
 function shouldRetryWithFreshToken(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return /invalid firebase token|firebase token expired|firebase token revoked|firebase token project mismatch|authentication required|missing bearer token|not authenticated|unauthorized|\b401\b/i.test(
-    error.message,
-  );
+  return error instanceof AuthError;
 }
 
 function formatChatTimestamp(createdAt: number): string {
@@ -479,23 +542,13 @@ function StudyFlowModal({
             )}
             <label className="field-block">
               <span>Date of Birth (optional)</span>
-              <LocalizationProvider dateAdapter={AdapterDayjs}>
-                <DatePicker
-                  format="DD/MM/YYYY"
-                  value={newMemberDob ? dayjs(newMemberDob) : null}
-                  onChange={(value) => onChangeMemberDob(value ? value.format("YYYY-MM-DD") : "")}
-                  slotProps={{
-                    textField: {
-                      size: "small",
-                      fullWidth: true,
-                      className: "mui-dob-field",
-                    },
-                    popper: {
-                      placement: "bottom-start",
-                    },
-                  }}
-                />
-              </LocalizationProvider>
+              <input
+                className="text-input"
+                type="date"
+                value={newMemberDob}
+                max={new Date().toISOString().slice(0, 10)}
+                onChange={(e) => onChangeMemberDob(e.target.value)}
+              />
             </label>
             <small className="muted-copy">Helps with age-specific reference ranges in analysis.</small>
             <div className="study-step-actions">
@@ -560,10 +613,15 @@ export default function DashboardPage() {
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [chatSessionId, setChatSessionId] = useState(() => createChatMessageId("session"));
+  const chatSessionRef = useRef(chatSessionId);
+  useEffect(() => {
+    chatSessionRef.current = chatSessionId;
+  }, [chatSessionId]);
   const [activeAnalysisId, setActiveAnalysisId] = useState<string | null>(null);
   const [showAssistantPrompts, setShowAssistantPrompts] = useState(true);
   const [chatError, setChatError] = useState<string | null>(null);
-  const [isChatPending, startChatTransition] = useTransition();
+  const [isSending, setIsSending] = useState(false);
+  const sendingRef = useRef(false);
   const [selectedBodySystem, setSelectedBodySystem] = useState<string>("all");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [selectedTest, setSelectedTest] = useState<string>("");
@@ -1086,10 +1144,14 @@ export default function DashboardPage() {
       isLoading: true,
     };
 
-    const existingThread = chatHistory.filter(
-      (message) => !message.isLoading && (message.role === "user" || message.role === "assistant"),
-    );
-    setChatHistory([...existingThread, userMessage, loadingMessage]);
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    setIsSending(true);
+    const sessionAtSend = chatSessionRef.current;
+    const isThreadMessage = (message: ChatMessage) =>
+      !message.isLoading && (message.role === "user" || message.role === "assistant");
+    const existingThread = chatHistory.filter(isThreadMessage);
+    setChatHistory((prev) => [...prev.filter(isThreadMessage), userMessage, loadingMessage]);
 
     const startedAt = Date.now();
     try {
@@ -1114,6 +1176,7 @@ export default function DashboardPage() {
         await sleep(MIN_CHAT_LOADING_MS - elapsed);
       }
 
+      if (chatSessionRef.current !== sessionAtSend) return;
       setChatHistory((prev) => [
         ...prev.filter((message) => !message.isLoading),
         {
@@ -1131,6 +1194,7 @@ export default function DashboardPage() {
 
       const msg = err instanceof Error ? err.message : "Unknown chat error.";
       const normalizedMsg = msg.replace(/^error:\s*/i, "").replace(/\.+\s*$/, "");
+      if (chatSessionRef.current !== sessionAtSend) return;
       setChatError(msg);
       setChatHistory((prev) => [
         ...prev.filter((message) => !message.isLoading),
@@ -1141,6 +1205,9 @@ export default function DashboardPage() {
           createdAt: Date.now(),
         },
       ]);
+    } finally {
+      sendingRef.current = false;
+      setIsSending(false);
     }
   }
 
@@ -1150,20 +1217,23 @@ export default function DashboardPage() {
   }
 
   function handleQuickQuestion(q: string) {
-    startChatTransition(() => {
-      void sendAssistantQuestion(q);
-    });
+    void sendAssistantQuestion(q);
   }
 
   async function handleDownloadReport() {
     if (!analysis) return;
     setIsExporting("pdf");
     try {
+      const { generateClinicalPdfReport } = await import("@/lib/pdf");
       const blob = generateClinicalPdfReport(analysis);
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url;
-      a.download = `health-report-${analysis.patient_info.name || "patient"}.pdf`; a.click();
-      URL.revokeObjectURL(url);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `health-report-${analysis.patient_info.name || "patient"}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch { /* graceful */ } finally { setIsExporting(null); }
   }
 
@@ -1179,69 +1249,89 @@ export default function DashboardPage() {
     } catch { /* graceful */ } finally { setIsExporting(null); }
   }
 
-  const records = analysis?.records ?? [];
-  const categoryOf = (record: AnalysisResponse["records"][number]) => canonicalizeCategory(record.Test_Category);
-  const allBodySystems = CANONICAL_CATEGORIES.filter((category) => records.some((record) => categoryOf(record) === category));
-  const filteredBySystem = selectedBodySystem === "all" ? records : records.filter((record) => categoryOf(record) === selectedBodySystem);
-  const allCategories = CANONICAL_CATEGORIES.filter((category) => filteredBySystem.some((record) => categoryOf(record) === category));
-  const filteredByCategory = selectedCategory === "all" ? filteredBySystem : filteredBySystem.filter((record) => categoryOf(record) === selectedCategory);
-  const allTests = Array.from(new Set(filteredByCategory.map((r) => r.Test_Name ?? "").filter(Boolean))).sort();
-  const selectedTestData = selectedTest ? filteredByCategory.filter((r) => r.Test_Name === selectedTest) : [];
-  const sourceReportCount = new Set(
-    records
-      .map((record) => (record.Source_Filename ?? "").trim())
-      .filter((name) => name.length > 0),
-  ).size;
-  const normalCount = records.filter((record) => {
-    const normalized = record.Status?.toLowerCase();
-    return normalized === "normal" || normalized === "negative";
-  }).length;
-  const concerningCount = records.filter((record) => isConcerningStatus(record.Status)).length;
-  const trendByDateMap = new Map<string, { total: number; concerning: number; good: number }>();
-  for (const record of records) {
-    const dateKey = record.Test_Date ?? "Unknown";
-    if (!trendByDateMap.has(dateKey)) {
-      trendByDateMap.set(dateKey, { total: 0, concerning: 0, good: 0 });
+  const derived = useMemo(() => {
+    const records = analysis?.records ?? [];
+    const categoryOf = (record: AnalysisResponse["records"][number]) => canonicalizeCategory(record.Test_Category);
+    const allBodySystems = CANONICAL_CATEGORIES.filter((category) => records.some((record) => categoryOf(record) === category));
+    const filteredBySystem = selectedBodySystem === "all" ? records : records.filter((record) => categoryOf(record) === selectedBodySystem);
+    const allCategories = CANONICAL_CATEGORIES.filter((category) => filteredBySystem.some((record) => categoryOf(record) === category));
+    const filteredByCategory = selectedCategory === "all" ? filteredBySystem : filteredBySystem.filter((record) => categoryOf(record) === selectedCategory);
+    const allTests = Array.from(new Set(filteredByCategory.map((r) => r.Test_Name ?? "").filter(Boolean))).sort();
+    const selectedTestData = selectedTest ? filteredByCategory.filter((r) => r.Test_Name === selectedTest) : [];
+    const sourceReportCount = new Set(
+      records
+        .map((record) => (record.Source_Filename ?? "").trim())
+        .filter((name) => name.length > 0),
+    ).size;
+    const normalCount = records.filter((record) => {
+      const normalized = record.Status?.toLowerCase();
+      return normalized === "normal" || normalized === "negative";
+    }).length;
+    const concerningCount = records.filter((record) => isConcerningStatus(record.Status)).length;
+    const trendByDateMap = new Map<string, { total: number; concerning: number; good: number }>();
+    for (const record of records) {
+      const dateKey = record.Test_Date ?? "Unknown";
+      if (!trendByDateMap.has(dateKey)) {
+        trendByDateMap.set(dateKey, { total: 0, concerning: 0, good: 0 });
+      }
+      const bucket = trendByDateMap.get(dateKey)!;
+      bucket.total += 1;
+      if (isConcerningStatus(record.Status)) bucket.concerning += 1;
+      if ((record.Status ?? "").toLowerCase() === "normal" || (record.Status ?? "").toLowerCase() === "negative") {
+        bucket.good += 1;
+      }
     }
-    const bucket = trendByDateMap.get(dateKey)!;
-    bucket.total += 1;
-    if (isConcerningStatus(record.Status)) bucket.concerning += 1;
-    if ((record.Status ?? "").toLowerCase() === "normal" || (record.Status ?? "").toLowerCase() === "negative") {
-      bucket.good += 1;
-    }
-  }
-  const trendByDate = Array.from(trendByDateMap.entries())
-    .map(([date, values]) => ({ date, ...values }))
-    .sort((a, b) => parseMedicalDate(a.date) - parseMedicalDate(b.date));
-  const reportsIncludedCount = resultStudyReportCount ?? (sourceReportCount > 0 ? sourceReportCount : trendByDate.length);
-  const combinedReportFileNames = analysis?.combined_report_file_names ?? [];
-  const reportTrendRows = combinedReportFileNames.length > 0
-    ? combinedReportFileNames.map((fileName, index) => {
-        const normalizedFileName = normalizeSourceFileName(fileName);
-        const matchedRows = records.filter(
-          (record) => normalizeSourceFileName(record.Source_Filename) === normalizedFileName,
-        );
-        const concerning = matchedRows.filter((row) => isConcerningStatus(row.Status)).length;
-        const good = matchedRows.filter((row) => {
-          const normalized = row.Status?.toLowerCase();
-          return normalized === "normal" || normalized === "negative";
-        }).length;
-        return {
-          id: `${fileName}-${index}`,
-          label: fileName,
-          total: matchedRows.length,
-          concerning,
-          good,
-        };
-      })
-    : trendByDate.map((point) => ({
-        id: point.date,
-        label: point.date,
-        total: point.total,
-        concerning: point.concerning,
-        good: point.good,
-      }));
-  const reportsWithDataCount = analysis?.reports_with_data ?? sourceReportCount;
+    const trendByDate = Array.from(trendByDateMap.entries())
+      .map(([date, values]) => ({ date, ...values }))
+      .sort((a, b) => parseMedicalDate(a.date) - parseMedicalDate(b.date));
+    const reportsIncludedCount = resultStudyReportCount ?? (sourceReportCount > 0 ? sourceReportCount : trendByDate.length);
+    const combinedReportFileNames = analysis?.combined_report_file_names ?? [];
+    const reportTrendRows = combinedReportFileNames.length > 0
+      ? combinedReportFileNames.map((fileName, index) => {
+          const normalizedFileName = normalizeSourceFileName(fileName);
+          const matchedRows = records.filter(
+            (record) => normalizeSourceFileName(record.Source_Filename) === normalizedFileName,
+          );
+          const concerning = matchedRows.filter((row) => isConcerningStatus(row.Status)).length;
+          const good = matchedRows.filter((row) => {
+            const normalized = row.Status?.toLowerCase();
+            return normalized === "normal" || normalized === "negative";
+          }).length;
+          return {
+            id: `${fileName}-${index}`,
+            label: fileName,
+            total: matchedRows.length,
+            concerning,
+            good,
+          };
+        })
+      : trendByDate.map((point) => ({
+          id: point.date,
+          label: point.date,
+          total: point.total,
+          concerning: point.concerning,
+          good: point.good,
+        }));
+    const reportsWithDataCount = analysis?.reports_with_data ?? sourceReportCount;
+    return { records, allBodySystems, filteredBySystem, allCategories, filteredByCategory, allTests, selectedTestData, sourceReportCount, normalCount, concerningCount, trendByDate, reportsIncludedCount, combinedReportFileNames, reportTrendRows, reportsWithDataCount };
+  }, [analysis, selectedBodySystem, selectedCategory, selectedTest, resultStudyReportCount]);
+  const {
+    records,
+    allBodySystems,
+    filteredBySystem,
+    allCategories,
+    filteredByCategory,
+    allTests,
+    selectedTestData,
+    sourceReportCount,
+    normalCount,
+    concerningCount,
+    trendByDate,
+    reportsIncludedCount,
+    combinedReportFileNames,
+    reportTrendRows,
+    reportsWithDataCount,
+  } = derived;
 
   useEffect(() => {
     setSelectedCategory("all");
@@ -1637,7 +1727,7 @@ export default function DashboardPage() {
                       key={prompt}
                       className="assistant-quick-btn"
                       type="button"
-                      disabled={isChatPending || !showAssistantPrompts}
+                      disabled={isSending || !showAssistantPrompts}
                       onClick={() => handleQuickQuestion(prompt)}
                     >
                       {prompt}
@@ -1652,7 +1742,7 @@ export default function DashboardPage() {
                   type="button"
                   className="assistant-clear-chat-btn"
                   onClick={resetChatState}
-                  disabled={isChatPending || (chatHistory.length === 0 && showAssistantPrompts)}
+                  disabled={isSending || (chatHistory.length === 0 && showAssistantPrompts)}
                 >
                   Clear chat
                 </button>
@@ -1699,63 +1789,7 @@ export default function DashboardPage() {
                                 <div className="assistant-chat-markdown">
                                   <ReactMarkdown
                                     remarkPlugins={[remarkGfm]}
-                                    components={{
-                                      p: ({ children }) => (
-                                        <p style={{ margin: "0 0 10px 0", lineHeight: 1.7, color: "#d4b483", fontSize: 14 }}>{children}</p>
-                                      ),
-                                      strong: ({ children }) => (
-                                        <strong style={{ color: "#fef3c7", fontWeight: 600 }}>
-                                          {children}
-                                        </strong>
-                                      ),
-                                      em: ({ children }) => (
-                                        <em style={{ color: "#fbbf24", fontStyle: "italic" }}>
-                                          {children}
-                                        </em>
-                                      ),
-                                      ul: ({ children }) => (
-                                        <ul style={{ margin: "8px 0", paddingLeft: 20, color: "#d4b483" }}>{children}</ul>
-                                      ),
-                                      ol: ({ children }) => (
-                                        <ol style={{ margin: "8px 0", paddingLeft: 20, color: "#d4b483" }}>{children}</ol>
-                                      ),
-                                      li: ({ children }) => (
-                                        <li style={{ margin: "4px 0", fontSize: 14, lineHeight: 1.6 }}>{children}</li>
-                                      ),
-                                      h1: ({ children }) => (
-                                        <h1 style={{ fontSize: 16, fontWeight: 600, color: "#fef3c7", margin: "12px 0 6px" }}>{children}</h1>
-                                      ),
-                                      h2: ({ children }) => (
-                                        <h2 style={{ fontSize: 15, fontWeight: 600, color: "#fef3c7", margin: "10px 0 6px" }}>{children}</h2>
-                                      ),
-                                      h3: ({ children }) => (
-                                        <h3 style={{ fontSize: 14, fontWeight: 600, color: "#fbbf24", margin: "8px 0 4px" }}>{children}</h3>
-                                      ),
-                                      code: ({ children, className }) => {
-                                        const isInline = !className;
-                                        return isInline ? (
-                                          <code style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#fbbf24", background: "#2d1f08", padding: "1px 5px", borderRadius: 4 }}>{children}</code>
-                                        ) : (
-                                          <pre style={{ background: "#1c1917", border: "1px solid #292524", borderRadius: 8, padding: "10px 14px", overflowX: "auto", margin: "8px 0" }}>
-                                            <code style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#d4b483" }}>{children}</code>
-                                          </pre>
-                                        );
-                                      },
-                                      blockquote: ({ children }) => (
-                                        <blockquote style={{ borderLeft: "3px solid #d97706", marginLeft: 0, paddingLeft: 12, color: "#a8a29e", fontStyle: "italic" }}>{children}</blockquote>
-                                      ),
-                                      table: ({ children }) => (
-                                        <div style={{ overflowX: "auto", margin: "8px 0" }}>
-                                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>{children}</table>
-                                        </div>
-                                      ),
-                                      th: ({ children }) => (
-                                        <th style={{ padding: "6px 10px", textAlign: "left", borderBottom: "1px solid #44403c", color: "#fbbf24", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>{children}</th>
-                                      ),
-                                      td: ({ children }) => (
-                                        <td style={{ padding: "6px 10px", borderBottom: "1px solid #292524", color: "#d4b483" }}>{children}</td>
-                                      ),
-                                    }}
+                                    components={MARKDOWN_COMPONENTS}
                                   >
                                     {assistantParsedContent ? assistantParsedContent.body : turn.content}
                                   </ReactMarkdown>
@@ -1764,14 +1798,7 @@ export default function DashboardPage() {
                                   <div className="assistant-chat-citations">
                                     <ReactMarkdown
                                       remarkPlugins={[remarkGfm]}
-                                      components={{
-                                        p: ({ children }) => <p>{children}</p>,
-                                        a: ({ children, href }) => (
-                                          <a href={href || "#"} target="_blank" rel="noopener noreferrer">
-                                            {children}
-                                          </a>
-                                        ),
-                                      }}
+                                      components={CITATION_COMPONENTS}
                                     >
                                       {assistantParsedContent.sources}
                                     </ReactMarkdown>
@@ -1796,20 +1823,18 @@ export default function DashboardPage() {
                   className="assistant-input-row"
                   onSubmit={(e) => {
                     e.preventDefault();
-                    startChatTransition(() => {
-                      void submitChatQuestion();
-                    });
+                    void submitChatQuestion();
                   }}
                 >
                   <input
                     className="text-input"
                     type="text"
                     placeholder="Ask a clinical question about trends, abnormalities, or next actions..."
-                    disabled={isChatPending}
+                    disabled={isSending}
                     value={chatQuestion}
                     onChange={(e) => setChatQuestion(e.target.value)}
                   />
-                  <button className="primary-button" type="submit" disabled={isChatPending || !chatQuestion.trim()}>
+                  <button className="primary-button" type="submit" disabled={isSending || !chatQuestion.trim()}>
                     Send
                   </button>
                 </form>

@@ -2,8 +2,10 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
@@ -25,6 +27,7 @@ import { setAuthTokenProvider } from "./api";
 
 const AUTH_PRESENCE_COOKIE = "mra_auth";
 const AUTH_PRESENCE_MAX_AGE_SECONDS = 60 * 60 * 12;
+const BACKEND_SYNC_TIMEOUT_MS = 5_000;
 
 function cookieFlags(): string {
   const secure = typeof location !== "undefined" && location.protocol === "https:" ? "; Secure" : "";
@@ -116,9 +119,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       });
 
-      setLoading(true);
+      setLoading(false);
 
-      // Sync user to backend PostgreSQL on sign-in
+      const syncAbort = new AbortController();
+      const syncTimeout = window.setTimeout(() => syncAbort.abort(), BACKEND_SYNC_TIMEOUT_MS);
       firebaseUser.getIdToken()
         .then(async (token) => {
           const publicApiBase = getPublicApiBaseUrl();
@@ -137,6 +141,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             {
               method: "POST",
               headers: { Authorization: `Bearer ${token}` },
+              signal: syncAbort.signal,
             },
           );
 
@@ -149,6 +154,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               {
                 method: "POST",
                 headers: { Authorization: `Bearer ${token}` },
+                signal: syncAbort.signal,
               },
             );
           }
@@ -166,17 +172,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const payload = (await response.json()) as { is_admin?: unknown };
           setIsAdmin(Boolean(payload.is_admin));
         })
-        .catch((error: unknown) => {
-          if (!isActive) {
-            return;
-          }
-          console.warn("[Auth] backend sync failed", error);
-          setIsAdmin(false);
+        .catch(() => {
+          if (isActive) setIsAdmin(false);
         })
         .finally(() => {
-          if (isActive) {
-            setLoading(false);
-          }
+          window.clearTimeout(syncTimeout);
         });
     });
 
@@ -186,7 +186,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  async function getToken(forceRefresh = false): Promise<string | null> {
+  const getToken = useCallback(async (forceRefresh = false): Promise<string | null> => {
     if (!user) return null;
     try {
       return await user.getIdToken(forceRefresh);
@@ -196,9 +196,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       throw error;
     }
-  }
+  }, [user]);
 
-  async function signInWithGoogle() {
+  const signInWithGoogle = useCallback(async () => {
     try {
       const credential = await signInWithPopup(auth, googleProvider);
       if (credential.user) {
@@ -211,24 +211,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       throw error;
     }
-  }
+  }, []);
 
-  async function signInWithEmail(email: string, password: string) {
+  const signInWithEmail = useCallback(async (email: string, password: string) => {
     await signInWithEmailAndPassword(auth, email, password);
     setAuthPresenceCookie();
-  }
+  }, []);
 
-  async function registerWithEmail(
-    email: string,
-    password: string,
-    displayName: string
-  ) {
+  const registerWithEmail = useCallback(async (email: string, password: string, displayName: string) => {
     const credential = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(credential.user, { displayName });
     setAuthPresenceCookie();
-  }
+  }, []);
 
-  async function logout() {
+  const logout = useCallback(async () => {
     try {
       await signOut(auth);
     } finally {
@@ -238,24 +234,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         window.sessionStorage.clear();
       }
     }
-  }
+  }, []);
 
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        loading,
-        isAdmin,
-        getToken,
-        signInWithGoogle,
-        signInWithEmail,
-        registerWithEmail,
-        logout,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
+  // A fresh object every render re-fired every effect that listed getToken or logout.
+  const value = useMemo<AuthContextValue>(
+    () => ({ user, loading, isAdmin, getToken, signInWithGoogle, signInWithEmail, registerWithEmail, logout }),
+    [user, loading, isAdmin, getToken, signInWithGoogle, signInWithEmail, registerWithEmail, logout],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthContextValue {
