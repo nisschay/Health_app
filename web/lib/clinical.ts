@@ -1,4 +1,7 @@
 import type { AnalysisConcern, MedicalRecord } from "./api";
+import { parseMedicalDate } from "./medicalDate";
+
+export { parseMedicalDate };
 
 export type SeverityLevel = "critical" | "high" | "low" | "normal";
 
@@ -111,20 +114,6 @@ export type GroupedTestTimeline = {
   latest: TestTimelineEntry;
   timeline: TestTimelineEntry[];
 };
-
-export function parseMedicalDate(value: string | null | undefined): number {
-  if (!value) return Number.MAX_SAFE_INTEGER;
-  const raw = value.trim();
-  const ddmmyyyy = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
-  if (ddmmyyyy) {
-    const day = ddmmyyyy[1]!.padStart(2, "0");
-    const month = ddmmyyyy[2]!.padStart(2, "0");
-    const year = ddmmyyyy[3]!.length === 2 ? `20${ddmmyyyy[3]}` : ddmmyyyy[3]!;
-    return new Date(`${year}-${month}-${day}`).getTime();
-  }
-  const parsed = new Date(raw).getTime();
-  return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
-}
 
 export function groupRecordsByDateAndCategory(records: MedicalRecord[]): DateCategoryGroup[] {
   const valid = records.filter(

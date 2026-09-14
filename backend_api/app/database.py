@@ -174,8 +174,10 @@ def _ensure_self_profile(db: Session, user: User) -> None:
 def upsert_user(db: Session, firebase_uid: str, email: str | None, display_name: str | None) -> User:
     user = db.query(User).filter(User.firebase_uid == firebase_uid).first()
     if user:
-        user.email = email
-        user.display_name = display_name
+        if email is not None:
+            user.email = email
+        if display_name is not None:
+            user.display_name = display_name
         user.last_login = datetime.utcnow()
     else:
         user = User(firebase_uid=firebase_uid, email=email, display_name=display_name)

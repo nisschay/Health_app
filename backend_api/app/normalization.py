@@ -742,35 +742,101 @@ def normalize_test_name(raw: str | None) -> str:
     return _display_name_from_key(key)
 
 
-def _normalize_status(raw: str | None) -> str:
+STATUS_NORMAL = "Normal"
+STATUS_NEGATIVE = "Negative"
+STATUS_NOT_APPLICABLE = "N/A"
+
+# Phrases whose meaning a token scan would invert: "low normal" is in range.
+STATUS_EXACT_PHRASES = {
+    "normal": STATUS_NORMAL,
+    "n": STATUS_NORMAL,
+    "wnl": STATUS_NORMAL,
+    "low normal": STATUS_NORMAL,
+    "high normal": STATUS_NORMAL,
+    "normal low": STATUS_NORMAL,
+    "normal high": STATUS_NORMAL,
+    "h": "High",
+    "hi": "High",
+    "l": "Low",
+    "lo": "Low",
+    "pos": "Positive",
+    "neg": STATUS_NEGATIVE,
+    "na": STATUS_NOT_APPLICABLE,
+    "n/a": STATUS_NOT_APPLICABLE,
+    "not applicable": STATUS_NOT_APPLICABLE,
+    "none": STATUS_NOT_APPLICABLE,
+    "unknown": STATUS_NOT_APPLICABLE,
+}
+
+# Ordered: the first whole-token match wins, so "critical" outranks "high" and
+# "abnormal" is resolved before "normal".
+STATUS_TOKEN_RULES = (
+    (r"critical|panic", "Critical"),
+    (r"abnormal|out\s*of\s*range|outside\s*range|flag(?:ged)?", "Flagged"),
+    (r"insufficien(?:t|cy)|deficien(?:t|cy)", "Insufficient"),
+    (r"borderline|equivocal|indeterminate", "Borderline"),
+    (r"negative|non[-\s]?reactive|not\s+detected|absent", STATUS_NEGATIVE),
+    (r"positive|detected|reactive|present", "Positive"),
+    (r"high|elevated|increased|above\s+\w+", "High"),
+    (r"low|decreased|reduced|below\s+\w+", "Low"),
+    (r"normal|within\s+\w+", STATUS_NORMAL),
+    (r"not\s+applicable|unknown", STATUS_NOT_APPLICABLE),
+)
+
+_STATUS_TOKEN_MATCHERS = tuple(
+    (re.compile(rf"\b(?:{pattern})\b", re.IGNORECASE), status)
+    for pattern, status in STATUS_TOKEN_RULES
+)
+
+CANONICAL_STATUS_VALUES = frozenset(STATUS_EXACT_PHRASES.values()) | frozenset(
+    status for _, status in STATUS_TOKEN_RULES
+)
+
+# Everything that is not reassuring and not unknown warrants a look.
+CONCERNING_STATUS_VALUES = CANONICAL_STATUS_VALUES - {
+    STATUS_NORMAL,
+    STATUS_NEGATIVE,
+    STATUS_NOT_APPLICABLE,
+}
+
+STATUS_HEALTH_WEIGHTS: dict[str, int] = {
+    STATUS_NORMAL: 100,
+    STATUS_NEGATIVE: 100,
+    STATUS_NOT_APPLICABLE: 80,
+    "Borderline": 70,
+    "Low": 60,
+    "Insufficient": 55,
+    "Flagged": 50,
+    "High": 40,
+    "Positive": 30,
+    "Critical": 10,
+}
+
+UNKNOWN_STATUS_HEALTH_WEIGHT = STATUS_HEALTH_WEIGHTS[STATUS_NOT_APPLICABLE]
+
+
+def _status_lookup_key(raw: str) -> str:
+    return re.sub(r"\s+", " ", raw.strip().lower().strip(" \t\r\n.:;,!*†‡()[]"))
+
+
+def normalize_status(raw: str | None) -> str:
+    """Map lab-supplied status text onto one canonical value, never by substring."""
     if raw is None:
-        return "N/A"
+        return STATUS_NOT_APPLICABLE
 
     status = str(raw).strip()
     if not status:
-        return "N/A"
+        return STATUS_NOT_APPLICABLE
 
-    key = status.lower()
-    if key in {"n/a", "na", "not applicable"}:
-        return "N/A"
-    if "critical" in key:
-        return "Critical"
-    if "insufficient" in key:
-        return "Insufficient"
-    if "borderline" in key:
-        return "Borderline"
-    if "positive" in key:
-        return "Positive"
-    if "negative" in key:
-        return "Negative"
-    if "flag" in key:
-        return "Flagged"
-    if "high" in key:
-        return "High"
-    if "low" in key:
-        return "Low"
-    if "normal" in key or "within" in key:
-        return "Normal"
+    key = _status_lookup_key(status)
+    if not key:
+        return STATUS_NOT_APPLICABLE
+    if key in STATUS_EXACT_PHRASES:
+        return STATUS_EXACT_PHRASES[key]
+
+    for matcher, canonical in _STATUS_TOKEN_MATCHERS:
+        if matcher.search(key):
+            return canonical
 
     return _titlecase_fallback(status)
 
@@ -830,15 +896,17 @@ def _row_completeness_score(entry: dict[str, Any]) -> int:
 
 
 def merge_readings_by_date(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    """Collapse alias duplicates of one test, keeping each source file separate."""
+    by_date: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
 
     for finding in findings:
         date_key = str(finding.get("Test_Date") or "N/A").strip() or "N/A"
-        by_date[date_key].append(finding)
+        source_key = str(finding.get("Source_Filename") or "").strip().casefold()
+        by_date[(date_key, source_key)].append(finding)
 
     merged_rows: list[dict[str, Any]] = []
 
-    for date_key, entries in by_date.items():
+    for entries in by_date.values():
         if len(entries) == 1:
             merged_rows.append(dict(entries[0]))
             continue
@@ -858,7 +926,12 @@ def merge_readings_by_date(findings: list[dict[str, Any]]) -> list[dict[str, Any
 
         merged_rows.append(dict(best))
 
-    merged_rows.sort(key=lambda item: _parse_date_sort_value(item.get("Test_Date")))
+    merged_rows.sort(
+        key=lambda item: (
+            _parse_date_sort_value(item.get("Test_Date")),
+            str(item.get("Source_Filename") or ""),
+        )
+    )
     return merged_rows
 
 
@@ -904,7 +977,7 @@ def normalize_record(record: dict[str, Any]) -> dict[str, Any]:
     normalized["Original_Test_Name"] = raw_name_text or None
     normalized["Test_Name"] = normalize_test_name(raw_name_text)
     normalized["Test_Category"] = canonicalize_category(normalized.get("Test_Category"))
-    normalized["Status"] = _normalize_status(normalized.get("Status"))
+    normalized["Status"] = normalize_status(normalized.get("Status"))
 
     existing_aliases = _coerce_aliases(normalized.get("Aliases"))
     normalized["Aliases"] = _unique_strings(existing_aliases + [raw_name_text, normalized.get("Test_Name")])

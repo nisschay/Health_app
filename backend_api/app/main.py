@@ -169,16 +169,20 @@ def _parse_report_date_flexible(value: str | None) -> date | None:
     except ValueError:
         pass
 
-    for sep in ("-", "/"):
+    for sep in ("-", "/", "."):
         parts = raw.split(sep)
-        if len(parts) == 3 and all(part.isdigit() for part in parts):
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            continue
+        if len(parts[0]) == 4:
+            year, month, day = parts
+        else:
             day, month, year = parts
             if len(year) == 2:
                 year = f"20{year}"
-            try:
-                return date(int(year), int(month), int(day))
-            except ValueError:
-                return None
+        try:
+            return date(int(year), int(month), int(day))
+        except ValueError:
+            continue
     return None
 
 
@@ -442,9 +446,6 @@ def save_analysis_to_study(
     analysis_dict = _normalize_analysis_payload(raw_analysis_dict)
     patient_info = analysis_dict.get("patient_info", {})
     report_date = _parse_report_date_flexible(patient_info.get("date"))
-    if report_date is None:
-        # Fallback to today when report date cannot be parsed.
-        report_date = date.today()
 
     source_filenames = payload.source_filenames or ["uploaded-report.pdf"]
     urls = payload.source_file_urls or []
@@ -486,8 +487,15 @@ def save_analysis_to_study(
             # Always scope records per report when list payload exists, including empty slices.
             scoped_analysis["records"] = scoped_records
             scoped_analysis["total_records"] = len(scoped_records)
+            # Insights must describe this report, not the whole upload batch.
+            scoped_analysis.update(service.get_health_insights(scoped_records))
 
         scoped_report_date = _infer_report_date_from_records(scoped_records) or report_date
+        if scoped_report_date is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not read a report date for '{name}'. Set the report date and try again.",
+            )
 
         create_report(
             db=db,

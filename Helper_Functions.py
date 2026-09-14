@@ -1,14 +1,16 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import math
 import re
 import PyPDF2
+from xlsxwriter.utility import xl_col_to_name
 import io
 from collections import Counter
 import json
 import plotly.graph_objs as go
 import google.generativeai as genai
-from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI, TEST_NAME_MAPPING, UNIT_MAPPING, STATUS_MAPPING
+from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI
 try:
     import pytesseract
 except Exception:  # pragma: no cover - optional OCR dependency
@@ -19,17 +21,15 @@ try:
 except Exception:  # pragma: no cover - optional OCR dependency
     convert_from_bytes = None
 
-try:
-    from backend_api.app.normalization import canonicalize_category, normalize_test_name
-except Exception:
-    # Streamlit-only fallback when backend package imports are unavailable.
-    def canonicalize_category(raw):
-        text = str(raw).strip() if raw is not None else ""
-        return text.title() if text else "Other"
-
-    def normalize_test_name(raw):
-        text = str(raw).strip() if raw is not None else ""
-        return text.title() if text else "Unknown Test"
+from backend_api.app.normalization import (
+    CANONICAL_STATUS_VALUES,
+    CONCERNING_STATUS_VALUES,
+    STATUS_HEALTH_WEIGHTS,
+    UNKNOWN_STATUS_HEALTH_WEIGHT,
+    canonicalize_category,
+    normalize_status,
+    normalize_test_name,
+)
 import sys
 import os
 from collections import Counter
@@ -85,16 +85,6 @@ CHAT_MODEL_TIMEOUT_SECONDS = max(5, int(os.getenv("CHAT_MODEL_TIMEOUT_SECONDS", 
 PDF_OCR_FALLBACK_ENABLED = _env_bool("PDF_OCR_FALLBACK_ENABLED", default=True)
 PDF_OCR_MIN_TEXT_CHARS = max(0, int(os.getenv("PDF_OCR_MIN_TEXT_CHARS", "120")))
 PDF_OCR_MAX_PAGES = max(1, int(os.getenv("PDF_OCR_MAX_PAGES", "5")))
-
-CANONICAL_STATUS_VALUES = {
-    "Low",
-    "Normal",
-    "High",
-    "Critical",
-    "Positive",
-    "Negative",
-    "N/A",
-}
 
 CANONICAL_CATEGORY_VALUES = [
     "Haematology",
@@ -525,29 +515,68 @@ def _clean_text_value(value, default: str = "N/A") -> str:
     return text if text else default
 
 
+_RESULT_COMPARATOR_PATTERN = re.compile(r"^\s*(<=|>=|=<|=>|<|>|≤|≥)\s*")
+_RESULT_NUMBER_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+_COMPARATOR_CANONICAL = {
+    "<": "<",
+    "≤": "<=",
+    "<=": "<=",
+    "=<": "<=",
+    ">": ">",
+    "≥": ">=",
+    ">=": ">=",
+    "=>": ">=",
+}
+
+
+def parse_result_numeric(value) -> tuple[float | None, str | None]:
+    """Parse a lab result into (numeric_value, comparator); "< 0.5" -> (0.5, "<")."""
+    if value is None:
+        return None, None
+
+    if isinstance(value, bool):
+        return None, None
+
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return (None, None) if math.isnan(numeric) else (numeric, None)
+
+    text = str(value).strip()
+    if not text:
+        return None, None
+
+    comparator = None
+    comparator_match = _RESULT_COMPARATOR_PATTERN.match(text)
+    if comparator_match:
+        comparator = _COMPARATOR_CANONICAL.get(comparator_match.group(1))
+        text = text[comparator_match.end():]
+
+    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
+
+    number_match = _RESULT_NUMBER_PATTERN.search(text)
+    if not number_match:
+        return None, comparator
+
+    try:
+        numeric = float(number_match.group(0))
+    except (TypeError, ValueError):
+        return None, comparator
+
+    if math.isnan(numeric) or math.isinf(numeric):
+        return None, comparator
+
+    return numeric, comparator
+
+
+def result_series_to_numeric(series) -> "pd.Series":
+    """Vectorised parse_result_numeric for a dataframe column, values only."""
+    return series.map(lambda item: parse_result_numeric(item)[0])
+
+
 def _canonical_status(raw_status) -> str:
-    status_text = _clean_text_value(raw_status, default="N/A")
-    lowered = status_text.lower()
-
-    if lowered in {"positive", "detected", "reactive", "present", "pos"}:
-        return "Positive"
-    if lowered in {"negative", "not detected", "non reactive", "absent", "neg"}:
-        return "Negative"
-    if "critical" in lowered or "panic" in lowered:
-        return "Critical"
-    if "high" in lowered or lowered in {"h", "elevated", "above range", "borderline high"}:
-        return "High"
-    if "low" in lowered or lowered in {"l", "decreased", "below range"}:
-        return "Low"
-    if "normal" in lowered or "within range" in lowered or "within normal" in lowered:
-        return "Normal"
-    if lowered in {"na", "n/a", "not applicable", "none", "unknown"}:
-        return "N/A"
-
-    standardized = str(standardize_value(status_text, STATUS_MAPPING, default_case='title')).strip()
-    if standardized in CANONICAL_STATUS_VALUES:
-        return standardized
-    return "N/A"
+    """Map lab-supplied status text onto one canonical value, or N/A."""
+    status = normalize_status(_clean_text_value(raw_status, default="N/A"))
+    return status if status in CANONICAL_STATUS_VALUES else "N/A"
 
 
 def _normalize_patient_info_payload(patient_info) -> dict:
@@ -1034,7 +1063,7 @@ def create_structured_dataframe(
     all_rows = []
     for idx, test_result in enumerate(test_results):
         raw_category = standardize_value(test_result.get('category', 'N/A'), {}, default_case='title')
-        raw_test_name = standardize_value(test_result.get('test_name', 'UnknownTest'), TEST_NAME_MAPPING, default_case='title')
+        raw_test_name = _clean_text_value(test_result.get('test_name'), default='UnknownTest')
         final_status = classified_statuses[idx] if idx < len(classified_statuses) else _canonical_status(test_result.get('status'))
         row = {
             'Source_Filename': source_filename,
@@ -1048,7 +1077,7 @@ def create_structured_dataframe(
             'Original_Test_Name': test_result.get('test_name', 'UnknownTest'),
             'Test_Name': normalize_test_name(raw_test_name),
             'Result': test_result.get('result', ''),
-            'Unit': standardize_value(test_result.get('unit', ''), UNIT_MAPPING, default_case='original'),
+            'Unit': _clean_text_value(test_result.get('unit'), default=''),
             'Reference_Range': test_result.get('reference_range', ''),
             'Status': final_status,
             'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -1059,7 +1088,7 @@ def create_structured_dataframe(
         return pd.DataFrame(), patient_info_dict
 
     df = pd.DataFrame(all_rows)
-    df['Result_Numeric'] = pd.to_numeric(df['Result'], errors='coerce')
+    df['Result_Numeric'] = result_series_to_numeric(df['Result'])
     # Use the new date parsing function
     df['Test_Date_dt'] = df['Test_Date'].apply(parse_date_dd_mm_yyyy)
     df = df.sort_values(by=['Test_Date_dt', 'Test_Category', 'Test_Name']).reset_index(drop=True)
@@ -1413,7 +1442,7 @@ def generate_test_plot(df_report, selected_test_name, selected_date=None):
         fig = go.Figure()
         test_data_for_plot = test_data_for_plot.sort_values('Test_Date_dt')
         
-        if pd.to_numeric(test_data_for_plot['Result'], errors='coerce').notna().all():
+        if result_series_to_numeric(test_data_for_plot['Result']).notna().all():
             # Format dates for display using DD-MM-YYYY
             test_data_for_plot['Date_Display'] = test_data_for_plot['Test_Date_dt'].apply(format_date_dd_mm_yyyy)
             
@@ -1558,7 +1587,8 @@ def create_enhanced_excel_with_trends(organized_df, ref_range_df, date_lab_cols_
         
         # Title format
         title_format = workbook.add_format({'bold': True, 'font_size': 16, 'align': 'center', 'bg_color': '#4472C4', 'font_color': 'white'})
-        worksheet.merge_range('A1:' + chr(65 + len(organized_df.columns) - 1) + '1', 'Medical Test Results - Organized by Date', title_format)
+        last_column_letter = xl_col_to_name(max(len(organized_df.columns) - 1, 0))
+        worksheet.merge_range(f'A1:{last_column_letter}1', 'Medical Test Results - Organized by Date', title_format)
         
         # Header formats
         date_format = workbook.add_format({'bold': True, 'bg_color': '#E7E6E6', 'border': 1, 'align': 'center', 'font_color': '#2E5C8F'})
@@ -2299,7 +2329,7 @@ def process_normalized_excel_data(df, filename, new_patient_info_list):
     df['Processed_Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     # Fix numeric conversion for Result column
-    df['Result_Numeric'] = pd.to_numeric(df['Result'], errors='coerce')
+    df['Result_Numeric'] = result_series_to_numeric(df['Result'])
     
     # Fix date parsing
     df['Test_Date_dt'] = df['Test_Date'].apply(parse_date_dd_mm_yyyy)
@@ -2418,7 +2448,7 @@ def process_pivoted_excel_data(df, filename, new_patient_info_list):
                 'Reference_Range': 'N/A',  # Not available in pivoted format
                 'Status': 'N/A',  # Not available in pivoted format
                 'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'Result_Numeric': pd.to_numeric(result_value, errors='coerce'),
+                'Result_Numeric': parse_result_numeric(result_value)[0],
                 'Test_Date_dt': parsed_date
             }
             
@@ -2685,7 +2715,7 @@ def process_pivoted_excel_data(df, filename, new_patient_info_list):
                 'Reference_Range': 'N/A',
                 'Status': 'N/A',
                 'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'Result_Numeric': pd.to_numeric(result, errors='coerce'),
+                'Result_Numeric': parse_result_numeric(result)[0],
                 'Test_Date_dt': parse_date_dd_mm_yyyy(date_part)
             }
             
@@ -2766,7 +2796,7 @@ def process_pivoted_excel_data_simple(df, filename, new_patient_info_list):
                 'Reference_Range': 'N/A',
                 'Status': 'N/A',
                 'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'Result_Numeric': pd.to_numeric(value, errors='coerce'),
+                'Result_Numeric': parse_result_numeric(value)[0],
                 'Test_Date_dt': parse_date_dd_mm_yyyy(date_part)
             }
             
@@ -2869,7 +2899,7 @@ def process_excel_pivoted_format(df, filename, new_patient_info_list):
                 'Reference_Range': 'N/A',
                 'Status': 'N/A',
                 'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'Result_Numeric': pd.to_numeric(value, errors='coerce'),
+                'Result_Numeric': parse_result_numeric(value)[0],
                 'Test_Date_dt': parse_date_dd_mm_yyyy(date_part)
             }
             
@@ -3100,7 +3130,7 @@ def process_excel_pivoted_format_fixed(df, filename, new_patient_info_list):
                 'Reference_Range': ref_range,  # Use the reference range from the Excel file
                 'Status': 'N/A',
                 'Processed_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'Result_Numeric': pd.to_numeric(value, errors='coerce'),
+                'Result_Numeric': parse_result_numeric(value)[0],
                 'Test_Date_dt': parse_date_dd_mm_yyyy(date_part)
             }
             
@@ -3148,30 +3178,16 @@ def calculate_health_score(df):
     if df.empty:
         return {'overall_score': 0, 'category_scores': {}, 'concerns': []}
     
-    # Count status distribution
-    status_counts = df['Status'].value_counts().to_dict()
+    df = df.copy()
+    df['Status'] = df['Status'].map(normalize_status)
     total_tests = len(df)
-    
-    # Weights for different statuses
-    status_weights = {
-        'Normal': 100,
-        'N/A': 80,  # Unknown is neutral
-        'Low': 60,
-        'High': 40,
-        'Critical': 10,
-        'Positive': 30,  # For disease markers
-        'Negative': 100  # For disease markers - good
-    }
-    
-    # Calculate weighted score
+
     weighted_sum = 0
-    for status, count in status_counts.items():
-        status_clean = str(status).strip().title()
-        weight = status_weights.get(status_clean, 70)
-        weighted_sum += weight * count
-    
+    for status, count in df['Status'].value_counts().to_dict().items():
+        weighted_sum += STATUS_HEALTH_WEIGHTS.get(status, UNKNOWN_STATUS_HEALTH_WEIGHT) * count
+
     overall_score = int(weighted_sum / total_tests) if total_tests > 0 else 0
-    
+
     # Calculate scores by category
     category_scores = {}
     for category in df['Test_Category'].unique():
@@ -3181,22 +3197,21 @@ def calculate_health_score(df):
         cat_total = len(cat_df)
         if cat_total == 0:
             continue
-        
-        cat_weighted_sum = 0
-        for _, row in cat_df.iterrows():
-            status = str(row.get('Status', 'N/A')).strip().title()
-            weight = status_weights.get(status, 70)
-            cat_weighted_sum += weight
-        
+
+        cat_weighted_sum = sum(
+            STATUS_HEALTH_WEIGHTS.get(status, UNKNOWN_STATUS_HEALTH_WEIGHT)
+            for status in cat_df['Status']
+        )
+
         category_scores[category] = {
             'score': int(cat_weighted_sum / cat_total),
             'total_tests': cat_total,
-            'abnormal_count': len(cat_df[cat_df['Status'].isin(['High', 'Low', 'Critical', 'Positive'])])
+            'abnormal_count': len(cat_df[cat_df['Status'].isin(CONCERNING_STATUS_VALUES)])
         }
-    
+
     # Identify concerns (tests with abnormal values)
     concerns = []
-    abnormal_df = df[df['Status'].isin(['High', 'Low', 'Critical', 'Positive'])]
+    abnormal_df = df[df['Status'].isin(CONCERNING_STATUS_VALUES)]
     for _, row in abnormal_df.iterrows():
         concerns.append({
             'test_name': row.get('Test_Name', 'Unknown'),
@@ -3223,7 +3238,10 @@ def get_body_system_analysis(df):
         return []
     
     body_systems = {}
-    
+
+    df = df.copy()
+    df['Status'] = df['Status'].map(normalize_status)
+
     for category in df['Test_Category'].unique():
         if pd.isna(category) or category == 'N/A':
             continue
@@ -3245,7 +3263,7 @@ def get_body_system_analysis(df):
             body_systems[body_part]['categories'].add(category)
             body_systems[body_part]['total_count'] += len(cat_df)
             
-            abnormal = cat_df[cat_df['Status'].isin(['High', 'Low', 'Critical', 'Positive'])]
+            abnormal = cat_df[cat_df['Status'].isin(CONCERNING_STATUS_VALUES)]
             body_systems[body_part]['abnormal_count'] += len(abnormal)
             
             for _, row in cat_df.iterrows():
@@ -3976,7 +3994,9 @@ def generate_pdf_health_report(df, patient_info, api_key):
         
         for _, row in df.iterrows():
             test_name = str(row.get('Test_Name', row.get('test_name', 'N/A')))[:30]
-            value = str(row.get('Value', row.get('value', 'N/A')))
+            value = str(
+                row.get('Result', row.get('result', row.get('Value', row.get('value', 'N/A'))))
+            )
             unit = str(row.get('Unit', row.get('unit', '')))
             ref_range = str(row.get('Reference_Range', row.get('reference_range', 'N/A')))
             status = str(row.get('Status', row.get('status', 'Normal')))

@@ -267,7 +267,7 @@ if analyze_button:
         if not combined_raw_df.empty:
             # Clean and validate data
             combined_raw_df = combined_raw_df.dropna(subset=['Test_Name', 'Result'], how='all')
-            combined_raw_df['Result_Numeric'] = pd.to_numeric(combined_raw_df['Result'], errors='coerce')
+            combined_raw_df['Result_Numeric'] = result_series_to_numeric(combined_raw_df['Result'])
             combined_raw_df['Test_Date_dt'] = combined_raw_df['Test_Date'].apply(parse_date_dd_mm_yyyy)
             
             # Sort by date and category
