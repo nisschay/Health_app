@@ -43,4 +43,5 @@ style.css
 Medical_Project.py
 requirements-ui.txt
 requirements-dev.txt
+requirements-dev.lock
 .github/
