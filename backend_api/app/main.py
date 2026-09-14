@@ -1,42 +1,42 @@
-import asyncio
 import json
 import logging
-import threading
 from datetime import date
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.concurrency import run_in_threadpool
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from . import jobs
 from .auth import RequestUser, get_request_user
 from .config import settings
 from .database import (
-    count_reports_for_study,
+    ReportFinding,
     create_profile,
-    create_report,
     create_study,
+    dashboard_alert_counts,
     get_analysis_by_id,
     get_db,
+    get_job,
     get_profile_by_id,
     get_study_by_id,
     get_user_analyses,
-    init_db,
     list_dashboard_report_rows,
+    list_findings_for_reports,
     list_profiles_for_owner,
     list_reports_for_study,
     list_studies_for_owner,
     list_studies_for_profile,
+    list_trend_points,
     ping_database,
-    save_analysis,
     study_report_stats,
     upsert_user,
 )
-from .normalization import NORMALIZATION_VERSION, normalize_records
+from .findings import record_from_finding
+from .migrations import run_migrations
+from .saving import EMPTY_INSIGHTS, findings_for_report, normalize_analysis_payload
 from .schemas import (
     AnalysisHistoryItem,
     AnalysisResponse,
@@ -48,15 +48,12 @@ from .schemas import (
     DashboardStudyItem,
     DashboardSummaryResponse,
     ExportPdfRequest,
-    InsightsRequest,
-    InsightsResponse,
+    JobResponse,
     PatientInfo,
     ProfileResponse,
     RequestUserModel,
-    SaveAnalysisRequest,
-    SaveStudyAnalysisRequest,
-    SaveStudyAnalysisResponse,
     StudySummaryResponse,
+    TrendPoint,
     UserProfile,
 )
 from .security import (
@@ -77,13 +74,12 @@ app = FastAPI(
 )
 
 service = MedicalAnalysisService()
-# Raised by the extraction layer when the model provider throttles us.
-UPSTREAM_RATE_LIMIT_PREFIX = "RATE_LIMIT_EXCEEDED:"
 
-# Initialise DB tables on startup
+
 @app.on_event("startup")
 def startup_event() -> None:
-    init_db()
+    run_migrations()
+    jobs.mark_interrupted()
 
 
 app.add_middleware(BodySizeLimitMiddleware)
@@ -127,16 +123,28 @@ def sync_user(
 ) -> UserProfile:
     """Called after Firebase sign-in to upsert the user in PostgreSQL."""
     row = upsert_user(db, user.user_id, user.email, display_name)
-    return UserProfile(
-        firebase_uid=row.firebase_uid,
-        email=row.email,
-        display_name=row.display_name,
-    )
+    return UserProfile(firebase_uid=row.firebase_uid, email=row.email, display_name=row.display_name)
 
 
 def _current_account_owner(user: RequestUser, db: Session):
-    # Keep user row fresh and ensure default self profile exists.
     return upsert_user(db, user.user_id, user.email, None)
+
+
+def _owned_profile(db: Session, owner, profile_id: UUID):
+    profile = get_profile_by_id(db, profile_id)
+    if not profile or profile.account_owner_id != owner.id:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+    return profile
+
+
+def _owned_study(db: Session, owner, study_id: UUID):
+    study = get_study_by_id(db, study_id)
+    if not study:
+        raise HTTPException(status_code=404, detail="Study not found.")
+    profile = get_profile_by_id(db, study.profile_id)
+    if not profile or profile.account_owner_id != owner.id:
+        raise HTTPException(status_code=403, detail="You do not have access to this study.")
+    return study, profile
 
 
 def _date_to_iso(value: date | None) -> str | None:
@@ -167,194 +175,29 @@ def _parse_iso_date(value: str | None, field_name: str) -> date | None:
         raise HTTPException(status_code=400, detail=f"Invalid {field_name}. Use YYYY-MM-DD.") from exc
 
 
-def _parse_report_date_flexible(value: str | None) -> date | None:
-    if value is None or value.strip() == "":
-        return None
-    raw = value.strip()
-    try:
-        return date.fromisoformat(raw)
-    except ValueError:
-        pass
-
-    for sep in ("-", "/", "."):
-        parts = raw.split(sep)
-        if len(parts) != 3 or not all(part.isdigit() for part in parts):
-            continue
-        if len(parts[0]) == 4:
-            year, month, day = parts
-        else:
-            day, month, year = parts
-            if len(year) == 2:
-                year = f"20{year}"
-        try:
-            return date(int(year), int(month), int(day))
-        except ValueError:
-            continue
-    return None
-
-
-def _normalize_filename(value: str | None) -> str:
-    if value is None:
-        return ""
-    return Path(value).name.strip().lower()
-
-
-def _extract_source_filename(record: dict[str, Any]) -> str | None:
-    for key in ("Source_Filename", "source_filename", "sourceFileName", "Source Filename"):
-        value = record.get(key)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            return text
-    return None
-
-
-def _slice_records_for_report(
-    rows: list[Any],
-    report_file_name: str | None,
-    *,
-    fallback_to_all: bool,
-) -> list[dict[str, Any]]:
-    valid_rows = [row for row in rows if isinstance(row, dict)]
-    if not valid_rows:
-        return []
-
-    target_name = _normalize_filename(report_file_name)
-    if not target_name:
-        return valid_rows
-
-    matched = [
-        row
-        for row in valid_rows
-        if _normalize_filename(_extract_source_filename(row)) == target_name
-    ]
-    if matched:
-        return matched
-
-    return valid_rows if fallback_to_all else []
-
-
-def _slice_records_for_report_deterministic(
-    rows: list[Any],
-    report_file_name: str | None,
-) -> list[dict[str, Any]]:
-    valid_rows = [row for row in rows if isinstance(row, dict)]
-    if not valid_rows:
-        return []
-
-    target_name = _normalize_filename(report_file_name)
-    if not target_name:
-        return valid_rows
-
-    exact_matches = [
-        row
-        for row in valid_rows
-        if _normalize_filename(_extract_source_filename(row)) == target_name
-    ]
-    if exact_matches:
-        return exact_matches
-
-    target_stem = Path(target_name).stem
-    if target_stem:
-        stem_matches = []
-        for row in valid_rows:
-            source_name = _normalize_filename(_extract_source_filename(row))
-            source_stem = Path(source_name).stem if source_name else ""
-            if source_stem and (source_stem == target_stem or source_stem in target_stem or target_stem in source_stem):
-                stem_matches.append(row)
-        if stem_matches:
-            return stem_matches
-
-    # Legacy fallback: never drop report rows on filename mismatch.
-    return valid_rows
-
-
-def _with_source_filename(rows: list[dict[str, Any]], source_file_name: str) -> list[dict[str, Any]]:
-    enriched: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        next_row = dict(row)
-        if not _extract_source_filename(next_row):
-            next_row["Source_Filename"] = source_file_name
-        enriched.append(next_row)
-    return enriched
-
-
-def _infer_report_date_from_records(rows: list[dict[str, Any]]) -> date | None:
-    for row in rows:
-        raw_date = row.get("Test_Date") or row.get("date")
-        if raw_date is None:
-            continue
-        parsed = _parse_report_date_flexible(str(raw_date))
-        if parsed is not None:
-            return parsed
-    return None
-
-
-def _resolve_report_date(
-    rows: list[dict[str, Any]],
-    fallback: date | None,
-    file_name: str,
-) -> date:
-    """Pick a report date, or refuse. Inventing today's date silently corrupted timelines."""
-    resolved = _infer_report_date_from_records(rows) or fallback
-    if resolved is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not read a report date for '{file_name}'. Set the report date and try again.",
-        )
-    return resolved
-
-
 def _dedupe_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     deduped: list[dict[str, Any]] = []
     for row in rows:
         signature = json.dumps(row, sort_keys=True, default=str)
-        if signature in seen:
-            continue
-        seen.add(signature)
-        deduped.append(row)
+        if signature not in seen:
+            seen.add(signature)
+            deduped.append(row)
     return deduped
 
 
-def _extract_alerts_count(report_row) -> int:
-    try:
-        payload = report_row.analysis_data or {}
-        concerns = payload.get("health_summary", {}).get("concerns", [])
-        if isinstance(concerns, list):
-            return len(concerns)
-    except Exception:
-        return 0
-    return 0
+def _profile_response(row) -> ProfileResponse:
+    return ProfileResponse(
+        id=row.id,
+        account_owner_id=row.account_owner_id,
+        full_name=row.full_name,
+        relationship=row.relationship,
+        date_of_birth=_date_to_iso(row.date_of_birth),
+        created_at=row.created_at.isoformat(),
+    )
 
 
-def _empty_insights() -> dict[str, Any]:
-    return {
-        "health_summary": {"overall_score": 0, "category_scores": {}, "concerns": []},
-        "body_systems": [],
-    }
-
-
-def _normalize_analysis_payload(analysis_payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(analysis_payload)
-    raw_records = normalized.get("records", [])
-    rows = raw_records if isinstance(raw_records, list) else []
-    normalized_records = normalize_records([row for row in rows if isinstance(row, dict)])
-
-    normalized["records"] = normalized_records
-    normalized["total_records"] = len(normalized_records)
-
-    insights = service.get_health_insights(normalized_records) if normalized_records else _empty_insights()
-    normalized["health_summary"] = insights.get("health_summary", _empty_insights()["health_summary"])
-    normalized["body_systems"] = insights.get("body_systems", [])
-
-    return normalized
-
-
-# ── Analysis ───────────────────────────────────────────────────────────────────
+# ── Profiles and studies ───────────────────────────────────────────────────────
 
 @app.get(f"{settings.api_prefix}/studies/profiles", response_model=list[ProfileResponse])
 def list_profiles(
@@ -362,18 +205,7 @@ def list_profiles(
     db: Session = Depends(get_db),
 ) -> list[ProfileResponse]:
     owner = _current_account_owner(user, db)
-    rows = list_profiles_for_owner(db, owner.id)
-    return [
-        ProfileResponse(
-            id=row.id,
-            account_owner_id=row.account_owner_id,
-            full_name=row.full_name,
-            relationship=row.relationship,
-            date_of_birth=_date_to_iso(row.date_of_birth),
-            created_at=row.created_at.isoformat(),
-        )
-        for row in rows
-    ]
+    return [_profile_response(row) for row in list_profiles_for_owner(db, owner.id)]
 
 
 @app.post(f"{settings.api_prefix}/studies/profiles", response_model=ProfileResponse)
@@ -390,14 +222,7 @@ def create_profile_endpoint(
         relationship=payload.relationship.strip(),
         date_of_birth=_parse_iso_date(payload.date_of_birth, "date_of_birth"),
     )
-    return ProfileResponse(
-        id=row.id,
-        account_owner_id=row.account_owner_id,
-        full_name=row.full_name,
-        relationship=row.relationship,
-        date_of_birth=_date_to_iso(row.date_of_birth),
-        created_at=row.created_at.isoformat(),
-    )
+    return _profile_response(row)
 
 
 @app.get(
@@ -410,13 +235,38 @@ def list_profile_studies(
     db: Session = Depends(get_db),
 ) -> list[StudySummaryResponse]:
     owner = _current_account_owner(user, db)
-    profile = get_profile_by_id(db, profile_id)
-    if not profile or profile.account_owner_id != owner.id:
-        raise HTTPException(status_code=404, detail="Profile not found.")
-
+    _owned_profile(db, owner, profile_id)
     rows = list_studies_for_profile(db, profile_id)
     stats = study_report_stats(db, [row.id for row in rows])
     return [_study_summary(row, stats.get(row.id, (0, None, None))) for row in rows]
+
+
+@app.get(f"{settings.api_prefix}/studies/profiles/{{profile_id}}/trends", response_model=list[TrendPoint])
+def profile_trend(
+    profile_id: UUID,
+    test: str = Query(min_length=1),
+    user: RequestUser = Depends(get_request_user),
+    db: Session = Depends(get_db),
+) -> list[TrendPoint]:
+    """Every reading of one canonical test for one person: a single indexed query."""
+    owner = _current_account_owner(user, db)
+    _owned_profile(db, owner, profile_id)
+    return [
+        TrendPoint(
+            report_id=f.report_id,
+            test_date=_date_to_iso(f.test_date),
+            result_text=f.result_text,
+            value_numeric=f.value_numeric,
+            comparator=f.comparator,
+            unit=f.unit,
+            reference_range=f.reference_range,
+            ref_low=f.ref_low,
+            ref_high=f.ref_high,
+            status=f.status,
+            source_filename=f.source_filename,
+        )
+        for f in list_trend_points(db, profile_id, test)
+    ]
 
 
 @app.post(f"{settings.api_prefix}/studies", response_model=StudySummaryResponse)
@@ -426,10 +276,7 @@ def create_study_endpoint(
     db: Session = Depends(get_db),
 ) -> StudySummaryResponse:
     owner = _current_account_owner(user, db)
-    profile = get_profile_by_id(db, payload.profile_id)
-    if not profile or profile.account_owner_id != owner.id:
-        raise HTTPException(status_code=404, detail="Profile not found.")
-
+    _owned_profile(db, owner, payload.profile_id)
     try:
         row = create_study(
             db=db,
@@ -442,157 +289,51 @@ def create_study_endpoint(
         if "uq_studies_profile_name" in str(exc):
             raise HTTPException(status_code=409, detail="A study with this name already exists for this profile.") from exc
         raise
-
     return _study_summary(row, study_report_stats(db, [row.id]).get(row.id, (0, None, None)))
 
 
-@app.post(
-    f"{settings.api_prefix}/studies/{{study_id}}/reports/save-analysis",
-    response_model=SaveStudyAnalysisResponse,
-)
-def save_analysis_to_study(
-    study_id: UUID,
-    payload: SaveStudyAnalysisRequest,
-    user: RequestUser = Depends(get_request_user),
-    db: Session = Depends(get_db),
-) -> SaveStudyAnalysisResponse:
-    owner = _current_account_owner(user, db)
-    study = get_study_by_id(db, study_id)
-    if not study:
-        raise HTTPException(status_code=404, detail="Study not found.")
-
-    profile = get_profile_by_id(db, study.profile_id)
-    if not profile or profile.account_owner_id != owner.id:
-        raise HTTPException(status_code=403, detail="You do not have access to this study.")
-
-    raw_analysis_dict = payload.analysis.model_dump()
-    analysis_dict = _normalize_analysis_payload(raw_analysis_dict)
-    patient_info = analysis_dict.get("patient_info", {})
-    report_date = _parse_report_date_flexible(patient_info.get("date"))
-
-    source_filenames = payload.source_filenames or ["uploaded-report.pdf"]
-    urls = payload.source_file_urls or []
-    raw_analysis_records = raw_analysis_dict.get("records", []) if isinstance(raw_analysis_dict, dict) else []
-    normalized_analysis_records = analysis_dict.get("records", []) if isinstance(analysis_dict, dict) else []
-    if isinstance(raw_analysis_records, list):
-        analysis_records = raw_analysis_records
-    elif isinstance(normalized_analysis_records, list):
-        analysis_records = normalized_analysis_records
-    else:
-        analysis_records = []
-
-    has_record_sources = isinstance(analysis_records, list) and any(
-        isinstance(row, dict) and _extract_source_filename(row)
-        for row in analysis_records
-    )
-
-    added = 0
-    for idx, name in enumerate(source_filenames):
-        file_url = urls[idx] if idx < len(urls) and urls[idx] else f"uploaded://{name}"
-
-        if isinstance(analysis_records, list) and analysis_records:
-            if has_record_sources:
-                scoped_records = _slice_records_for_report(
-                    analysis_records,
-                    name,
-                    fallback_to_all=len(source_filenames) == 1,
-                )
-            else:
-                scoped_records = [row for row in analysis_records if isinstance(row, dict)]
-        else:
-            scoped_records = []
-
-        scoped_records = _with_source_filename([row for row in scoped_records if isinstance(row, dict)], name)
-        scoped_normalized_records = normalize_records(scoped_records)
-
-        scoped_analysis = dict(raw_analysis_dict)
-        if isinstance(analysis_records, list):
-            # Always scope records per report when list payload exists, including empty slices.
-            scoped_analysis["records"] = scoped_records
-            scoped_analysis["total_records"] = len(scoped_records)
-            # Insights must describe this report, not the whole upload batch.
-            scoped_analysis.update(service.get_health_insights(scoped_records))
-
-        scoped_report_date = _resolve_report_date(scoped_records, report_date, name)
-
-        create_report(
-            db=db,
-            study_id=study_id,
-            file_name=name,
-            file_url=file_url,
-            report_date=scoped_report_date,
-            lab_name=patient_info.get("lab_name"),
-            analysis_data=scoped_analysis,
-            normalized_records=scoped_normalized_records,
-            is_normalized=True,
-            normalization_version=NORMALIZATION_VERSION,
-        )
-        added += 1
-
-    total_reports = count_reports_for_study(db, study_id)
-    refreshed = get_study_by_id(db, study_id)
-    return SaveStudyAnalysisResponse(
-        study_id=study_id,
-        added_reports=added,
-        total_reports=total_reports,
-        study_name=refreshed.name if refreshed else study.name,
-    )
-
-
-@app.get(
-    f"{settings.api_prefix}/studies/dashboard",
-    response_model=DashboardSummaryResponse,
-)
+@app.get(f"{settings.api_prefix}/studies/dashboard", response_model=DashboardSummaryResponse)
 def studies_dashboard_summary(
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
 ) -> DashboardSummaryResponse:
+    """Four queries regardless of how many studies or reports the owner has."""
     owner = _current_account_owner(user, db)
     profile_rows = list_profiles_for_owner(db, owner.id)
     studies_by_profile: dict[UUID, list] = {}
     for study in list_studies_for_owner(db, owner.id):
         studies_by_profile.setdefault(study.profile_id, []).append(study)
 
-    # One query for every report the owner has; aggregate per study in memory.
     reports_by_study: dict[UUID, list] = {}
     for row in list_dashboard_report_rows(db, owner.id):
         reports_by_study.setdefault(row.study_id, []).append(row)
+    alerts_by_study = dashboard_alert_counts(db, owner.id)
 
     total_reports = 0
     total_alerts = 0
     groups: list[DashboardProfileGroup] = []
-
     for profile in profile_rows:
         study_items: list[DashboardStudyItem] = []
         for study in studies_by_profile.get(profile.id, []):
             reports = reports_by_study.get(study.id, [])
-            report_count = len(reports)
-            total_reports += report_count
-
-            range_start = reports[0].report_date.isoformat() if reports else None
-            range_end = reports[-1].report_date.isoformat() if reports else None
-
-            lab_values = {(r.lab_name or "").strip() for r in reports if (r.lab_name or "").strip()}
-            consistent_lab_name = next(iter(lab_values)) if len(lab_values) == 1 else None
-
-            alerts_count = sum(_extract_alerts_count(report) for report in reports)
+            total_reports += len(reports)
+            alerts_count = alerts_by_study.get(study.id, 0)
             total_alerts += alerts_count
-
+            lab_values = {(r.lab_name or "").strip() for r in reports if (r.lab_name or "").strip()}
             study_items.append(
                 DashboardStudyItem(
                     id=study.id,
                     name=study.name,
                     description=study.description,
-                    report_count=report_count,
-                    range_start=range_start,
-                    range_end=range_end,
-                    consistent_lab_name=consistent_lab_name,
+                    report_count=len(reports),
+                    range_start=_date_to_iso(reports[0].report_date) if reports else None,
+                    range_end=_date_to_iso(reports[-1].report_date) if reports else None,
+                    consistent_lab_name=next(iter(lab_values)) if len(lab_values) == 1 else None,
                     has_alerts=alerts_count > 0,
                     alerts_count=alerts_count,
                     last_updated=study.updated_at.isoformat(),
                 )
             )
-
         groups.append(
             DashboardProfileGroup(
                 profile_id=profile.id,
@@ -610,231 +351,100 @@ def studies_dashboard_summary(
     )
 
 
-@app.get(
-    f"{settings.api_prefix}/studies/{{study_id}}/combined-report",
-    response_model=AnalysisResponse,
-)
+@app.get(f"{settings.api_prefix}/studies/{{study_id}}/combined-report", response_model=AnalysisResponse)
 def get_combined_study_report(
     study_id: UUID,
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
 ) -> AnalysisResponse:
     owner = _current_account_owner(user, db)
-    study = get_study_by_id(db, study_id)
-    if not study:
-        raise HTTPException(status_code=404, detail="Study not found.")
-
-    profile = get_profile_by_id(db, study.profile_id)
-    if not profile or profile.account_owner_id != owner.id:
-        raise HTTPException(status_code=403, detail="You do not have access to this study.")
-
+    study, profile = _owned_study(db, owner, study_id)
     reports = list_reports_for_study(db, study_id)
     if not reports:
         raise HTTPException(status_code=404, detail="No reports found for this study.")
 
-    report_file_names = [report.file_name for report in reports]
-    combined_records: list[dict[str, Any]] = []
-    reports_with_data = 0
-    requires_read_path_normalization = False
-    latest_payload: dict[str, Any] = {}
-
+    findings: list[ReportFinding] = list_findings_for_reports(db, [report.id for report in reports])
+    covered = {finding.report_id for finding in findings}
     for report in reports:
-        payload = report.analysis_data or {}
-        if isinstance(payload, dict) and payload:
-            latest_payload = payload
+        if report.id not in covered:
+            findings.extend(findings_for_report(db, report, profile.id))
+    if len(covered) < len(reports):
+        db.commit()
 
-        report_rows: list[dict[str, Any]] = []
-        if (
-            getattr(report, "is_normalized", False)
-            and getattr(report, "normalization_version", None) == NORMALIZATION_VERSION
-            and isinstance(getattr(report, "normalized_records", None), list)
-        ):
-            report_rows = [row for row in report.normalized_records if isinstance(row, dict)]
-        else:
-            raw_rows = payload.get("records", []) if isinstance(payload, dict) else []
-            if isinstance(raw_rows, list):
-                report_rows = _slice_records_for_report_deterministic(raw_rows, report.file_name)
-            if report_rows:
-                report_rows = normalize_records(report_rows)
-                requires_read_path_normalization = True
-
-        report_rows = _with_source_filename(report_rows, report.file_name)
-        if report_rows:
-            reports_with_data += 1
-        combined_records.extend(report_rows)
-
-    combined_records = _dedupe_records(combined_records)
-    if requires_read_path_normalization:
-        combined_records = normalize_records(combined_records)
-
-    insights = service.get_health_insights(records=combined_records) if combined_records else _empty_insights()
-
-    payload_patient_info = latest_payload.get("patient_info", {}) if isinstance(latest_payload, dict) else {}
-    if not isinstance(payload_patient_info, dict):
-        payload_patient_info = {}
-
-    first_report = reports[0] if reports else None
-    resolved_patient_info = PatientInfo(
-        name=str(payload_patient_info.get("name") or profile.full_name or "N/A"),
-        age=str(payload_patient_info.get("age") or "N/A"),
-        gender=str(payload_patient_info.get("gender") or "N/A"),
-        patient_id=str(payload_patient_info.get("patient_id") or user.user_id or "N/A"),
-        date=str(payload_patient_info.get("date") or (reports[-1].report_date.isoformat() if reports and reports[-1].report_date else "N/A")),
-        lab_name=str(payload_patient_info.get("lab_name") or (first_report.lab_name if first_report else None) or "N/A"),
-    )
+    records = _dedupe_records([record_from_finding(finding) for finding in findings])
+    insights = service.get_health_insights(records) if records else EMPTY_INSIGHTS
+    latest = next((r.analysis_data for r in reversed(reports) if isinstance(r.analysis_data, dict) and r.analysis_data), {})
+    info = latest.get("patient_info") if isinstance(latest.get("patient_info"), dict) else {}
 
     return AnalysisResponse(
-        user=RequestUserModel(
-            user_id=user.user_id,
-            email=user.email,
+        user=RequestUserModel(user_id=user.user_id, email=user.email),
+        patient_info=PatientInfo(
+            name=str(info.get("name") or profile.full_name),
+            age=str(info.get("age") or "N/A"),
+            gender=str(info.get("gender") or "N/A"),
+            patient_id=str(info.get("patient_id") or user.user_id),
+            date=str(info.get("date") or reports[-1].report_date.isoformat()),
+            lab_name=str(info.get("lab_name") or reports[0].lab_name or "N/A"),
         ),
-        patient_info=resolved_patient_info,
-        total_records=len(combined_records),
-        records=combined_records,
-        health_summary=insights.get("health_summary", {"overall_score": 0, "category_scores": {}, "concerns": []}),
-        body_systems=insights.get("body_systems", []),
+        total_records=len(records),
+        records=records,
+        health_summary=insights["health_summary"],
+        body_systems=insights["body_systems"],
         raw_texts=[],
-        combined_report_file_names=report_file_names,
-        reports_with_data=reports_with_data,
-    )
-
-@app.post(f"{settings.api_prefix}/reports/analyze", response_model=AnalysisResponse)
-async def analyze_reports(
-    pdf_files: list[UploadFile] | None = File(default=None),
-    existing_data: UploadFile | None = File(default=None),
-    include_raw_texts: bool = Form(default=False),
-    user: RequestUser = Depends(get_request_user),
-) -> AnalysisResponse:
-    rate_limiter.check(user.user_id)
-    logger.info("Analyze request: files=%d", len(pdf_files or []))
-
-    pdf_payloads = await read_pdf_uploads(pdf_files)
-    existing_payload = await read_existing_data_upload(existing_data)
-
-    try:
-        result = await run_in_threadpool(
-            service.analyze_reports,
-            pdf_files=pdf_payloads,
-            existing_data_file=existing_payload,
-            include_raw_texts=include_raw_texts,
-            user=user,
-        )
-        result = _normalize_analysis_payload(result)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        code, message = _analysis_error(exc)
-        raise HTTPException(status_code=code, detail=message) from exc
-
-    logger.info("Analyze complete: records=%d", result.get("total_records", 0))
-
-    return AnalysisResponse(**result)
-
-
-def _analysis_error(exc: Exception) -> tuple[int, str]:
-    """Classify an analysis failure once for both the HTTP and SSE channels."""
-    if isinstance(exc, RuntimeError) and str(exc).startswith(UPSTREAM_RATE_LIMIT_PREFIX):
-        return 429, "The report reader is rate limited right now. Please retry shortly."
-    if isinstance(exc, ValueError):
-        return 400, "Could not read the uploaded reports."
-    return 500, internal_error(exc, "Analysis").detail
-
-
-@app.post(f"{settings.api_prefix}/reports/analyze/stream")
-async def analyze_reports_stream(
-    pdf_files: list[UploadFile] | None = File(default=None),
-    existing_data: UploadFile | None = File(default=None),
-    include_raw_texts: bool = Form(default=False),
-    user: RequestUser = Depends(get_request_user),
-) -> StreamingResponse:
-    rate_limiter.check(user.user_id)
-
-    pdf_payloads = await read_pdf_uploads(pdf_files)
-    existing_payload = await read_existing_data_upload(existing_data)
-
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-    def emit(event: dict[str, Any]) -> None:
-        loop.call_soon_threadsafe(queue.put_nowait, event)
-
-    def worker() -> None:
-        try:
-            emit({"type": "stage", "step": "validating", "status": "active"})
-            if not pdf_payloads and not existing_payload:
-                raise ValueError("At least one PDF or an existing data file is required.")
-            emit({"type": "stage", "step": "validating", "status": "complete"})
-
-            emit({"type": "stage", "step": "uploading", "status": "active"})
-            emit({"type": "stage", "step": "uploading", "status": "complete"})
-
-            emit({"type": "stage", "step": "processing", "status": "active"})
-            result = service.analyze_reports(
-                pdf_files=pdf_payloads,
-                existing_data_file=existing_payload,
-                include_raw_texts=include_raw_texts,
-                user=user,
-                progress_callback=emit,
-            )
-            result = _normalize_analysis_payload(result)
-            emit({"type": "stage", "step": "processing", "status": "complete"})
-
-            emit({"type": "stage", "step": "saving", "status": "active"})
-            emit({"type": "stage", "step": "saving", "status": "complete"})
-            emit({"type": "done", "result": result})
-        except Exception as exc:
-            code, message = _analysis_error(exc)
-            emit({"type": "error", "status": code, "message": message})
-
-    threading.Thread(target=worker, daemon=True).start()
-
-    async def event_stream():
-        while True:
-            event = await queue.get()
-            yield f"data: {json.dumps(event)}\n\n"
-            await asyncio.sleep(0)
-            if event.get("type") in {"done", "error"}:
-                break
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        combined_report_file_names=[report.file_name for report in reports],
+        reports_with_data=len({finding.report_id for finding in findings}),
     )
 
 
-@app.post(f"{settings.api_prefix}/reports/save", response_model=AnalysisHistoryItem)
-def save_report_analysis(
-    payload: SaveAnalysisRequest,
+# ── Jobs ───────────────────────────────────────────────────────────────────────
+
+def _job_response(job) -> JobResponse:
+    return JobResponse(
+        id=job.id,
+        status=job.status,
+        progress=job.progress,
+        error=job.error,
+        study_id=job.study_id,
+        analysis_id=job.analysis_id,
+        source_filenames=list(job.source_filenames or []),
+        created_at=job.created_at.isoformat(),
+        finished_at=job.finished_at.isoformat() if job.finished_at else None,
+    )
+
+
+@app.post(f"{settings.api_prefix}/reports/jobs", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_job(
+    pdf_files: list[UploadFile] | None = File(default=None),
+    existing_data: UploadFile | None = File(default=None),
+    include_raw_texts: bool = Form(default=False),
+    study_id: UUID | None = Form(default=None),
     user: RequestUser = Depends(get_request_user),
     db: Session = Depends(get_db),
-) -> AnalysisHistoryItem:
-    """Save an analysis result to PostgreSQL for the authenticated user."""
+) -> JobResponse:
+    """Accept the upload and return at once; the browser polls the job until it is done."""
+    rate_limiter.check(user.user_id)
+    pdf_payloads = await read_pdf_uploads(pdf_files)
+    existing_payload = await read_existing_data_upload(existing_data)
+    if not pdf_payloads and not existing_payload:
+        raise HTTPException(status_code=400, detail="At least one PDF or an existing data file is required.")
     owner = _current_account_owner(user, db)
+    if study_id is not None:
+        _owned_study(db, owner, study_id)
+    logger.info("Report job accepted: files=%d study=%s", len(pdf_payloads), study_id)
+    return _job_response(jobs.submit(db, owner, service, pdf_payloads, existing_payload, include_raw_texts, study_id))
 
-    analysis_dict = _normalize_analysis_payload(payload.analysis.model_dump())
-    row = save_analysis(
-        db=db,
-        firebase_uid=owner.firebase_uid,
-        patient_info=analysis_dict.get("patient_info", {}),
-        analysis_data=analysis_dict,
-        source_filenames=payload.source_filenames,
-    )
-    return AnalysisHistoryItem(
-        id=row.id,
-        patient_name=row.patient_name,
-        patient_age=row.patient_age,
-        patient_gender=row.patient_gender,
-        lab_name=row.lab_name,
-        report_date=row.report_date,
-        total_records=row.total_records,
-        source_filenames=row.source_filenames.split(",") if row.source_filenames else [],
-        created_at=row.created_at.isoformat(),
-    )
+
+@app.get(f"{settings.api_prefix}/reports/jobs/{{job_id}}", response_model=JobResponse)
+def read_job(
+    job_id: UUID,
+    user: RequestUser = Depends(get_request_user),
+    db: Session = Depends(get_db),
+) -> JobResponse:
+    owner = _current_account_owner(user, db)
+    job = get_job(db, job_id, owner.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return _job_response(job)
 
 
 # ── History ────────────────────────────────────────────────────────────────────
@@ -848,8 +458,6 @@ def list_report_history(
 ) -> list[AnalysisHistoryItem]:
     """Return a page of past analyses for the authenticated user, newest first."""
     owner = _current_account_owner(user, db)
-
-    rows = get_user_analyses(db, owner.firebase_uid, limit=limit, offset=offset)
     return [
         AnalysisHistoryItem(
             id=row.id,
@@ -862,14 +470,11 @@ def list_report_history(
             source_filenames=row.source_filenames.split(",") if row.source_filenames else [],
             created_at=row.created_at.isoformat(),
         )
-        for row in rows
+        for row in get_user_analyses(db, owner.firebase_uid, limit=limit, offset=offset)
     ]
 
 
-@app.get(
-    f"{settings.api_prefix}/reports/history/{{analysis_id}}",
-    response_model=AnalysisResponse,
-)
+@app.get(f"{settings.api_prefix}/reports/history/{{analysis_id}}", response_model=AnalysisResponse)
 def get_report_by_id(
     analysis_id: int,
     user: RequestUser = Depends(get_request_user),
@@ -877,18 +482,16 @@ def get_report_by_id(
 ) -> AnalysisResponse:
     """Return the full AnalysisResponse for a previously saved report."""
     owner = _current_account_owner(user, db)
-
     row = get_analysis_by_id(db, analysis_id, owner.firebase_uid)
     if not row:
         raise HTTPException(status_code=404, detail="Analysis not found.")
-
     data = json.loads(row.analysis_json)
     if "health_summary" not in data:
-        data = _normalize_analysis_payload(data)  # rows saved before insights were stored
+        data = normalize_analysis_payload(data, service)  # rows saved before insights were stored
     return AnalysisResponse(**data)
 
 
-# ── Chat / Insights / Export ───────────────────────────────────────────────────
+# ── Chat / Export ──────────────────────────────────────────────────────────────
 
 @app.post(f"{settings.api_prefix}/reports/chat", response_model=ChatResponse)
 def chat_about_report(
@@ -909,17 +512,6 @@ def chat_about_report(
         return ChatResponse(answer=answer)
     except Exception as exc:
         raise internal_error(exc, "Chat") from exc
-
-
-@app.post(f"{settings.api_prefix}/reports/insights", response_model=InsightsResponse)
-def get_report_insights(
-    payload: InsightsRequest,
-    user: RequestUser = Depends(get_request_user),
-) -> InsightsResponse:
-    result = service.get_health_insights(
-        records=[record.model_dump() for record in payload.records]
-    )
-    return InsightsResponse(**result)
 
 
 @app.post(f"{settings.api_prefix}/reports/export/pdf")
@@ -952,4 +544,3 @@ def export_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="medical-health-report.xlsx"'},
     )
-

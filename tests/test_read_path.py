@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend_api.app import database, main
 from backend_api.app.auth import RequestUser
-from backend_api.app.database import Base, Profile, Report, ReportAnalysis, Study, User
+from backend_api.app.database import Base, Profile, Report, ReportAnalysis, ReportFinding, Study, User
 
 
 @pytest.fixture()
@@ -38,15 +38,21 @@ def _seed(db, studies=2, reports_per_study=2):
         db.add(study)
         db.flush()
         for r in range(reports_per_study):
-            db.add(
-                Report(
-                    study_id=study.id,
-                    file_name=f"r{s}{r}.pdf",
-                    file_url="uploaded://x",
-                    report_date=date(2024, 1 + s, 1 + r),
-                    lab_name="Lab A" if s == 0 else f"Lab {r}",
-                    analysis_data={"health_summary": {"concerns": [{}] * (r + 1)}},
-                )
+            report = Report(
+                study_id=study.id,
+                file_name=f"r{s}{r}.pdf",
+                file_url="uploaded://x",
+                report_date=date(2024, 1 + s, 1 + r),
+                lab_name="Lab A" if s == 0 else f"Lab {r}",
+                analysis_data={},
+            )
+            db.add(report)
+            db.flush()
+            # r + 1 concerning findings and one normal one per report.
+            statuses = ["High"] * (r + 1) + ["Normal"]
+            db.add_all(
+                ReportFinding(report_id=report.id, profile_id=profile.id, canonical_test=f"T{i}", status=status)
+                for i, status in enumerate(statuses)
             )
     db.commit()
     return user
@@ -63,7 +69,7 @@ def _count_statements(engine):
 
 
 def test_dashboard_query_count_does_not_grow_with_studies(engine, db):
-    """Each study used to cost its own report query; the dashboard should be O(1) statements."""
+    """Each study used to cost its own report query, and alerts came from every report's JSON payload."""
     _seed(db, studies=2)
     request_user = RequestUser(user_id="uid-1", email="a@example.com")
 
@@ -76,8 +82,7 @@ def test_dashboard_query_count_does_not_grow_with_studies(engine, db):
         study = Study(profile_id=db.query(Profile).first().id, name=f"study-{s}")
         db.add(study)
         db.flush()
-        db.add(Report(study_id=study.id, file_name="x.pdf", file_url="u", report_date=date(2024, 6, 1),
-                      analysis_data={"health_summary": {"concerns": []}}))
+        db.add(Report(study_id=study.id, file_name="x.pdf", file_url="u", report_date=date(2024, 6, 1), analysis_data={}))
     db.commit()
 
     counter, stop = _count_statements(engine)
@@ -87,7 +92,7 @@ def test_dashboard_query_count_does_not_grow_with_studies(engine, db):
 
     assert large == small, f"{small} statements for 2 studies, {large} for 7"
     assert summary.total_reports == 2 * 2 + 5
-    assert summary.total_alerts == (1 + 2) + (1 + 2) + 5 * 0
+    assert summary.total_alerts == (1 + 2) + (1 + 2), "normal findings and empty studies add nothing"
 
 
 def test_dashboard_values(db):

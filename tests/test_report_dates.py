@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from backend_api.app.main import _parse_report_date_flexible
+from backend_api.app.saving import parse_report_date
 
 
 @pytest.mark.parametrize(
@@ -20,6 +20,6 @@ from backend_api.app.main import _parse_report_date_flexible
         ("32-13-2024", None),
     ],
 )
-def test_parse_report_date_flexible(raw, expected):
-    assert _parse_report_date_flexible(raw) == expected
+def testparse_report_date(raw, expected):
+    assert parse_report_date(raw) == expected
 

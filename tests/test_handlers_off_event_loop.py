@@ -9,9 +9,12 @@ def test_blocking_export_handlers_are_sync_so_fastapi_threads_them():
     assert not inspect.iscoroutinefunction(main.export_pdf)
 
 
-def test_analyze_offloads_its_blocking_work():
-    assert "run_in_threadpool(" in inspect.getsource(main.analyze_reports)
+def test_job_creation_hands_the_work_to_the_pool():
+    """The request only reads the upload; extraction runs in the job pool and the client polls."""
+    source = inspect.getsource(main.create_job)
+    assert "jobs.submit(" in source
+    assert "analyze_reports(" not in source
 
 
-def test_stream_worker_runs_in_its_own_thread():
-    assert "threading.Thread(" in inspect.getsource(main.analyze_reports_stream)
+def test_job_polling_is_sync_so_fastapi_threads_it():
+    assert not inspect.iscoroutinefunction(main.read_job)

@@ -41,7 +41,7 @@ def test_internal_error_hides_the_cause_but_keeps_a_reference():
 
 @pytest.mark.parametrize(
     "endpoint",
-    ["analyze_reports", "analyze_reports_stream", "chat_about_report"],
+    ["create_job", "chat_about_report"],
 )
 def test_every_model_spending_endpoint_is_rate_limited(endpoint):
     """Chat was left unlimited, and it is the endpoint that spends the API key."""

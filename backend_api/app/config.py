@@ -39,6 +39,7 @@ class Settings:
     app_name: str = "Medical Project API"
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY")
     extraction_workers: int = max(1, _as_int(os.getenv("EXTRACTION_WORKERS"), default=4))
+    job_workers: int = max(1, _as_int(os.getenv("JOB_WORKERS"), default=2))
     ocr_fallback_enabled: bool = _as_bool(
         os.getenv("PDF_OCR_FALLBACK_ENABLED"),
         default=True,

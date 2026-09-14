@@ -80,15 +80,6 @@ class ChatResponse(BaseModel):
     answer: str
 
 
-class InsightsRequest(BaseModel):
-    records: list[MedicalRecord]
-
-
-class InsightsResponse(BaseModel):
-    health_summary: dict[str, Any]
-    body_systems: list[dict[str, Any]]
-
-
 class ExportPdfRequest(BaseModel):
     patient_info: PatientInfo
     records: list[MedicalRecord]
@@ -112,17 +103,6 @@ class UserProfile(BaseModel):
     firebase_uid: str
     email: str | None
     display_name: str | None
-
-
-class SaveAnalysisRequest(BaseModel):
-    analysis: AnalysisResponse
-    source_filenames: list[str] = Field(default_factory=list)
-
-
-class MergeAnalysisRequest(BaseModel):
-    """Merge new PDFs into an existing saved analysis and save the result."""
-    existing_analysis_id: int
-    new_analysis: AnalysisResponse
 
 
 # ── Study management schemas ──────────────────────────────────────────────────
@@ -160,19 +140,6 @@ class CreateStudyRequest(BaseModel):
     description: str | None = Field(default=None, max_length=200)
 
 
-class SaveStudyAnalysisRequest(BaseModel):
-    analysis: AnalysisResponse
-    source_filenames: list[str] = Field(default_factory=list)
-    source_file_urls: list[str] = Field(default_factory=list)
-
-
-class SaveStudyAnalysisResponse(BaseModel):
-    study_id: UUID
-    added_reports: int
-    total_reports: int
-    study_name: str
-
-
 class DashboardStudyItem(BaseModel):
     id: UUID
     name: str
@@ -198,3 +165,39 @@ class DashboardSummaryResponse(BaseModel):
     total_alerts: int
     profiles_tracked: int
     profiles: list[DashboardProfileGroup]
+
+
+# ── Jobs and trends ───────────────────────────────────────────────────────────
+
+class JobProgress(BaseModel):
+    stage: str
+    files: dict[str, dict[str, Any]]
+    processed: int
+    total: int
+    eta_seconds: int | None = None
+
+
+class JobResponse(BaseModel):
+    id: UUID
+    status: str
+    progress: JobProgress
+    error: str | None
+    study_id: UUID | None
+    analysis_id: int | None
+    source_filenames: list[str]
+    created_at: str
+    finished_at: str | None
+
+
+class TrendPoint(BaseModel):
+    report_id: UUID
+    test_date: str | None
+    result_text: str | None
+    value_numeric: float | None
+    comparator: str | None
+    unit: str | None
+    reference_range: str | None
+    ref_low: float | None
+    ref_high: float | None
+    status: str
+    source_filename: str | None
