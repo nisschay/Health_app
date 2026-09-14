@@ -1,21 +1,10 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-import re
-import PyPDF2
-import io
-from collections import Counter
-import json
-import plotly.graph_objs as go
-import google.generativeai as genai
-from test_category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI, TEST_NAME_MAPPING, UNIT_MAPPING, STATUS_MAPPING
+from category_mapping import TEST_CATEGORY_TO_BODY_PARTS, BODY_PARTS_TO_EMOJI
 from Helper_Functions import *
 import sys
 import os
-from collections import Counter
 import hashlib
-import concurrent.futures
-from functools import lru_cache
 
 try:
     from backend_api.app.normalization import normalize_dataframe

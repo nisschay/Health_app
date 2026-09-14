@@ -1,4 +1,3 @@
-cat > ~/Medical_Project/.gitignore << 'EOF'
 # =========================================
 # Root Git Ignore (single source of truth)
 # =========================================
@@ -42,12 +41,14 @@ ENV/
 .pytest_cache/
 
 # Local/runtime files
-.env
+.env*
+!.env.example
 *.log
 .run/
 
 # Frontend build artifacts
 node_modules/
+*.tsbuildinfo
 .next/
 web/node_modules/
 web/.next/
@@ -57,7 +58,9 @@ web/.next/
 
 # Secrets
 serviceAccountKey.json
+*service*account*.json
+*firebase-adminsdk*.json
 
 web/.next-dev/
 Medical_Project-Backend/
-EOF
+.DS_Store

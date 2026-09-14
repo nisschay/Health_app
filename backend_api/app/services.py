@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 
@@ -18,11 +19,11 @@ from Helper_Functions import (
     generate_pdf_health_report,
     get_body_system_analysis,
     get_chatbot_response,
+    get_last_extraction_error,
     parse_date_dd_mm_yyyy,
     process_existing_excel_csv,
     result_series_to_numeric,
     smart_consolidate_patient_info,
-    get_last_extraction_error,
 )
 
 from .auth import RequestUser

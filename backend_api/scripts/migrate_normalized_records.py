@@ -10,9 +10,9 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from backend_api.app.database import Report, ReportAnalysis, SessionLocal
-from backend_api.app.normalization import normalize_records
-from backend_api.app.services import MedicalAnalysisService
+from backend_api.app.database import Report, ReportAnalysis, SessionLocal  # noqa: E402
+from backend_api.app.normalization import normalize_records  # noqa: E402
+from backend_api.app.services import MedicalAnalysisService  # noqa: E402
 
 CURRENT_NORMALIZATION_VERSION = 1
 
