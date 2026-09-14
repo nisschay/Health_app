@@ -83,11 +83,11 @@ def _env_bool(var_name: str, default: bool = False) -> bool:
 
 EXTRACTION_MODEL_CANDIDATES = _model_candidates_from_env(
     "GEMINI_EXTRACTION_MODELS",
-    "gemini-3-flash",
+    "gemini-3.8-flash",
 )
 CHAT_MODEL_CANDIDATES = _model_candidates_from_env(
     "GEMINI_CHAT_MODELS",
-    "gemini-3-flash",
+    "gemini-3.8-flash",
 )
 GEMINI_RPM = max(1, int(os.getenv("GEMINI_RPM", "10")))
 EXTRACTION_MAX_CHARS = 120000
