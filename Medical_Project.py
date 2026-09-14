@@ -18,7 +18,6 @@ if script_dir not in sys.path:
     sys.path.append(script_dir)
 
 # Initialize Gemini models globally
-gemini_model_extraction = None
 gemini_model_chat = None
 
 # --- Performance: Caching functions ---
@@ -178,13 +177,14 @@ if analyze_button:
                 if report_text:
                     status_text.info(f"🤖 AI analyzing {uploaded_file.name}...")
                     text_hash = hashlib.md5(report_text.encode()).hexdigest()
-                    gemini_analysis_json = cached_analyze_report(text_hash, report_text, api_key)
-                    
+                    gemini_analysis_json, extraction_error = cached_analyze_report(text_hash, report_text, api_key)
+                    if extraction_error:
+                        st.error(f"{uploaded_file.name}: {extraction_error}")
+
                     if gemini_analysis_json:
                         df_single, patient_info_single = create_structured_dataframe(
                             gemini_analysis_json,
                             uploaded_file.name,
-                            api_key_for_gemini=api_key,
                         )
                         if not df_single.empty:
                             all_dfs.append(df_single)

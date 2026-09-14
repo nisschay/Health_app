@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
@@ -10,6 +12,7 @@ from typing import Any
 import pandas as pd
 
 from Helper_Functions import (
+    EXTRACTION_MAX_CHARS,
     analyze_medical_report_with_gemini,
     calculate_health_score,
     consolidate_patient_info,
@@ -19,7 +22,6 @@ from Helper_Functions import (
     generate_pdf_health_report,
     get_body_system_analysis,
     get_chatbot_response,
-    get_last_extraction_error,
     parse_date_dd_mm_yyyy,
     process_existing_excel_csv,
     result_series_to_numeric,
@@ -28,7 +30,10 @@ from Helper_Functions import (
 
 from .auth import RequestUser
 from .config import settings
+from .database import get_cached_extraction, store_cached_extraction
 from .normalization import normalize_dataframe, normalize_records
+
+logger = logging.getLogger(__name__)
 
 
 def _is_rate_limit_reason(reason: str) -> bool:
@@ -91,6 +96,15 @@ def dataframe_from_records(records: list[dict[str, Any]]) -> pd.DataFrame:
     return df
 
 
+def _cached(operation, *args):
+    """A cache failure must never fail an extraction."""
+    try:
+        return operation(*args)
+    except Exception:
+        logger.warning("Extraction cache unavailable", exc_info=True)
+        return None
+
+
 def _process_single_pdf(
     filename: str,
     payload: bytes,
@@ -109,20 +123,15 @@ def _process_single_pdf(
             "reason": "No extractable text found.",
         }
 
-    gemini_analysis_json = analyze_medical_report_with_gemini(report_text, api_key)
-    if not gemini_analysis_json:
-        reason = get_last_extraction_error() or "Gemini extraction failed"
-        return {
-            "file": filename,
-            "ok": False,
-            "reason": reason,
-        }
+    text_hash = hashlib.sha256(report_text[:EXTRACTION_MAX_CHARS].encode("utf-8", errors="ignore")).hexdigest()
+    payload = _cached(get_cached_extraction, text_hash)
+    if payload is None:
+        payload, error = analyze_medical_report_with_gemini(report_text, api_key)
+        if payload is None:
+            return {"file": filename, "ok": False, "reason": error or "Extraction failed"}
+        _cached(store_cached_extraction, text_hash, payload)
 
-    df_single, patient_info_single = create_structured_dataframe(
-        gemini_analysis_json,
-        filename,
-        api_key_for_gemini=api_key,
-    )
+    df_single, patient_info_single = create_structured_dataframe(payload, filename)
 
     return {
         "file": filename,
@@ -188,22 +197,6 @@ class MedicalAnalysisService:
         raw_texts: list[dict[str, str]] = []
         failed_files: list[str] = []
 
-        queue_mode_active = (
-            settings.enable_batch_ingestion_queue
-            and total_files >= settings.batch_queue_min_files
-        )
-        worker_count = (
-            min(settings.batch_ingestion_workers, max(1, total_files))
-            if queue_mode_active
-            else 1
-        )
-
-        if queue_mode_active:
-            print(
-                "[ANALYZE] Phase C batch worker mode enabled: "
-                f"files={total_files}, workers={worker_count}"
-            )
-
         for filename, _ in pdf_files:
             emit(
                 {
@@ -216,24 +209,15 @@ class MedicalAnalysisService:
                 }
             )
 
-        if worker_count <= 1:
-            results = [
-                _process_single_pdf(filename, payload, api_key, include_raw_texts)
-                for filename, payload in pdf_files
-            ]
-        else:
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                futures = [
-                    executor.submit(
-                        _process_single_pdf,
-                        filename,
-                        payload,
-                        api_key,
-                        include_raw_texts,
-                    )
-                    for filename, payload in pdf_files
-                ]
-                results = [future.result() for future in as_completed(futures)]
+        # Every upload runs in parallel, and each file reports as it finishes
+        # rather than after the whole batch.
+        worker_count = min(settings.extraction_workers, max(1, total_files))
+        executor = ThreadPoolExecutor(max_workers=worker_count)
+        futures = [
+            executor.submit(_process_single_pdf, filename, payload, api_key, include_raw_texts)
+            for filename, payload in pdf_files
+        ]
+        results = (future.result() for future in as_completed(futures))
 
         for result in results:
             filename = str(result.get("file") or "uploaded.pdf")
@@ -293,6 +277,8 @@ class MedicalAnalysisService:
                     "eta_seconds": eta_seconds,
                 }
             )
+
+        executor.shutdown(wait=True)
 
         existing_df = pd.DataFrame()
         existing_patient_info: dict[str, Any] = {}

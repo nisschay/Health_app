@@ -38,18 +38,7 @@ class Settings:
     api_prefix: str = "/api/v1"
     app_name: str = "Medical Project API"
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY")
-    enable_batch_ingestion_queue: bool = _as_bool(
-        os.getenv("ENABLE_BATCH_INGESTION_QUEUE"),
-        default=True,
-    )
-    batch_queue_min_files: int = max(
-        2,
-        _as_int(os.getenv("BATCH_QUEUE_MIN_FILES"), default=10),
-    )
-    batch_ingestion_workers: int = max(
-        1,
-        _as_int(os.getenv("BATCH_INGESTION_WORKERS"), default=4),
-    )
+    extraction_workers: int = max(1, _as_int(os.getenv("EXTRACTION_WORKERS"), default=4))
     ocr_fallback_enabled: bool = _as_bool(
         os.getenv("PDF_OCR_FALLBACK_ENABLED"),
         default=True,

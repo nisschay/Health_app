@@ -51,3 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t health-app-backend .
+      - name: Cold import time inside the image
+        run: |
+          docker run --rm -e DATABASE_URL=sqlite:// -e GEMINI_API_KEY=ci health-app-backend \
+            python -X importtime -c "import main" 2>&1 | tail -1 | awk -F'|' '{printf "import main: %.0f ms\n", $2/1000}'

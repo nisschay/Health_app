@@ -27,11 +27,6 @@ def _payload(test_name, unit="mg/L", result="5.0"):
 
 
 def _single_row(monkeypatch, test_name, unit="mg/L"):
-    # The classifier is a second Gemini call; bypass it so this stays a unit test.
-    monkeypatch.setattr(
-        "Helper_Functions._classify_test_statuses_with_gemini",
-        lambda results, api_key: [],
-    )
     df, _ = create_structured_dataframe(_payload(test_name, unit), "report.pdf")
     assert len(df) == 1
     return df.iloc[0]

@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -707,7 +708,8 @@ async def analyze_reports(
     existing_payload = await read_existing_data_upload(existing_data)
 
     try:
-        result = service.analyze_reports(
+        result = await run_in_threadpool(
+            service.analyze_reports,
             pdf_files=pdf_payloads,
             existing_data_file=existing_payload,
             include_raw_texts=include_raw_texts,
@@ -929,7 +931,7 @@ def export_pdf(
 
 
 @app.post(f"{settings.api_prefix}/reports/export/excel")
-async def export_excel(
+def export_excel(
     payload: ExportPdfRequest,
     user: RequestUser = Depends(get_request_user),
 ) -> StreamingResponse:
