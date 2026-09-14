@@ -1,133 +1,70 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { getDirectApiBaseUrl, getPublicApiBaseUrl } from "@/lib/apiBaseUrl";
 
-const HEALTH_PATH = "/health";
 const POLL_INTERVAL_MS = 5_000;
-const MAX_POLL_DURATION_MS = 120_000;
 const REQUEST_TIMEOUT_MS = 4_000;
 
-function normalizePublicApiUrl(raw?: string): string | null {
-  if (!raw) return null;
+type Health = { status?: string; database?: string };
+type Waking = "backend" | "database" | null;
 
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-
-  const unquoted = (
-    (trimmed.startsWith("\"") && trimmed.endsWith("\""))
-    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  )
-    ? trimmed.slice(1, -1).trim()
-    : trimmed;
-
-  if (!unquoted) return null;
-  return unquoted.replace(/\/$/, "");
+function healthUrl(): string | null {
+  const publicBase = getPublicApiBaseUrl();
+  const base = (publicBase.startsWith("/") ? getDirectApiBaseUrl() : publicBase).replace(/\/$/, "");
+  return base ? `${base}/health` : null;
 }
 
-async function pingHealthEndpoint(url: string): Promise<boolean> {
+async function probe(url: string): Promise<Waking> {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(url, {
-      method: "GET",
-      cache: "no-store",
-      signal: controller.signal,
-      headers: {
-        "Cache-Control": "no-cache",
-      },
-    });
-
-    return response.ok;
+    const response = await fetch(url, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) return "backend";
+    const body = (await response.json()) as Health;
+    return body.database === "ok" ? null : "database";
   } catch {
-    return false;
+    return "backend";
   } finally {
-    window.clearTimeout(timeoutId);
+    window.clearTimeout(timeout);
   }
 }
 
+/** A small, dismissible pill. It never blocks the page; the backend decides when it is ready. */
 export default function BackendWakeupOverlay() {
-  const [showOverlay, setShowOverlay] = useState(false);
-  const [didTimeOut, setDidTimeOut] = useState(false);
-
-  const healthEndpoint = useMemo(() => {
-    const apiBase = normalizePublicApiUrl(process.env.NEXT_PUBLIC_API_URL);
-    if (!apiBase) return null;
-    return `${apiBase}${HEALTH_PATH}`;
-  }, []);
+  const [waking, setWaking] = useState<Waking>(null);
+  const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
-    if (!healthEndpoint) return;
+    const url = healthUrl();
+    if (!url) return;
 
-    let isMounted = true;
-    let isChecking = false;
-    let pollIntervalId: number | null = null;
-    let maxWaitTimeoutId: number | null = null;
+    let active = true;
+    let timer: number | null = null;
 
-    const clearTimers = () => {
-      if (pollIntervalId !== null) {
-        window.clearInterval(pollIntervalId);
-        pollIntervalId = null;
-      }
-      if (maxWaitTimeoutId !== null) {
-        window.clearTimeout(maxWaitTimeoutId);
-        maxWaitTimeoutId = null;
-      }
+    const tick = async () => {
+      const result = await probe(url);
+      if (!active) return;
+      setWaking(result);
+      if (result) timer = window.setTimeout(tick, POLL_INTERVAL_MS);
     };
 
-    const checkHealth = async () => {
-      if (isChecking) return;
-      isChecking = true;
-
-      const isHealthy = await pingHealthEndpoint(healthEndpoint);
-      isChecking = false;
-
-      if (!isMounted) return;
-
-      if (isHealthy) {
-        setShowOverlay(false);
-        setDidTimeOut(false);
-        clearTimers();
-        return;
-      }
-
-      setShowOverlay(true);
-    };
-
-    pollIntervalId = window.setInterval(() => {
-      void checkHealth();
-    }, POLL_INTERVAL_MS);
-
-    maxWaitTimeoutId = window.setTimeout(() => {
-      if (!isMounted) return;
-      clearTimers();
-      setDidTimeOut(true);
-    }, MAX_POLL_DURATION_MS);
-
-    void checkHealth();
-
+    void tick();
     return () => {
-      isMounted = false;
-      clearTimers();
+      active = false;
+      if (timer !== null) window.clearTimeout(timer);
     };
-  }, [healthEndpoint]);
+  }, []);
 
-  if (!showOverlay) return null;
+  if (!waking || dismissed) return null;
 
   return (
-    <div
-      className="backend-wakeup-overlay"
-      role="status"
-      aria-live="polite"
-      aria-label="Checking backend availability"
-    >
-      <div className="backend-wakeup-card">
-        <div className="backend-wakeup-spinner" aria-hidden="true" />
-        <p className="backend-wakeup-title">Backend is waking up, please wait...</p>
-        {didTimeOut && (
-          <p className="backend-wakeup-note">This is taking longer than expected. You can keep this tab open while the backend starts.</p>
-        )}
-      </div>
+    <div className="backend-wakeup-pill" role="status" aria-live="polite">
+      <span className="backend-wakeup-spinner" aria-hidden="true" />
+      <span>{waking === "database" ? "Database is waking up" : "Backend is waking up"}</span>
+      <button type="button" className="backend-wakeup-dismiss" aria-label="Dismiss" onClick={() => setDismissed(true)}>
+        ×
+      </button>
     </div>
   );
 }

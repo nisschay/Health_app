@@ -20,11 +20,6 @@ const API_BASE_URL = (() => {
 const DIRECT_API_BASE_URL = getDirectApiBaseUrl().replace(/\/$/, "");
 const ENABLE_CLIENT_NORMALIZATION_FALLBACK = process.env.NEXT_PUBLIC_CLIENT_NORMALIZATION_FALLBACK === "true";
 
-if (process.env.NODE_ENV === "production") {
-  console.log("[API] Base URL:", API_BASE_URL);
-  console.log("[API] Direct Base URL:", DIRECT_API_BASE_URL);
-}
-
 function shouldRetryDirect(response: Response): boolean {
   if (DIRECT_API_BASE_URL === API_BASE_URL) {
     return false;
@@ -32,11 +27,12 @@ function shouldRetryDirect(response: Response): boolean {
   return response.status === 404 || response.status >= 500;
 }
 
-function redirectToLogin(): never {
-  if (typeof window !== "undefined") {
-    window.location.href = "/login";
+/** The backend rejected the token. Callers refresh once, then sign out; nothing navigates from here. */
+export class AuthError extends Error {
+  constructor(message = "Authentication failed") {
+    super(message);
+    this.name = "AuthError";
   }
-  throw new Error("Auth failed");
 }
 
 function withAuthHeaders(options: RequestInit, token: string): Headers {
@@ -57,8 +53,7 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
   }
 
   if (!token) {
-    console.error("[authFetch] No token available - user may not be logged in");
-    throw new Error("No auth token available");
+    throw new AuthError("No auth token available");
   }
 
   const response = await fetch(url, {
@@ -67,8 +62,7 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
   });
 
   if (response.status === 401) {
-    console.error("[authFetch] 401 received - token may be expired");
-    redirectToLogin();
+    throw new AuthError("Session expired");
   }
 
   return response;
@@ -350,122 +344,83 @@ export async function analyzeReports(
   return normalizeAnalysisPayload(parsed);
 }
 
+const STREAM_IDLE_TIMEOUT_MS = 120_000;
+
 export async function analyzeReportsStream(
   formData: FormData,
   onEvent: (event: AnalyzeStreamEvent) => void,
 ): Promise<AnalysisResponse> {
-  async function sendStream(baseUrl: string): Promise<Response> {
-    return authFetch(`${baseUrl}/api/v1/reports/analyze/stream`, {
-      method: "POST",
-      headers: {
-        Accept: "text/event-stream",
-      },
-      body: formData,
-    });
-  }
+  const baseUrl = API_BASE_URL.startsWith("/") ? DIRECT_API_BASE_URL : API_BASE_URL;
+  const controller = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const armIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => controller.abort(), STREAM_IDLE_TIMEOUT_MS);
+  };
 
-  const streamBases = Array.from(new Set(
-    API_BASE_URL.startsWith("/")
-      ? [DIRECT_API_BASE_URL, API_BASE_URL]
-      : [API_BASE_URL, DIRECT_API_BASE_URL],
-  ));
-
-  let response: Response | null = null;
-  let streamFetchError: unknown = null;
-
-  for (let index = 0; index < streamBases.length; index += 1) {
-    const baseUrl = streamBases[index]!;
-    const isLastAttempt = index === streamBases.length - 1;
-
-    console.log("[STREAM] fetch starting at", new Date().toISOString(), "base:", baseUrl);
-    try {
-      const candidate = await sendStream(baseUrl);
-      console.log("[STREAM] response received, status:", candidate.status);
-      console.log("[STREAM] content-type:", candidate.headers.get("content-type"));
-
-      response = candidate;
-      if (candidate.ok || candidate.status < 500 || isLastAttempt) {
-        break;
-      }
-    } catch (error) {
-      streamFetchError = error;
-      console.error("[STREAM] fetch failed:", error);
-      if (isLastAttempt) {
-        throw error;
-      }
-    }
-  }
-
-  if (!response) {
-    throw streamFetchError instanceof Error
-      ? streamFetchError
-      : new Error("Analysis stream could not be started.");
-  }
+  armIdleTimer();
+  const response = await authFetch(`${baseUrl}/api/v1/reports/analyze/stream`, {
+    method: "POST",
+    headers: { Accept: "text/event-stream" },
+    body: formData,
+    signal: controller.signal,
+  });
 
   if (!response.ok) {
+    if (idleTimer) clearTimeout(idleTimer);
     const parsed = await parseJsonResponse<AnalysisResponse>(response);
     return normalizeAnalysisPayload(parsed);
   }
 
   const reader = response.body?.getReader();
   if (!reader) {
-    console.error("[STREAM] NO READER - response.body is null");
+    if (idleTimer) clearTimeout(idleTimer);
     throw new Error("Stream was not available from the server.");
   }
-  console.log("[STREAM] reader acquired, starting read loop");
 
   const decoder = new TextDecoder();
   let buffer = "";
   let finalResult: AnalysisResponse | null = null;
-  let eventCount = 0;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    console.log("[STREAM] read chunk:", { done, byteLength: value?.length });
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      armIdleTimer();
 
-    if (done) {
-      console.log("[STREAM] stream ended, total events parsed:", eventCount);
-      break;
-    }
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.replace(/\r\n/g, "\n").split("\n\n");
+      buffer = chunks.pop() ?? "";
 
-    buffer += decoder.decode(value, { stream: true });
-    const normalizedBuffer = buffer.replace(/\r\n/g, "\n");
-    const chunks = normalizedBuffer.split("\n\n");
-    buffer = chunks.pop() ?? "";
+      for (const chunk of chunks) {
+        const rawPayload = chunk
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.replace(/^data:\s*/, ""))
+          .join("\n")
+          .trim();
+        if (!rawPayload) continue;
 
-    for (const chunk of chunks) {
-      console.log("[STREAM] raw chunk text:", chunk.slice(0, 200));
+        let event: AnalyzeStreamEvent;
+        try {
+          event = JSON.parse(rawPayload) as AnalyzeStreamEvent;
+        } catch {
+          continue;
+        }
 
-      const dataLines = chunk
-        .split("\n")
-        .filter((line) => line.startsWith("data:"));
-      if (dataLines.length === 0) continue;
-
-      const rawPayload = dataLines
-        .map((line) => line.replace(/^data:\s*/, ""))
-        .join("\n")
-        .trim();
-      if (!rawPayload) continue;
-
-      let event: AnalyzeStreamEvent;
-      try {
-        event = JSON.parse(rawPayload) as AnalyzeStreamEvent;
-      } catch {
-        continue;
-      }
-
-        eventCount += 1;
-        console.log(`[STREAM] event #${eventCount}:`, rawPayload.slice(0, 100));
-
-      onEvent(event);
-
-      if (event.type === "done") {
-        finalResult = event.result;
-      }
-      if (event.type === "error") {
-        throw new Error(event.message || "Analysis failed.");
+        onEvent(event);
+        if (event.type === "done") finalResult = event.result;
+        if (event.type === "error") throw new Error(event.message || "Analysis failed.");
       }
     }
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("The analysis stream went quiet for too long. Please try again.");
+    }
+    throw error;
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+    await reader.cancel().catch(() => undefined);
   }
 
   if (!finalResult) {

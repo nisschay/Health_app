@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import {
+  AuthError,
   fetchStudiesDashboard,
   fetchStudyCombinedReport,
   type AnalysisResponse,
@@ -11,10 +12,7 @@ import {
 } from "@/lib/api";
 
 function shouldRetryWithFreshToken(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return /invalid firebase token|firebase token expired|firebase token revoked|firebase token project mismatch|authentication required|missing bearer token|not authenticated|unauthorized|\b401\b/i.test(
-    error.message,
-  );
+  return error instanceof AuthError;
 }
 
 export default function ProfileReportsPage() {
