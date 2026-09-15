@@ -30,17 +30,10 @@ curl -fsS "${BACKEND_URL}/health" >/dev/null
 echo "Checking frontend root"
 curl -fsS "${FRONTEND_URL}" >/dev/null
 
-echo "Checking analyze endpoint reachability"
-analyze_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${BACKEND_URL}/api/v1/reports/analyze")
-if [[ "${analyze_code}" != "400" && "${analyze_code}" != "401" && "${analyze_code}" != "415" ]]; then
-  echo "Unexpected status from /api/v1/reports/analyze: ${analyze_code}"
-  exit 1
-fi
-
-echo "Checking analyze stream endpoint reachability"
-stream_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${BACKEND_URL}/api/v1/reports/analyze/stream")
-if [[ "${stream_code}" != "400" && "${stream_code}" != "401" && "${stream_code}" != "415" ]]; then
-  echo "Unexpected status from /api/v1/reports/analyze/stream: ${stream_code}"
+echo "Checking job endpoint reachability"
+jobs_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${BACKEND_URL}/api/v1/reports/jobs")
+if [[ "${jobs_code}" != "400" && "${jobs_code}" != "401" && "${jobs_code}" != "415" ]]; then
+  echo "Unexpected status from /api/v1/reports/jobs: ${jobs_code}"
   exit 1
 fi
 

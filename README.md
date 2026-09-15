@@ -162,17 +162,15 @@ Implemented FastAPI route groups under /api/v1:
   - GET /studies/profiles/{profile_id}/studies
   - POST /studies
   - GET /studies/dashboard
-  - POST /studies/{study_id}/reports/save-analysis
   - GET /studies/{study_id}/combined-report
+  - GET /studies/profiles/{profile_id}/trends?test=
 - Report analysis and history
-  - POST /reports/analyze
-  - POST /reports/analyze/stream
-  - POST /reports/save
+  - POST /reports/jobs
+  - GET /reports/jobs/{job_id}
   - GET /reports/history
   - GET /reports/history/{analysis_id}
 - Clinical and export
   - POST /reports/chat
-  - POST /reports/insights
   - POST /reports/export/pdf
   - POST /reports/export/excel
 - Utility
@@ -211,24 +209,28 @@ Main relational entities (PostgreSQL):
 - report_analyses: saved analysis history snapshots.
 - profiles: patient profiles under account owner.
 - studies: logical longitudinal groups under profile.
-- reports: uploaded report instances per study with normalized analysis_data (JSONB).
-- metrics: telemetry table for validation and reliability metrics.
+- reports: uploaded report instances per study with the raw analysis_data (JSONB).
+- report_findings: one row per measured value; trends, dashboard alerts and the
+  combined report read from here.
+- report_jobs: one row per upload being analysed; the browser polls it.
 
 Schema assets:
 
-- backend_api/sql/*.sql, applied in filename order by deploy/migrate_database.sh
-  and recorded in a schema_migrations table.
+- backend_api/migrations/ (Alembic), applied by the API at startup.
 
 ## 11) Ingestion Pipeline
 
 ### 11.1 Upload and orchestration
 
-- Frontend sends multipart uploads to:
-  - POST /api/v1/reports/analyze
-  - POST /api/v1/reports/analyze/stream (SSE progress mode)
-- Streamed status includes stage and per-file events:
-  - stages: validating, uploading, processing, saving
-  - file steps: queued, extracting, parsing, done, failed
+- Frontend posts the multipart upload to POST /api/v1/reports/jobs and gets a
+  job id back at once.
+- A worker pool analyses the files and saves the result server-side, into the
+  chosen study or into history.
+- The browser polls GET /api/v1/reports/jobs/{id}; the job carries per-file
+  progress (queued, extracting, parsing, done, failed) and a stage
+  (processing, saving, done). A refresh resumes the same job.
+- Jobs in flight when the server restarts are marked interrupted with a
+  message asking for a re-upload.
 
 ### 11.2 PDF extraction and LLM parsing
 
@@ -255,8 +257,8 @@ Core implementation:
 Normalization entry points:
 
 - backend_api/app/normalization.py
-- web/lib/normalizeTest.ts
-- backend_api/scripts/migrate_normalized_records.py
+- backend_api/app/findings.py
+- backend_api/scripts/backfill_findings.py
 
 ## 12) Clinical Assistant
 
