@@ -139,3 +139,29 @@ def test_indian_and_western_digit_grouping(text, expected):
 def test_platelets_in_lakh_format_get_the_right_status():
     assert derive_status("2,50,000", "1,50,000 - 4,10,000", "N/A") == "Normal"
     assert derive_status("90,000", "1,50,000 - 4,10,000", "N/A") == "Low"
+
+
+# ── The model's flag against the numbers ─────────────────────────────────────
+
+def test_a_normal_flag_on_a_value_outside_its_range_is_corrected():
+    """The model copies the lab's flag and sometimes misses one."""
+    assert derive_status("212", "< 200 Desirable, 200-239 Borderline", "Normal") == "High"
+    assert derive_status("3.1", "3.5 - 5.1", "Normal") == "Low"
+
+
+def test_a_lab_flag_of_high_is_kept_even_when_the_numbers_look_normal():
+    assert derive_status("5.0", "3.5 - 5.1", "High") == "High"
+
+
+# ── Not results ──────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("name", ["Blood Group", "ABO Group", "Rh Factor", "Rh Type", "Blood Group & Rh"])
+def test_blood_group_and_rh_are_never_flagged(name):
+    """Rh "Positive" counted as an abnormal result and lowered the health score."""
+    rows = normalize_records([_row(name, "Positive", "Positive")])
+    assert rows[0]["Status"] == "N/A"
+
+
+def test_a_positive_infection_test_is_still_flagged():
+    rows = normalize_records([_row("HBsAg", "Reactive", "Positive")])
+    assert rows[0]["Status"] == "Positive"

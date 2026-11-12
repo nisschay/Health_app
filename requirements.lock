@@ -161,7 +161,7 @@ pyjwt==2.14.0
     # via firebase-admin
 pyparsing==3.3.2
     # via httplib2
-pypdf2==3.0.1
+pypdf==7.0.1
     # via -r requirements.txt
 pytesseract==0.3.13
     # via -r requirements.txt

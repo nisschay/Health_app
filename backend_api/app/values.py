@@ -115,20 +115,32 @@ def _canonical_status(raw_status) -> str:
     return status if status in CANONICAL_STATUS_VALUES else "N/A"
 
 
-def derive_status(result, reference_range, reported_status) -> str:
-    """Trust the report's own flag; only compute one from the numbers when it has none."""
-    reported = _canonical_status(reported_status)
-    if reported != STATUS_NOT_APPLICABLE:
-        return reported
-
+def _status_from_numbers(result, reference_range) -> str | None:
     value, _ = parse_result_numeric(result)
     low, high, kind = parse_reference_range(reference_range)
-    if value is not None and kind in {"range", "less_than", "greater_than"}:
-        if low is not None and value < low:
-            return STATUS_LOW
-        if high is not None and value > high:
-            return STATUS_HIGH
-        return STATUS_NORMAL
+    if value is None or kind not in {"range", "less_than", "greater_than"}:
+        return None
+    if low is not None and value < low:
+        return STATUS_LOW
+    if high is not None and value > high:
+        return STATUS_HIGH
+    return STATUS_NORMAL
+
+
+def derive_status(result, reference_range, reported_status) -> str:
+    """The report's own flag, unless it says Normal for a value outside the report's own range.
+
+    The model copies the lab's flag and sometimes misses one. A High or Low flag is kept even
+    when the numbers look normal: labs flag on criteria a single range cannot express.
+    """
+    reported = _canonical_status(reported_status)
+    computed = _status_from_numbers(result, reference_range)
+    if reported == STATUS_NORMAL and computed in (STATUS_HIGH, STATUS_LOW):
+        return computed
+    if reported != STATUS_NOT_APPLICABLE:
+        return reported
+    if computed:
+        return computed
 
     textual = _canonical_status(result)
     if textual in {STATUS_POSITIVE, STATUS_NEGATIVE}:

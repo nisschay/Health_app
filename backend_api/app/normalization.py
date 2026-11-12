@@ -12,7 +12,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # Bump when normalisation output changes shape; the backfill re-normalises older rows.
-NORMALIZATION_VERSION = 3
+NORMALIZATION_VERSION = 4
 
 CANONICAL_CATEGORIES = [
     "Haematology",
@@ -1033,6 +1033,10 @@ def resolve_category(categories: list[str], canonical_name: str | None = None) -
     return ranked[0][0]
 
 
+# Blood group and Rh type describe a person; "Positive" here is not an abnormal result.
+_NOT_A_FINDING = re.compile(r"blood\s*group|\babo\b|\brh\b|rhesus|\brh\s*factor|\brh\s*type", re.IGNORECASE)
+
+
 def normalize_record(record: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(record)
 
@@ -1043,6 +1047,8 @@ def normalize_record(record: dict[str, Any]) -> dict[str, Any]:
     normalized["Test_Name"] = normalize_test_name(raw_name_text)
     normalized["Test_Category"] = canonicalize_category(normalized.get("Test_Category"))
     normalized["Status"] = normalize_status(normalized.get("Status"))
+    if _NOT_A_FINDING.search(raw_name_text):
+        normalized["Status"] = STATUS_NOT_APPLICABLE
 
     existing_aliases = _coerce_aliases(normalized.get("Aliases"))
     normalized["Aliases"] = _unique_strings(existing_aliases + [raw_name_text, normalized.get("Test_Name")])

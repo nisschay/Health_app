@@ -18,11 +18,13 @@ from .database import get_cached_extraction, store_cached_extraction
 from .exports import create_enhanced_excel_with_trends, generate_pdf_health_report
 from .extraction import (
     EXTRACTION_MAX_CHARS,
+    EXTRACTION_VERSION,
     analyze_medical_report_with_gemini,
     create_structured_dataframe,
     extract_text_from_pdf,
 )
 from .insights import calculate_health_score, get_body_system_analysis
+from .llm import EXTRACTION_MODEL_CANDIDATES
 from .normalization import normalize_dataframe, normalize_records
 from .patients import (
     consolidate_patient_info,
@@ -122,7 +124,9 @@ def _process_single_pdf(
             "reason": "No extractable text found.",
         }
 
-    text_hash = hashlib.sha256(report_text[:EXTRACTION_MAX_CHARS].encode("utf-8", errors="ignore")).hexdigest()
+    # The model and extraction version are in the key: a cached answer from an older prompt is not reused.
+    cache_key = f"{EXTRACTION_VERSION}|{','.join(EXTRACTION_MODEL_CANDIDATES)}|{report_text[:EXTRACTION_MAX_CHARS]}"
+    text_hash = hashlib.sha256(cache_key.encode("utf-8", errors="ignore")).hexdigest()
     payload = _cached(get_cached_extraction, text_hash)
     if payload is None:
         payload, error = analyze_medical_report_with_gemini(report_text, api_key)
