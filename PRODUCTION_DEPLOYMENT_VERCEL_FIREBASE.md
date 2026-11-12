@@ -100,8 +100,7 @@ Frontend env values required:
 - [ ] Enforce SSL in connection string
 
 Schema bootstrapping:
-- [ ] Apply every migration in filename order, recorded in `schema_migrations`:
-  - `DATABASE_URL="postgresql://..." ./deploy/migrate_database.sh`
+- [ ] Nothing to run: the API applies its Alembic migrations at startup.
 
 If migrating existing production data:
 - [ ] Export old Postgres

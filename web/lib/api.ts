@@ -68,7 +68,9 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
 
 async function authBackendFetch(path: string, options: RequestInit = {}): Promise<Response> {
   let response = await authFetch(`${API_BASE_URL}${path}`, options);
-  if (shouldRetryDirect(response)) {
+  // Only reads are retried: repeating a POST could start a second upload job.
+  const isRead = (options.method ?? "GET").toUpperCase() === "GET";
+  if (isRead && shouldRetryDirect(response)) {
     response = await authFetch(`${DIRECT_API_BASE_URL}${path}`, options);
   }
   return response;
@@ -164,22 +166,30 @@ export type AnalysisResponse = {
   reports_with_data?: number | null;
 };
 
-export type AnalyzeStageId = "validating" | "uploading" | "processing" | "saving";
+export type JobStatus = "queued" | "running" | "done" | "failed" | "interrupted";
+export type FileStep = "queued" | "extracting" | "parsing" | "done" | "failed";
 
-export type AnalyzeStreamEvent =
-  | { type: "stage"; step: AnalyzeStageId; status: "active" | "complete" }
-  | {
-      type: "file";
-      file: string;
-      step: "queued" | "extracting" | "parsing" | "done" | "failed";
-      percent: number;
-      processed: number;
-      total: number;
-      eta_seconds?: number;
-      error?: string;
-    }
-  | { type: "done"; result: AnalysisResponse }
-  | { type: "error"; status?: number; message: string };
+export type JobProgress = {
+  stage: "processing" | "saving" | "done";
+  files: Record<string, { step: FileStep; percent: number; error?: string }>;
+  processed: number;
+  total: number;
+  eta_seconds?: number | null;
+  /** One entry per file that was skipped while the rest of the upload was saved. */
+  warnings?: string[];
+};
+
+export type ReportJob = {
+  id: string;
+  status: JobStatus;
+  progress: JobProgress;
+  error: string | null;
+  study_id: string | null;
+  analysis_id: number | null;
+  source_filenames: string[];
+  created_at: string;
+  finished_at: string | null;
+};
 
 export type ChatTurn = {
   role: "user" | "assistant";
@@ -211,11 +221,6 @@ export type ClinicalAssistantRequest = {
   reportContext: ClinicalAssistantReportContext;
   history: ChatTurn[];
   message: string;
-};
-
-export type InsightsResponse = {
-  health_summary: HealthSummary;
-  body_systems: BodySystem[];
 };
 
 export type AnalysisHistoryItem = {
@@ -256,13 +261,6 @@ export type StudySummary = {
   range_end: string | null;
   last_updated: string;
   created_at: string;
-};
-
-export type SaveStudyAnalysisResponse = {
-  study_id: string;
-  added_reports: number;
-  total_reports: number;
-  study_name: string;
 };
 
 export type DashboardStudyItem = {
@@ -313,130 +311,89 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function analyzeReports(
-  formData: FormData,
-): Promise<AnalysisResponse> {
-  async function sendAnalyze(baseUrl: string): Promise<Response> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8 * 60 * 1000);
-    return authFetch(`${baseUrl}/api/v1/reports/analyze`, {
-      method: "POST",
-      body: formData,
-      signal: controller.signal,
-    }).catch((error: unknown) => {
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new Error("Analysis timed out after 8 minutes. Please try fewer PDFs at once.");
-      }
-      throw error;
-    }).finally(() => {
-      clearTimeout(timeout);
-    });
-  }
-
-  let response = await sendAnalyze(API_BASE_URL);
-  if (shouldRetryDirect(response)) {
-    response = await sendAnalyze(DIRECT_API_BASE_URL);
-  }
-
-  const parsed = await parseJsonResponse<AnalysisResponse>(response);
-  return parsed;
+export async function startAnalysisJob(formData: FormData): Promise<ReportJob> {
+  const response = await authBackendFetch("/api/v1/reports/jobs", { method: "POST", body: formData });
+  return parseJsonResponse<ReportJob>(response);
 }
 
-const STREAM_IDLE_TIMEOUT_MS = 120_000;
-
-export async function analyzeReportsStream(
-  formData: FormData,
-  onEvent: (event: AnalyzeStreamEvent) => void,
-): Promise<AnalysisResponse> {
-  const baseUrl = API_BASE_URL.startsWith("/") ? DIRECT_API_BASE_URL : API_BASE_URL;
-  const controller = new AbortController();
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const armIdleTimer = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => controller.abort(), STREAM_IDLE_TIMEOUT_MS);
-  };
-
-  armIdleTimer();
-  const response = await authFetch(`${baseUrl}/api/v1/reports/analyze/stream`, {
-    method: "POST",
-    headers: { Accept: "text/event-stream" },
-    body: formData,
-    signal: controller.signal,
-  });
-
-  if (!response.ok) {
-    if (idleTimer) clearTimeout(idleTimer);
-    const parsed = await parseJsonResponse<AnalysisResponse>(response);
-    return parsed;
+/** The job no longer exists for this user (deleted, or another account's id). Polling cannot recover. */
+export class JobNotFoundError extends Error {
+  constructor() {
+    super("This upload could not be found. Please upload the files again.");
+    this.name = "JobNotFoundError";
   }
+}
 
-  const reader = response.body?.getReader();
-  if (!reader) {
-    if (idleTimer) clearTimeout(idleTimer);
-    throw new Error("Stream was not available from the server.");
-  }
+/** A poll that failed for a reason worth retrying: network down, server waking up, or overloaded. */
+class TransientPollError extends Error {}
 
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let finalResult: AnalysisResponse | null = null;
-
+export async function fetchJob(jobId: string, signal?: AbortSignal): Promise<ReportJob> {
+  let response: Response;
   try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      armIdleTimer();
-
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.replace(/\r\n/g, "\n").split("\n\n");
-      buffer = chunks.pop() ?? "";
-
-      for (const chunk of chunks) {
-        const rawPayload = chunk
-          .split("\n")
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.replace(/^data:\s*/, ""))
-          .join("\n")
-          .trim();
-        if (!rawPayload) continue;
-
-        let event: AnalyzeStreamEvent;
-        try {
-          event = JSON.parse(rawPayload) as AnalyzeStreamEvent;
-        } catch {
-          continue;
-        }
-
-        onEvent(event);
-        if (event.type === "done") finalResult = event.result;
-        if (event.type === "error") throw new Error(event.message || "Analysis failed.");
-      }
-    }
+    response = await authBackendFetch(`/api/v1/reports/jobs/${jobId}`, { signal });
   } catch (error) {
-    if (controller.signal.aborted) {
-      throw new Error("The analysis stream went quiet for too long. Please try again.");
-    }
-    throw error;
-  } finally {
-    if (idleTimer) clearTimeout(idleTimer);
-    await reader.cancel().catch(() => undefined);
+    if (error instanceof AuthError || isAbortError(error)) throw error;
+    throw new TransientPollError(error instanceof Error ? error.message : "Network error");
   }
-
-  if (!finalResult) {
-    throw new Error("Analysis stream ended without a final result.");
+  if (response.status === 404 || response.status === 403) throw new JobNotFoundError();
+  if (response.status >= 500 || response.status === 429 || response.status === 408) {
+    throw new TransientPollError(`Server returned ${response.status}`);
   }
-
-  return finalResult;
+  return parseJsonResponse<ReportJob>(response);
 }
 
-export async function fetchInsights(
-  records: unknown[],
-): Promise<InsightsResponse> {
-  const response = await authBackendFetch("/api/v1/reports/insights", {
-    method: "POST",
-    body: JSON.stringify({ records }),
-  });
+export function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
 
-  return parseJsonResponse<InsightsResponse>(response);
+const JOB_POLL_INTERVAL_MS = 2_000;
+const JOB_POLL_MAX_INTERVAL_MS = 15_000;
+// Longer than the server's own stale-job limit (30 min), which settles a lost job as failed first.
+const JOB_POLL_DEADLINE_MS = 40 * 60_000;
+const JOB_SETTLED: JobStatus[] = ["done", "failed", "interrupted"];
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Polls until the job settles. Only the id is needed, so a refreshed tab can pick a job back up.
+ * A failed poll is not a failed job: network blips and a waking server are retried with backoff,
+ * because the job keeps running on the server either way.
+ */
+export async function waitForJob(
+  jobId: string,
+  onProgress: (job: ReportJob) => void,
+  signal?: AbortSignal,
+): Promise<ReportJob> {
+  const deadline = Date.now() + JOB_POLL_DEADLINE_MS;
+  let delay = JOB_POLL_INTERVAL_MS;
+  for (;;) {
+    try {
+      const job = await fetchJob(jobId, signal);
+      onProgress(job);
+      if (JOB_SETTLED.includes(job.status)) return job;
+      delay = JOB_POLL_INTERVAL_MS;
+    } catch (error) {
+      if (!(error instanceof TransientPollError)) throw error;
+      delay = Math.min(delay * 2, JOB_POLL_MAX_INTERVAL_MS);
+    }
+    if (Date.now() + delay > deadline) {
+      throw new Error("Lost contact with the server while it was processing your upload. Check your reports list; it may still have been saved.");
+    }
+    await sleep(delay, signal);
+  }
 }
 
 export async function sendChatMessage(
@@ -547,17 +504,6 @@ export async function fetchReportById(id: number): Promise<AnalysisResponse> {
   return parsed;
 }
 
-export async function saveAnalysis(
-  analysis: AnalysisResponse,
-  sourceFilenames: string[],
-): Promise<AnalysisHistoryItem> {
-  const response = await authBackendFetch("/api/v1/reports/save", {
-    method: "POST",
-    body: JSON.stringify({ analysis, source_filenames: sourceFilenames }),
-  });
-  return parseJsonResponse<AnalysisHistoryItem>(response);
-}
-
 export async function fetchProfiles(): Promise<ProfileItem[]> {
   const response = await authBackendFetch("/api/v1/studies/profiles");
   return parseJsonResponse<ProfileItem[]>(response);
@@ -586,21 +532,6 @@ export async function createStudy(
     body: JSON.stringify(payload),
   });
   return parseJsonResponse<StudySummary>(response);
-}
-
-export async function saveStudyAnalysis(
-  studyId: string,
-  analysis: AnalysisResponse,
-  sourceFilenames: string[],
-): Promise<SaveStudyAnalysisResponse> {
-  const response = await authBackendFetch(`/api/v1/studies/${studyId}/reports/save-analysis`, {
-    method: "POST",
-    body: JSON.stringify({
-      analysis,
-      source_filenames: sourceFilenames,
-    }),
-  });
-  return parseJsonResponse<SaveStudyAnalysisResponse>(response);
 }
 
 export async function fetchStudiesDashboard(): Promise<DashboardSummary> {

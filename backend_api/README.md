@@ -23,30 +23,12 @@ uvicorn backend_api.app.main:app --reload
 
 ## Database Schema (Study Management)
 
-The API now includes additive schema support for three new tables:
+Schema changes are Alembic revisions under `migrations/`; the API upgrades the
+database to head at startup. See `deploy/README.md`.
 
-- `profiles`
-- `studies`
-- `reports`
+## Frontend Contract
 
-Apply migrations in order, each recorded in `schema_migrations`:
-
-```bash
-DATABASE_URL="postgresql://..." ./deploy/migrate_database.sh
-```
-
-Notes:
-
-- Existing tables are preserved (`users`, `report_analyses`).
-- FastAPI startup still calls SQLAlchemy `create_all` for ORM-managed table creation.
-- The SQL migration includes indexes and triggers to keep `studies.updated_at` in sync.
-- The migration currently validates that `users.id` is an integer type before creating `profiles.account_owner_id`.
-- On auth sync, backend user upsert now auto-creates a default `self` profile if one does not exist.
-
-## Planned Frontend Contract
-
-- `POST /api/v1/reports/analyze`
+- `POST /api/v1/reports/jobs`, `GET /api/v1/reports/jobs/{id}`
 - `POST /api/v1/reports/chat`
-- `POST /api/v1/reports/insights`
 - `POST /api/v1/reports/export/pdf`
 - `GET /api/v1/auth/me`

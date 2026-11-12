@@ -31,7 +31,8 @@ Optional limits, with their defaults:
 - `MAX_UPLOAD_FILES` (20), `MAX_UPLOAD_FILE_MB` (10), `MAX_UPLOAD_TOTAL_MB` (25)
 - `RATE_LIMIT_PER_MINUTE` (20)
 - `PDF_OCR_FALLBACK_ENABLED` (true), `PDF_OCR_MAX_PAGES` (5)
-- `GEMINI_EXTRACTION_MODELS`, `GEMINI_CHAT_MODELS` (gemini-3.8-flash), `GEMINI_RPM` (10), `EXTRACTION_WORKERS` (4)
+- `GEMINI_EXTRACTION_MODELS`, `GEMINI_CHAT_MODELS` (gemini-3.8-flash), `GEMINI_RPM` (10), `EXTRACTION_WORKERS` (4), `JOB_WORKERS` (2)
+- `CHAT_MODEL_TIMEOUT_SECONDS` (50), `EXTRACTION_MODEL_TIMEOUT_SECONDS` (120)
 
 ## Keeping the Space awake
 
@@ -54,17 +55,21 @@ VERCEL_TOKEN=... ./deploy/deploy_frontend_vercel.sh
 
 ## Database
 
-Migrations live in `backend_api/sql/` and are applied in filename order, each
-recorded in a `schema_migrations` table so re-running is safe:
+The schema is versioned with Alembic under `backend_api/migrations/`. The API
+runs `alembic upgrade head` at startup, so a deploy migrates the database it
+points at. A database created before Alembic is stamped at the baseline
+revision on first start and upgraded from there; nothing is recreated.
+
+To add a migration:
 
 ```bash
-DATABASE_URL="postgresql://..." ./deploy/migrate_database.sh
+cd backend_api && alembic revision -m "what changed"
 ```
 
-Verify the result:
+After a change to the normaliser, rebuild every stored report's findings:
 
 ```bash
-DATABASE_URL="postgresql://..." ./deploy/verify_database_schema.sh
+DATABASE_URL="postgresql://..." python backend_api/scripts/backfill_findings.py
 ```
 
 ## Smoke test
