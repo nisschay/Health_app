@@ -207,6 +207,16 @@ function normalizeSourceFileName(value: string | null | undefined): string {
   return normalized.trim().toLowerCase();
 }
 
+/** "study-<uuid>" or "history-<id>": what the assistant answers about. */
+function chatTarget(activeId: string | null): { studyId: string } | { analysisId: number } | null {
+  if (activeId?.startsWith("study-")) return { studyId: activeId.slice("study-".length) };
+  if (activeId?.startsWith("history-")) {
+    const id = Number(activeId.slice("history-".length));
+    return Number.isInteger(id) ? { analysisId: id } : null;
+  }
+  return null;
+}
+
 function shouldRetryWithFreshToken(error: unknown): boolean {
   return error instanceof AuthError;
 }
@@ -1168,21 +1178,14 @@ export default function DashboardPage() {
 
     const startedAt = Date.now();
     try {
-      const resp = await runWithTokenRetry((_token) => sendChatMessage(
-        {
-          analysisId: activeAnalysisId ?? `analysis-${analysis.patient_info.patient_id || "current"}`,
-          sessionId: chatSessionId,
-          reportContext: {
-            patientInfo: analysis.patient_info,
-            totalRecords: analysis.total_records,
-            reportsIncluded: resultStudyReportCount ?? analysis.reports_with_data ?? null,
-            sourceFileNames: analysis.combined_report_file_names ?? [],
-            records: analysis.records,
-          },
-          history: toApiChatHistory(existingThread).slice(-20),
-          message: cleanQuestion,
-        },
-      ));
+      const target = chatTarget(activeAnalysisId);
+      if (!target) throw new Error("Save this analysis to a study or your history before asking about it.");
+      const resp = await runWithTokenRetry((_token) => sendChatMessage({
+        ...target,
+        sessionId: chatSessionId,
+        history: toApiChatHistory(existingThread).slice(-20),
+        question: cleanQuestion,
+      }));
 
       const elapsed = Date.now() - startedAt;
       if (elapsed < MIN_CHAT_LOADING_MS) {

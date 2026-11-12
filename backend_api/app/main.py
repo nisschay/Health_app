@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from . import jobs
 from .auth import RequestUser, get_request_user
+from .chat import ChatUnavailable
 from .config import settings
 from .database import (
     LAST_LOGIN_TOUCH_INTERVAL,
@@ -383,17 +384,7 @@ def get_combined_study_report(
 ) -> AnalysisResponse:
     owner = _current_account_owner(user, db)
     study, profile = _owned_study(db, owner, study_id)
-    reports = list_reports_for_study(db, study_id)
-    if not reports:
-        raise HTTPException(status_code=404, detail="No reports found for this study.")
-
-    findings: list[ReportFinding] = list_findings_for_reports(db, [report.id for report in reports])
-    covered = {finding.report_id for finding in findings}
-    for report in reports:
-        if report.id not in covered:
-            # Not backfilled yet (the startup backfill runs in the background). Build in memory only.
-            findings.extend(findings_in_memory(report, profile.id))
-
+    reports, findings = _study_findings(db, study_id, profile.id)
     records = _dedupe_records([record_from_finding(finding) for finding in findings])
     insights = service.get_health_insights(records) if records else EMPTY_INSIGHTS
     latest = next((r.analysis_data for r in reversed(reports) if isinstance(r.analysis_data, dict) and r.analysis_data), {})
@@ -417,6 +408,20 @@ def get_combined_study_report(
         combined_report_file_names=[report.file_name for report in reports],
         reports_with_data=len({finding.report_id for finding in findings}),
     )
+
+
+def _study_findings(db: Session, study_id: UUID, profile_id: UUID) -> tuple[list, list[ReportFinding]]:
+    """Every finding of a study's reports, oldest report first. 404 when the study has no reports."""
+    reports = list_reports_for_study(db, study_id)
+    if not reports:
+        raise HTTPException(status_code=404, detail="No reports found for this study.")
+    findings: list[ReportFinding] = list_findings_for_reports(db, [report.id for report in reports])
+    covered = {finding.report_id for finding in findings}
+    for report in reports:
+        if report.id not in covered:
+            # Not backfilled yet (the startup backfill runs in the background). Build in memory only.
+            findings.extend(findings_in_memory(report, profile_id))
+    return reports, findings
 
 
 # ── Jobs ───────────────────────────────────────────────────────────────────────
@@ -529,21 +534,31 @@ def get_report_by_id(
 def chat_about_report(
     payload: ChatRequest,
     user: RequestUser = Depends(get_request_user),
+    db: Session = Depends(get_db),
 ) -> ChatResponse:
+    """Answer about one study or one saved analysis. The records come from the database, never the client."""
     rate_limiter.check(user.user_id)
+    owner = _current_account_owner(user, db)
+    if payload.study_id is not None:
+        _, profile = _owned_study(db, owner, payload.study_id)
+        records = _dedupe_records([record_from_finding(f) for f in _study_findings(db, payload.study_id, profile.id)[1]])
+    elif payload.analysis_id is not None:
+        row = get_analysis_by_id(db, payload.analysis_id, owner.firebase_uid)
+        if not row:
+            raise HTTPException(status_code=404, detail="Analysis not found.")
+        records = json.loads(row.analysis_json).get("records") or []
+    else:
+        raise HTTPException(status_code=400, detail="Name the study or the saved analysis to ask about.")
+
     try:
-        answer = service.get_chat_response(
-            records=[record.model_dump() for record in payload.records],
-            question=payload.question,
-            history=[item.model_dump() for item in payload.history],
-            analysis_id=payload.analysis_id,
-            session_id=payload.session_id,
-            guidelines=payload.guidelines,
-            report_context=payload.report_context,
-        )
-        return ChatResponse(answer=answer)
+        answer = service.answer_question(records, payload.question, [turn.model_dump() for turn in payload.history])
+    except ChatUnavailable as exc:
+        code = status.HTTP_429_TOO_MANY_REQUESTS if exc.rate_limited else status.HTTP_503_SERVICE_UNAVAILABLE
+        headers = {"Retry-After": "60"} if exc.rate_limited else None
+        raise HTTPException(status_code=code, detail=str(exc), headers=headers) from exc
     except Exception as exc:
         raise internal_error(exc, "Chat") from exc
+    return ChatResponse(answer=answer)
 
 
 @app.post(f"{settings.api_prefix}/reports/export/pdf")

@@ -317,57 +317,29 @@ Practical interpretation:
 
 ## 4) Clinical assistant
 
-### Q12. RAG flow is frontend -> /api/clinical-assistant -> backend /api/v1/reports/chat. Why two-hop? Why not call backend directly?
+### Q12. How does a chat question reach the model?
 
 **Answer**
 
-Two-hop architecture enables server-side context orchestration before LLM call.
+The browser calls the backend directly: `POST /api/v1/reports/chat` with the question, recent history, and a study id or saved-analysis id. It never sends the records. The backend:
+1. Loads the study's findings (or the saved analysis) after checking the caller owns it.
+2. Selects up to three guideline extracts whose test names appear, as whole words, in the question or among the results outside range.
+3. Builds a prompt with the newest dates first and abnormal results first, wrapped in `<report_data>` tags marked as data, never instructions.
+4. Calls the chat models in order; a rate limit becomes 429 and a timeout 503.
 
-What the Next route adds:
-1. Resolves/fetches full analysis context when only IDs are provided.
-2. Builds timeline and latest-values summaries.
-3. Retrieves relevant guideline snippets from local knowledge base.
-4. Constructs a stronger system prompt with grounding constraints.
-5. Normalizes streaming response behavior to frontend.
+An earlier design routed chat through a Next.js route that rebuilt the context and called the backend. It was removed: two copies of the prompt logic disagreed, the browser uploaded every record with each message, and substring matching attached liver guidelines to the word "health".
 
 Relevant implementation:
-- Route handler orchestration: [web/app/api/clinical-assistant/route.ts](../web/app/api/clinical-assistant/route.ts#L567)
-- Backend chat endpoint: [backend_api/app/main.py](../backend_api/app/main.py#L914)
-
-Why this is useful:
-- Keeps frontend clients thin.
-- Centralizes prompt and safety policy logic.
-- Allows incremental improvements without changing mobile/web clients.
+- [backend_api/app/chat.py](../backend_api/app/chat.py)
+- [backend_api/app/guidelines.py](../backend_api/app/guidelines.py)
 
 ---
 
-### Q13. What is in medicalKnowledge.ts? Static guidelines? How do you decide what to retrieve for a question?
+### Q13. What is in the guideline data?
 
 **Answer**
 
-Yes, it is a curated static knowledge base of medical interpretation guidance.
-
-Entry content includes:
-1. Canonical test names and aliases.
-2. Keywords and related tests.
-3. Interpretation bands.
-4. Trend signals and confounders.
-5. Escalation triggers and patient-friendly actions.
-6. Source citations and evidence levels.
-
-Relevant data:
-- [web/lib/medicalKnowledge.ts](../web/lib/medicalKnowledge.ts#L1)
-
-Retrieval logic combines:
-1. Active findings in patient data.
-2. Current user question and recent conversation history.
-3. Concept expansion (for example “sugar” -> glucose/HbA1c family).
-4. Intent signals (trend, urgency, action).
-5. Evidence-level and recency weighting.
-6. Category diversity constraints.
-
-Relevant algorithm:
-- [web/lib/ragRetrieval.ts](../web/lib/ragRetrieval.ts#L77)
+[guidelines.json](../backend_api/app/data/guidelines.json) holds 18 curated extracts (HbA1c, lipids, liver, kidney, thyroid, blood counts, vitamin D, B12, CRP, uric acid). Each has test names and aliases, interpretation bands, escalation triggers and a citation. Retrieval is deliberately simple: whole-word matching plus a few everyday-word expansions ("sugar" to glucose and HbA1c).
 
 ---
 
@@ -375,21 +347,7 @@ Relevant algorithm:
 
 **Answer**
 
-Current guardrails are primarily prompt-grounding and context-shaping:
-1. Structured report context is passed in.
-2. Prompt instructs strict behavior for missing tests.
-3. Timeline and latest findings are explicitly embedded into system prompt.
-
-Relevant prompt constraints:
-- [web/app/api/clinical-assistant/route.ts](../web/app/api/clinical-assistant/route.ts#L421)
-
-Additional safety support:
-- Hallucination detection utility exists for telemetry and quality monitoring.
-- [web/lib/metrics.ts](../web/lib/metrics.ts#L151)
-
-Current limitation:
-- There is no deterministic post-generation fact-check blocker in active path yet.
-- Best next step is an answer-verification pass that rejects unsupported value claims before returning output.
+Today, by prompt and context only: the model is told to answer only from `<report_data>` and to say when something is not there. There is no check after generation yet. The planned next step is to compare every number in an answer against the records and flag any that do not match.
 
 ## 5) Testing
 
