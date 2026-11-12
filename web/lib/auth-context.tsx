@@ -47,7 +47,6 @@ function clearAuthPresenceCookie(): void {
 export type AuthContextValue = {
   user: User | null;
   loading: boolean;
-  isAdmin: boolean;
   getToken: (forceRefresh?: boolean) => Promise<string | null>;
   signInWithGoogle: () => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
@@ -76,7 +75,6 @@ function shouldFallBackToRedirect(error: unknown): boolean {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     let isActive = true;
@@ -100,7 +98,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!firebaseUser) {
         clearAuthPresenceCookie();
         setAuthTokenProvider(async () => null);
-        setIsAdmin(false);
         setLoading(false);
         return;
       }
@@ -161,20 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
           return response;
         })
-        .then(async (response) => {
-          if (!isActive) {
-            return;
-          }
-          if (!response.ok) {
-            setIsAdmin(false);
-            return;
-          }
-          const payload = (await response.json()) as { is_admin?: unknown };
-          setIsAdmin(Boolean(payload.is_admin));
-        })
-        .catch(() => {
-          if (isActive) setIsAdmin(false);
-        })
+        .catch(() => undefined) // a failed sync is retried on the next sign-in; the backend upserts on every route anyway
         .finally(() => {
           window.clearTimeout(syncTimeout);
         });
@@ -238,8 +222,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // A fresh object every render re-fired every effect that listed getToken or logout.
   const value = useMemo<AuthContextValue>(
-    () => ({ user, loading, isAdmin, getToken, signInWithGoogle, signInWithEmail, registerWithEmail, logout }),
-    [user, loading, isAdmin, getToken, signInWithGoogle, signInWithEmail, registerWithEmail, logout],
+    () => ({ user, loading, getToken, signInWithGoogle, signInWithEmail, registerWithEmail, logout }),
+    [user, loading, getToken, signInWithGoogle, signInWithEmail, registerWithEmail, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

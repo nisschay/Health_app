@@ -33,7 +33,6 @@ Medical Report Analyzer helps families and caregivers organize medical reports t
 - View trend charts and report summaries for faster interpretation.
 - Export structured insights to PDF and Excel.
 - Use secure login with Firebase token verification in backend APIs.
-- Review admin-facing reliability and validation telemetry.
 
 ## 4) System Architecture
 
@@ -191,21 +190,15 @@ Major frontend modules:
   - Firebase sign-in (Google + email/password), token provider wiring, backend sync.
 - Dashboard and workflows
   - web/app/dashboard/page.tsx
-  - Study flow modal, uploads, SSE progress UI, history retrieval, save-to-study.
+  - Study flow modal, uploads with job polling, history retrieval.
 - Visual components
   - TrendChart, AlertsByCategory, OrganizedDataTree, ClinicalChatPanel.
-- Profile report view
-  - web/app/dashboard/reports/[profileId]/page.tsx
-  - Combined report access and study-level summarization.
-- Admin metrics UI
-  - web/app/admin/metrics/page.tsx
-  - Quality/reliability cards, trend sparkline charts, failed PDFs, token usage.
 
 ## 10) Data Model
 
 Main relational entities (PostgreSQL):
 
-- users: Firebase identity mapping, admin flag, login metadata.
+- users: Firebase identity mapping and login metadata.
 - report_analyses: saved analysis history snapshots.
 - profiles: patient profiles under account owner.
 - studies: logical longitudinal groups under profile.
