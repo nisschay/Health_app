@@ -12,7 +12,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # Bump when normalisation output changes shape; the backfill re-normalises older rows.
-NORMALIZATION_VERSION = 2
+NORMALIZATION_VERSION = 3
 
 CANONICAL_CATEGORIES = [
     "Haematology",
@@ -709,6 +709,49 @@ _MUST_NOT_MERGE = tuple(
 )
 
 
+_URINE_SPECIMEN = re.compile(r"\burine\b", re.IGNORECASE)
+# Measured in both blood and urine with different meaning and units: a urine reading
+# must never take the blood test's name, or it merges into (and replaces) the blood value.
+_SHARED_BLOOD_URINE_ANALYTES = (
+    "glucose",
+    "sugar",
+    "creatinine",
+    "protein",
+    "albumin",
+    "haemoglobin",
+    "hemoglobin",
+    "calcium",
+    "sodium",
+    "potassium",
+    "chloride",
+    "bilirubin",
+    "urea",
+    "uric acid",
+    "phosphorus",
+    "magnesium",
+    "amylase",
+    "osmolality",
+)
+
+
+def is_urine_specimen(raw: str | None) -> bool:
+    return bool(raw) and bool(_URINE_SPECIMEN.search(str(raw)))
+
+
+def _urine_name(key: str, canonical: str) -> str:
+    """'glucose' from a urine panel becomes 'Glucose (Urine)', never 'Fasting Blood Glucose'.
+
+    'Urine Glucose' and 'Glucose (Urine)' are the same test, so both get the second form.
+    """
+    if not any(re.search(rf"\b{analyte}\b", key) for analyte in _SHARED_BLOOD_URINE_ANALYTES):
+        return canonical  # urine-only tests such as specific gravity keep their usual name
+    base = re.sub(r"\burine\b", " ", key)
+    base = re.sub(r"\bsugar\b", "glucose", base)
+    base = re.sub(r"\b(\w+)(?:\s+\1\b)+", r"\1", base)  # "urine glucose sugar" must not become "glucose glucose"
+    base = re.sub(r"\s+", " ", base).strip(" -,/")
+    return f"{_display_name_from_key(base or key)} (Urine)"
+
+
 def normalize_test_name(raw: str | None) -> str:
     if raw is None:
         return "Unknown Test"
@@ -718,6 +761,12 @@ def normalize_test_name(raw: str | None) -> str:
         return "Unknown Test"
 
     key = _normalize_test_map_key(raw_text)
+    if is_urine_specimen(raw_text):
+        return _urine_name(key, _normalize_test_name_from_key(raw_text, key))
+    return _normalize_test_name_from_key(raw_text, key)
+
+
+def _normalize_test_name_from_key(raw_text: str, key: str) -> str:
     canonical = TEST_NAME_MAP.get(key) or _canonical_from_lookup(key)
     if canonical:
         return canonical
@@ -772,7 +821,8 @@ STATUS_TOKEN_RULES = (
     (r"abnormal|out\s*of\s*range|outside\s*range|flag(?:ged)?", STATUS_FLAGGED),
     (r"insufficien(?:t|cy)|deficien(?:t|cy)", STATUS_INSUFFICIENT),
     (r"borderline|equivocal|indeterminate", STATUS_BORDERLINE),
-    (r"negative|non[-\s]?reactive|not\s+detected|absent", STATUS_NEGATIVE),
+    # Negations must come before the Positive rule, or "not present" matches "present".
+    (r"negative|non[-\s]?reactive|not\s+detected|not\s+present|not\s+seen|none\s+seen|not\s+found|no\s+growth|nil|absent", STATUS_NEGATIVE),
     (r"positive|detected|reactive|present", STATUS_POSITIVE),
     (r"high|elevated|increased|above\s+\w+", STATUS_HIGH),
     (r"low|decreased|reduced|below\s+\w+", STATUS_LOW),
@@ -892,6 +942,18 @@ def _row_completeness_score(entry: dict[str, Any]) -> int:
     return score
 
 
+def _value_signature(entry: dict[str, Any]) -> str:
+    """What a reading says, ignoring formatting: '12.4', '12.40 g/dL' and '12.4' are one value."""
+    text = re.sub(r"\s+", " ", str(entry.get("Result") or "").strip().lower())
+    leading = re.match(r"^([<>]=?)?\s*(-?\d[\d,]*(?:\.\d+)?)", text)
+    if leading:
+        try:
+            return f"{leading.group(1) or ''}{float(leading.group(2).replace(',', ''))!r}"
+        except ValueError:
+            pass
+    return text
+
+
 def merge_readings_by_date(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse alias duplicates of one test, keeping each source file separate."""
     by_date: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -908,20 +970,26 @@ def merge_readings_by_date(findings: list[dict[str, Any]]) -> list[dict[str, Any
             merged_rows.append(dict(entries[0]))
             continue
 
-        with_numeric = [entry for entry in entries if _parse_numeric(entry.get("Result")) is not None]
-        candidate_pool = with_numeric if with_numeric else entries
+        # Only true duplicates collapse. Two different values for one test on one day in one file
+        # mean two different measurements (or a naming mistake): dropping either hides data.
+        by_value: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for entry in entries:
+            by_value[_value_signature(entry)].append(entry)
+        if len(by_value) > 1 and "" in by_value:
+            blanks = by_value.pop("")  # a row with no result is a duplicate of any reading
+            next(iter(by_value.values())).extend(blanks)
 
-        best = sorted(
-            candidate_pool,
-            key=lambda item: (
-                _row_completeness_score(item),
-                len(str(item.get("Reference_Range") or "")),
-                len(str(item.get("Unit") or "")),
-            ),
-            reverse=True,
-        )[0]
-
-        merged_rows.append(dict(best))
+        for same_value in by_value.values():
+            best = sorted(
+                same_value,
+                key=lambda item: (
+                    _row_completeness_score(item),
+                    len(str(item.get("Reference_Range") or "")),
+                    len(str(item.get("Unit") or "")),
+                ),
+                reverse=True,
+            )[0]
+            merged_rows.append(dict(best))
 
     merged_rows.sort(
         key=lambda item: (
@@ -1035,6 +1103,8 @@ def deduplicate_findings(
             or "Unknown Test"
         )
         key = structural_clean(str(row_name))
+        if is_urine_specimen(str(row_name)) and "urine" not in key:
+            key = f"urine {key}"  # structural_clean drops "(urine)"; the specimen must still separate tests
         key_map[key].append(normalized_row)
 
     keys = list(key_map.keys())
