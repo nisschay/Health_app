@@ -12,12 +12,14 @@ from backend_api.app.database import (
     JOB_DONE,
     JOB_FAILED,
     JOB_INTERRUPTED,
+    JOB_QUEUED,
     JOB_RUNNING,
     Base,
     Profile,
     Report,
     ReportFinding,
     ReportJob,
+    ReportJobFile,
     Study,
     list_trend_points,
     upsert_user,
@@ -43,7 +45,7 @@ def _count_statements(engine):
 
 def _create_pre_alembic_schema(eng):
     """Production's schema before Alembic: today's models minus everything a migration added."""
-    pre_alembic = [t for n, t in Base.metadata.tables.items() if n not in {"report_findings", "report_jobs"}]
+    pre_alembic = [t for n, t in Base.metadata.tables.items() if n not in {"report_findings", "report_jobs", "report_job_files"}]
     Base.metadata.create_all(eng, tables=pre_alembic)
     with eng.begin() as conn:
         conn.execute(text("DROP INDEX uq_profiles_owner_self"))  # 0002
@@ -67,7 +69,7 @@ def test_a_database_created_before_alembic_is_stamped_then_upgraded(blank_engine
     _create_pre_alembic_schema(eng)
     run_migrations(eng)
     with eng.connect() as conn:
-        assert conn.execute(text("select version_num from alembic_version")).scalar() == "0003"
+        assert conn.execute(text("select version_num from alembic_version")).scalar() == "0004"
     assert {"report_findings", "report_jobs"} <= set(inspect(eng).get_table_names())
 
 
@@ -285,21 +287,6 @@ def test_a_failed_job_keeps_a_readable_reason(db, inline_jobs):
     assert job.status == JOB_FAILED and "rate limited" in job.error
 
 
-def test_jobs_in_flight_at_startup_are_marked_interrupted(db, engine, monkeypatch):
-    owner = upsert_user(db, "uid-1", "a@example.com", "A")
-    db.add_all([
-        ReportJob(owner_id=owner.id, status=JOB_RUNNING, source_filenames=["a.pdf"], progress={}, created_at=datetime.utcnow()),
-        ReportJob(owner_id=owner.id, status=JOB_DONE, source_filenames=["b.pdf"], progress={}, created_at=datetime.utcnow()),
-    ])
-    db.commit()
-    monkeypatch.setattr(jobs, "SessionLocal", sessionmaker(bind=engine))
-    jobs.mark_interrupted()
-    db.expire_all()
-    statuses = {j.source_filenames[0]: (j.status, j.error) for j in db.query(ReportJob)}
-    assert statuses["a.pdf"] == (JOB_INTERRUPTED, jobs.INTERRUPTED_MESSAGE)
-    assert statuses["b.pdf"] == (JOB_DONE, None)
-
-
 TWO_FILES = {
     "patient_info": {"name": "A", "date": "05-03-2024"},
     "records": [{"Test_Name": "HbA1c", "Result": "7.1", "Status": "High", "Test_Date": "05-03-2024",
@@ -368,15 +355,87 @@ def test_a_failed_save_leaves_no_reports_and_a_failed_job(db, inline_jobs, monke
     assert job.status == JOB_FAILED and db.query(Report).count() == 0
 
 
-def test_a_job_that_stopped_making_progress_is_reported_failed(db):
-    owner = upsert_user(db, "uid-1", "a@example.com", "A")
-    old = datetime.utcnow() - timedelta(hours=2)
-    job = ReportJob(owner_id=owner.id, status=JOB_RUNNING, source_filenames=["a.pdf"],
-                    progress={"stage": "processing", "files": {}, "processed": 0, "total": 1}, created_at=old, started_at=old)
+def _orphan(db, owner, status=JOB_RUNNING, attempts=1, beat_ago=timedelta(minutes=5), files=True):
+    """A job whose worker is gone: its last heartbeat is old."""
+    when = datetime.utcnow() - beat_ago
+    job = ReportJob(owner_id=owner.id, status=status, source_filenames=["r.pdf"], attempts=attempts,
+                    progress={"stage": "processing", "files": {"r.pdf": {"step": "extracting", "percent": 20}}, "processed": 0, "total": 1},
+                    created_at=when, started_at=when if status == JOB_RUNNING else None, heartbeat_at=when if status == JOB_RUNNING else None)
     db.add(job)
+    db.flush()
+    if files:
+        db.add(ReportJobFile(job_id=job.id, position=0, kind="pdf", filename="r.pdf", content=b"%PDF"))
     db.commit()
+    return job
+
+
+def test_a_restart_resumes_a_job_instead_of_losing_the_upload(db, inline_jobs, monkeypatch):
+    """Each deploy restarts the server; jobs in flight used to fail and the user had to upload again."""
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    job = _orphan(db, owner)
+    monkeypatch.setattr(main, "service", _Service(RESULT))
+    jobs.resume_orphaned_jobs(main.service)
+    db.expire_all()
+    assert job.status == JOB_DONE and job.attempts == 2
+    assert db.query(ReportJobFile).count() == 0, "uploads are deleted once the job is done"
+
+
+def test_a_job_with_a_live_worker_is_left_alone(db, inline_jobs):
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    job = _orphan(db, owner, beat_ago=timedelta(seconds=5))
+    jobs.resume_orphaned_jobs(_Service(RESULT))
+    db.expire_all()
+    assert job.status == JOB_RUNNING and job.attempts == 1
+
+
+def test_polling_a_job_whose_worker_died_resumes_it(db, inline_jobs, monkeypatch):
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    job = _orphan(db, owner)
+    monkeypatch.setattr(main, "service", _Service(RESULT))
+    response = main.read_job(job_id=job.id, user=RequestUser(user_id="uid-1", email=None), db=db)
+    assert response.status == JOB_DONE
+
+
+def test_a_job_that_keeps_dying_fails_after_three_attempts(db, inline_jobs):
+    """A file that crashes the server must not crash it on every restart."""
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    job = _orphan(db, owner, attempts=jobs.MAX_ATTEMPTS)
+    response = main.read_job(job_id=job.id, user=RequestUser(user_id="uid-1", email=None), db=db)
+    assert response.status == JOB_FAILED and response.error == jobs.TOO_MANY_ATTEMPTS_MESSAGE
+    assert db.query(ReportJobFile).count() == 0
+
+
+def test_an_orphan_without_its_files_fails_cleanly(db, inline_jobs):
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    job = _orphan(db, owner, files=False)
     response = main.read_job(job_id=job.id, user=RequestUser(user_id="uid-1", email=None), db=db)
     assert response.status == JOB_FAILED and response.error == jobs.STALE_MESSAGE
+
+
+def test_two_workers_cannot_both_run_one_job(db, inline_jobs):
+    """The old and new server overlap during a deploy; the claim lets only one of them run the job."""
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    job = _orphan(db, owner, status=JOB_QUEUED, attempts=0)
+    runs = []
+
+    class Counting(_Service):
+        def analyze_reports(self, **kwargs):
+            runs.append(1)
+            return super().analyze_reports(**kwargs)
+
+    service = Counting(RESULT)
+    jobs._run(job.id, service, [("r.pdf", b"%PDF")], None, False)
+    jobs._run(job.id, service, [("r.pdf", b"%PDF")], None, False)
+    assert len(runs) == 1
+
+
+def test_a_new_upload_keeps_its_files_until_it_finishes(db, monkeypatch):
+    monkeypatch.setattr(jobs, "_pool", _NeverRuns())
+    monkeypatch.setattr(jobs, "_pending", 0)
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    job = jobs.submit(db, owner, _Service(RESULT), [("a.pdf", b"%PDF-a"), ("b.pdf", b"%PDF-b")], ("old.csv", b"x,y"), False, None)
+    stored = [(f.kind, f.filename, f.content) for f in db.query(ReportJobFile).filter(ReportJobFile.job_id == job.id).order_by(ReportJobFile.position)]
+    assert stored == [("pdf", "a.pdf", b"%PDF-a"), ("pdf", "b.pdf", b"%PDF-b"), ("existing", "old.csv", b"x,y")]
 
 
 def test_a_finished_result_does_not_overwrite_an_interrupted_job(db, inline_jobs, monkeypatch):

@@ -80,7 +80,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     run_migrations()
-    jobs.mark_interrupted()
+    jobs.resume_orphaned_jobs(service)
     start_backfill_in_background()
     yield
 
@@ -485,7 +485,7 @@ def read_job(
     job = get_job(db, job_id, owner.id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
-    return _job_response(jobs.expire_if_stale(db, job))
+    return _job_response(jobs.recover(db, job, service))
 
 
 # ── History ────────────────────────────────────────────────────────────────────
