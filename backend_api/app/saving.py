@@ -1,16 +1,30 @@
 """Persist an analysis: one report per uploaded file inside a study, or one history row."""
 from __future__ import annotations
 
+import logging
+import threading
 import uuid
 from datetime import date
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import exists, text
 from sqlalchemy.orm import Session
 
-from .database import Report, ReportAnalysis, ReportFinding, Study, create_report, replace_findings, save_analysis
+from .database import (
+    Report,
+    ReportAnalysis,
+    ReportFinding,
+    SessionLocal,
+    Study,
+    create_report,
+    replace_findings,
+    save_analysis,
+)
 from .findings import findings_from_records
 from .normalization import NORMALIZATION_VERSION, normalize_records
+
+logger = logging.getLogger(__name__)
 
 EMPTY_INSIGHTS: dict[str, Any] = {
     "health_summary": {"overall_score": 0, "category_scores": {}, "concerns": []},
@@ -75,36 +89,93 @@ def _resolve_report_date(rows: list[dict[str, Any]], fallback: date | None, file
     return fallback
 
 
-def save_to_study(db: Session, study: Study, analysis: dict[str, Any], source_filenames: list[str]) -> int:
-    """Every report and finding of one upload lands in one transaction."""
+class NothingSaved(ValueError):
+    """Every file in the upload failed; the job fails with the per-file reasons."""
+
+
+def save_to_study(
+    db: Session,
+    study: Study,
+    analysis: dict[str, Any],
+    source_filenames: list[str],
+    failed: dict[str, str] | None = None,
+) -> list[str]:
+    """Add one report per readable file to the session and return a warning per skipped file.
+
+    A file that failed extraction, or has no report date, is skipped rather than failing the
+    batch: the other files' results (and the model quota spent on them) are kept.
+    The caller commits, so the reports and the job status land in one transaction.
+    """
+    failed = dict(failed or {})
     patient_info = analysis.get("patient_info") or {}
     batch_date = parse_report_date(patient_info.get("date"))
     all_rows = analysis.get("records") or []
     tagged = any(row.get("Source_Filename") for row in all_rows if isinstance(row, dict))
+    readable = [name for name in source_filenames if name not in failed]
 
-    for name in source_filenames:
-        rows = rows_for_file(all_rows, name, fallback_to_all=not tagged or len(source_filenames) == 1)
+    saved = 0
+    for name in readable:
+        rows = rows_for_file(all_rows, name, fallback_to_all=not tagged or len(readable) == 1)
         normalized = normalize_records(rows)
+        if not normalized:
+            failed[name] = "No test results were found in this file."
+            continue
+        try:
+            report_date = _resolve_report_date(normalized, batch_date, name)
+        except ValueError as exc:
+            failed[name] = str(exc)
+            continue
         create_report(
             db,
             study_id=study.id,
             file_name=name,
             file_url=f"uploaded://{name}",
-            report_date=_resolve_report_date(normalized, batch_date, name),
+            report_date=report_date,
             lab_name=patient_info.get("lab_name"),
             analysis_data={**analysis, "records": normalized, "total_records": len(normalized)},
             normalized_records=normalized,
             normalization_version=NORMALIZATION_VERSION,
             findings=findings_from_records(study.profile_id, normalized, name),
         )
-    db.commit()
-    return len(source_filenames)
+        saved += 1
+
+    warnings = [f"{name}: {reason}" for name, reason in failed.items()]
+    if not saved:
+        raise NothingSaved("None of the uploaded files could be saved. " + "; ".join(warnings))
+    return warnings
 
 
-def save_to_history(db: Session, firebase_uid: str, analysis: dict[str, Any], source_filenames: list[str]) -> ReportAnalysis:
-    row = save_analysis(db, firebase_uid, analysis.get("patient_info") or {}, analysis, source_filenames)
-    db.commit()
-    return row
+def save_to_history(
+    db: Session,
+    firebase_uid: str,
+    analysis: dict[str, Any],
+    source_filenames: list[str],
+    failed: dict[str, str] | None = None,
+) -> tuple[ReportAnalysis, list[str]]:
+    """Add one history row to the session; the caller commits."""
+    failed = failed or {}
+    names = [name for name in source_filenames if name not in failed] or source_filenames
+    row = save_analysis(db, firebase_uid, analysis.get("patient_info") or {}, analysis, names)
+    return row, [f"{name}: {reason}" for name, reason in failed.items()]
+
+
+def _stored_rows(report: Report) -> list[dict[str, Any]]:
+    """The report's normalised rows, re-normalising if they predate the current normaliser."""
+    if report.normalization_version == NORMALIZATION_VERSION and isinstance(report.normalized_records, list):
+        return report.normalized_records
+    payload = report.analysis_data if isinstance(report.analysis_data, dict) else {}
+    return normalize_records(rows_for_file(payload.get("records") or [], report.file_name, fallback_to_all=True))
+
+
+def findings_in_memory(report: Report, profile_id: uuid.UUID) -> list[ReportFinding]:
+    """Findings for a report that has no rows yet, built without writing anything.
+
+    Reads never write: two concurrent reads used to insert the same findings twice.
+    """
+    findings = findings_from_records(profile_id, _stored_rows(report), report.file_name)
+    for finding in findings:
+        finding.report_id = report.id
+    return findings
 
 
 def rebuild_report(db: Session, report: Report, profile_id: uuid.UUID) -> list[ReportFinding]:
@@ -119,10 +190,54 @@ def rebuild_report(db: Session, report: Report, profile_id: uuid.UUID) -> list[R
     return findings
 
 
-def findings_for_report(db: Session, report: Report, profile_id: uuid.UUID) -> list[ReportFinding]:
-    """Reports saved before report_findings existed get their rows on first read."""
-    if report.normalization_version == NORMALIZATION_VERSION and isinstance(report.normalized_records, list):
-        findings = findings_from_records(profile_id, report.normalized_records, report.file_name)
-        replace_findings(db, report.id, findings)
-        return findings
-    return rebuild_report(db, report, profile_id)
+# Any constant works; it only has to be the same for every process that backfills.
+BACKFILL_LOCK_KEY = 4_172_026
+
+
+def _take_backfill_lock(db: Session, wait: bool) -> bool:
+    """One backfill at a time across processes; released when the transaction ends."""
+    if db.get_bind().dialect.name != "postgresql":
+        return True
+    if wait:
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": BACKFILL_LOCK_KEY})
+        return True
+    return bool(db.execute(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": BACKFILL_LOCK_KEY}).scalar())
+
+
+def backfill_findings(db: Session, *, rebuild_all: bool = False, wait: bool = False) -> tuple[int, int]:
+    """Give reports their findings rows in one transaction. Returns (reports, findings).
+
+    By default only reports with no findings yet are touched, so it is cheap to run at every start.
+    rebuild_all re-normalises every report, for after a normaliser change.
+    """
+    if not _take_backfill_lock(db, wait):
+        return 0, 0
+    query = db.query(Report, Study.profile_id).join(Study, Study.id == Report.study_id)
+    if not rebuild_all:
+        query = query.filter(~exists().where(ReportFinding.report_id == Report.id))
+    reports = findings = 0
+    for report, profile_id in query.all():
+        if rebuild_all:
+            rows = rebuild_report(db, report, profile_id)
+        else:
+            rows = findings_from_records(profile_id, _stored_rows(report), report.file_name)
+            replace_findings(db, report.id, rows)
+        reports += 1
+        findings += len(rows)
+    db.commit()
+    return reports, findings
+
+
+def start_backfill_in_background() -> None:
+    """Reports saved before report_findings existed get their rows once, without delaying startup."""
+
+    def _run() -> None:
+        try:
+            with SessionLocal() as db:
+                reports, findings = backfill_findings(db)
+            if reports:
+                logger.info("Backfilled %d findings across %d reports", findings, reports)
+        except Exception:
+            logger.exception("Findings backfill failed; it will be retried at the next start")
+
+    threading.Thread(target=_run, name="findings-backfill", daemon=True).start()

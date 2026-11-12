@@ -175,6 +175,7 @@ class JobProgress(BaseModel):
     processed: int
     total: int
     eta_seconds: int | None = None
+    warnings: list[str] = []
 
 
 class JobResponse(BaseModel):

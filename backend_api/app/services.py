@@ -196,6 +196,7 @@ class MedicalAnalysisService:
         all_patient_infos_from_pdfs: list[dict[str, Any]] = []
         raw_texts: list[dict[str, str]] = []
         failed_files: list[str] = []
+        failed_by_file: dict[str, str] = {}
 
         for filename, _ in pdf_files:
             emit(
@@ -225,6 +226,7 @@ class MedicalAnalysisService:
             if not result.get("ok"):
                 reason = str(result.get("reason") or "Processing failed")
                 failed_files.append(f"{filename}: {reason}")
+                failed_by_file[filename] = reason
                 processed_files += 1
                 emit(
                     {
@@ -350,6 +352,7 @@ class MedicalAnalysisService:
             "health_summary": health_summary,
             "body_systems": body_systems,
             "raw_texts": raw_texts,
+            "failed_files": failed_by_file,
         }
 
     def get_chat_response(

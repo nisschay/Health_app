@@ -1,7 +1,8 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -25,6 +26,8 @@ from backend_api.app.database import (
 from backend_api.app.findings import findings_from_records, record_from_finding
 from backend_api.app.migrations import run_migrations
 from backend_api.app.normalization import NORMALIZATION_VERSION
+from backend_api.app.saving import backfill_findings
+from backend_api.app.schemas import CreateProfileRequest
 
 
 def _engine():
@@ -80,6 +83,35 @@ def test_a_database_created_before_alembic_is_stamped_then_upgraded():
     with eng.connect() as conn:
         assert conn.execute(text("select version_num from alembic_version")).scalar() == "0002"
     assert {"report_findings", "report_jobs"} <= set(inspect(eng).get_table_names())
+
+
+def test_migration_keeps_one_self_profile_when_an_account_has_two():
+    """Before the unique index, concurrent sign-ins could create two self profiles; the upgrade must not crash on them."""
+    eng = _engine()
+    pre_alembic = [t for n, t in Base.metadata.tables.items() if n not in {"report_findings", "report_jobs"}]
+    Base.metadata.create_all(eng, tables=pre_alembic)
+    with eng.begin() as conn:
+        conn.execute(text("DROP INDEX uq_profiles_owner_self"))
+        conn.execute(text("INSERT INTO users (id, firebase_uid) VALUES (1, 'uid-1')"))
+        for pid, rel, created in (("a" * 32, "self", "2024-01-01"), ("b" * 32, "Self", "2024-02-01"), ("c" * 32, "mother", "2024-03-01")):
+            conn.execute(
+                text("INSERT INTO profiles (id, account_owner_id, full_name, relationship, created_at, updated_at) "
+                     "VALUES (:id, 1, 'X', :rel, :c, :c)"),
+                {"id": pid, "rel": rel, "c": created},
+            )
+    run_migrations(eng)
+    with eng.connect() as conn:
+        rows = dict(conn.execute(text("SELECT id, relationship FROM profiles")).all())
+    assert rows == {"a" * 32: "self", "b" * 32: "other", "c" * 32: "mother"}, "oldest stays self, nothing is deleted"
+
+
+def test_a_second_self_profile_is_a_conflict_not_a_server_error(db):
+    upsert_user(db, "uid-1", "a@example.com", "A")
+    payload = CreateProfileRequest(full_name="Me again", relationship="Self")
+    with pytest.raises(HTTPException) as err:
+        main.create_profile_endpoint(payload=payload, user=RequestUser(user_id="uid-1", email=None), db=db)
+    assert err.value.status_code == 409
+    assert db.query(Profile).count() == 1
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
@@ -168,15 +200,24 @@ def test_combined_report_query_count_is_independent_of_report_count(engine, db, 
     assert small.total_records == 2 and large.total_records == 9
 
 
-def test_legacy_reports_get_findings_on_first_read(db, monkeypatch):
-    """Rows saved before report_findings existed are materialised once, then read like the rest."""
+def test_legacy_reports_are_readable_before_backfill_and_reads_never_write(db, monkeypatch):
+    """Rows saved before report_findings existed are built in memory on read; only the backfill writes them."""
     monkeypatch.setattr(main.service, "get_health_insights", lambda records: {"health_summary": {}, "body_systems": []})
     requester, _, study = _seed_study(db, reports=2, with_findings=False)
-    assert db.query(ReportFinding).count() == 0
     result = main.get_combined_study_report(study_id=study.id, user=requester, db=db)
     assert result.total_records == 2 and result.records[0].Test_Name == "Haemoglobin (Hb)"
+    assert result.reports_with_data == 2
+    db.rollback()
+    assert db.query(ReportFinding).count() == 0, "a GET must not insert findings"
+
+
+def test_backfill_fills_only_reports_without_findings_and_is_idempotent(db):
+    _seed_study(db, reports=2, with_findings=False)
+    assert backfill_findings(db) == (2, 2)
+    assert backfill_findings(db) == (0, 0), "a second run finds nothing to do"
     assert db.query(ReportFinding).count() == 2
-    assert {r.normalization_version for r in db.query(Report)} == {NORMALIZATION_VERSION}
+    assert backfill_findings(db, rebuild_all=True) == (2, 2)
+    assert db.query(ReportFinding).count() == 2, "rebuilding replaces rows, never duplicates them"
 
 
 def test_trend_is_one_indexed_select(engine, db):
@@ -273,3 +314,97 @@ def test_jobs_in_flight_at_startup_are_marked_interrupted(db, engine, monkeypatc
     statuses = {j.source_filenames[0]: (j.status, j.error) for j in db.query(ReportJob)}
     assert statuses["a.pdf"] == (JOB_INTERRUPTED, jobs.INTERRUPTED_MESSAGE)
     assert statuses["b.pdf"] == (JOB_DONE, None)
+
+
+TWO_FILES = {
+    "patient_info": {"name": "A", "date": "05-03-2024"},
+    "records": [{"Test_Name": "HbA1c", "Result": "7.1", "Status": "High", "Test_Date": "05-03-2024",
+                 "Test_Category": "Diabetes", "Source_Filename": "good.pdf"}],
+    "total_records": 1,
+    "raw_texts": [],
+    "failed_files": {"bad.pdf": "No extractable text found."},
+}
+
+
+def _study(db):
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    study = Study(profile_id=db.query(Profile).one().id, name="s")
+    db.add(study)
+    db.commit()
+    return owner, study
+
+
+def test_one_unreadable_file_does_not_lose_the_rest_of_the_batch(db, inline_jobs):
+    owner, study = _study(db)
+    job = jobs.submit(db, owner, _Service(TWO_FILES), [("good.pdf", b"%PDF"), ("bad.pdf", b"")], None, False, study.id)
+    db.refresh(job)
+    assert job.status == JOB_DONE
+    assert [r.file_name for r in db.query(Report)] == ["good.pdf"], "no empty report for the failed file"
+    assert job.progress["warnings"] == ["bad.pdf: No extractable text found."]
+
+
+def test_a_file_without_a_date_is_skipped_not_fatal(db, inline_jobs):
+    owner, study = _study(db)
+    undated = dict(TWO_FILES, patient_info={"name": "A"}, failed_files={},
+                   records=TWO_FILES["records"] + [{"Test_Name": "TSH", "Result": "2", "Status": "Normal",
+                                                    "Test_Date": "", "Source_Filename": "undated.pdf"}])
+    job = jobs.submit(db, owner, _Service(undated), [("good.pdf", b"%PDF"), ("undated.pdf", b"%PDF")], None, False, study.id)
+    db.refresh(job)
+    assert job.status == JOB_DONE and db.query(Report).count() == 1
+    assert "undated.pdf" in job.progress["warnings"][0]
+
+
+def test_when_no_file_can_be_saved_the_job_fails_with_each_reason(db, inline_jobs):
+    owner, study = _study(db)
+    nothing = dict(TWO_FILES, records=[], failed_files={"good.pdf": "Extraction failed", "bad.pdf": "No extractable text found."})
+    job = jobs.submit(db, owner, _Service(nothing), [("good.pdf", b""), ("bad.pdf", b"")], None, False, study.id)
+    db.refresh(job)
+    assert job.status == JOB_FAILED and "bad.pdf" in job.error and db.query(Report).count() == 0
+
+
+def test_a_failed_save_leaves_no_reports_and_a_failed_job(db, inline_jobs, monkeypatch):
+    """Reports and the done status commit together, so a failure cannot leave saved reports behind a failed job."""
+    owner, study = _study(db)
+
+    def broken_commit_after_reports(*args, **kwargs):
+        raise RuntimeError("connection lost")
+
+    monkeypatch.setattr(jobs, "normalize_analysis_payload", lambda result, service: result)
+    real = jobs.save_to_study
+
+    def save_then_break(session, *args):
+        warnings = real(session, *args)
+        session.flush()
+        broken_commit_after_reports()
+        return warnings
+
+    monkeypatch.setattr(jobs, "save_to_study", save_then_break)
+    job = jobs.submit(db, owner, _Service(TWO_FILES), [("good.pdf", b"%PDF")], None, False, study.id)
+    db.refresh(job)
+    assert job.status == JOB_FAILED and db.query(Report).count() == 0
+
+
+def test_a_job_that_stopped_making_progress_is_reported_failed(db):
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    old = datetime.utcnow() - timedelta(hours=2)
+    job = ReportJob(owner_id=owner.id, status=JOB_RUNNING, source_filenames=["a.pdf"],
+                    progress={"stage": "processing", "files": {}, "processed": 0, "total": 1}, created_at=old, started_at=old)
+    db.add(job)
+    db.commit()
+    response = main.read_job(job_id=job.id, user=RequestUser(user_id="uid-1", email=None), db=db)
+    assert response.status == JOB_FAILED and response.error == jobs.STALE_MESSAGE
+
+
+def test_a_finished_result_does_not_overwrite_an_interrupted_job(db, inline_jobs, monkeypatch):
+    owner, study = _study(db)
+
+    class InterruptedMidway(_Service):
+        def analyze_reports(self, **kwargs):
+            with jobs.SessionLocal() as other:
+                other.query(ReportJob).update({"status": JOB_INTERRUPTED})
+                other.commit()
+            return super().analyze_reports(**kwargs)
+
+    job = jobs.submit(db, owner, InterruptedMidway(TWO_FILES), [("good.pdf", b"%PDF")], None, False, study.id)
+    db.refresh(job)
+    assert job.status == JOB_INTERRUPTED and db.query(Report).count() == 0

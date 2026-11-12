@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Re-normalise every stored report and rebuild its report_findings rows. Safe to re-run."""
+"""Re-normalise every stored report and rebuild its report_findings rows. Safe to re-run.
+
+Run this after a normaliser change. Reports that merely lack findings are filled in
+automatically at server start; this script rebuilds all of them, in one transaction.
+"""
 from __future__ import annotations
 
 import sys
@@ -7,17 +11,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend_api.app.database import Report, SessionLocal, Study  # noqa: E402
-from backend_api.app.saving import rebuild_report  # noqa: E402
+from backend_api.app.database import SessionLocal  # noqa: E402
+from backend_api.app.saving import backfill_findings  # noqa: E402
 
 
 def main() -> None:
-    reports = findings = 0
     with SessionLocal() as db:
-        for report, profile_id in db.query(Report, Study.profile_id).join(Study, Study.id == Report.study_id):
-            findings += len(rebuild_report(db, report, profile_id))
-            reports += 1
-            db.commit()
+        reports, findings = backfill_findings(db, rebuild_all=True, wait=True)
     print(f"Rebuilt {findings} findings across {reports} reports")
 
 

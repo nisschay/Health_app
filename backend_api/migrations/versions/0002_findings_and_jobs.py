@@ -51,6 +51,24 @@ def upgrade() -> None:
     )
     op.create_index("ix_report_jobs_owner_id", "report_jobs", ["owner_id"])
 
+    # Before this index, the self profile was created read-then-write, so concurrent sign-ins
+    # could leave an account with two. Keep the oldest as "self"; the rest stay as ordinary
+    # profiles with all their studies, so nothing is lost and the index can be built.
+    op.execute(
+        sa.text(
+            """
+            UPDATE profiles SET relationship = 'other'
+            WHERE lower(relationship) = 'self'
+              AND id <> (
+                SELECT keep.id FROM profiles AS keep
+                WHERE keep.account_owner_id = profiles.account_owner_id
+                  AND lower(keep.relationship) = 'self'
+                ORDER BY keep.created_at, keep.id
+                LIMIT 1
+              )
+            """
+        )
+    )
     op.create_index(
         "uq_profiles_owner_self",
         "profiles",

@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import jobs
@@ -36,7 +37,7 @@ from .database import (
 )
 from .findings import record_from_finding
 from .migrations import run_migrations
-from .saving import EMPTY_INSIGHTS, findings_for_report, normalize_analysis_payload
+from .saving import EMPTY_INSIGHTS, findings_in_memory, normalize_analysis_payload, start_backfill_in_background
 from .schemas import (
     AnalysisHistoryItem,
     AnalysisResponse,
@@ -80,6 +81,7 @@ service = MedicalAnalysisService()
 def startup_event() -> None:
     run_migrations()
     jobs.mark_interrupted()
+    start_backfill_in_background()
 
 
 app.add_middleware(BodySizeLimitMiddleware)
@@ -215,13 +217,19 @@ def create_profile_endpoint(
     db: Session = Depends(get_db),
 ) -> ProfileResponse:
     owner = _current_account_owner(user, db)
-    row = create_profile(
-        db=db,
-        account_owner_id=owner.id,
-        full_name=payload.full_name.strip(),
-        relationship=payload.relationship.strip(),
-        date_of_birth=_parse_iso_date(payload.date_of_birth, "date_of_birth"),
-    )
+    try:
+        row = create_profile(
+            db=db,
+            account_owner_id=owner.id,
+            full_name=payload.full_name.strip(),
+            relationship=payload.relationship.strip(),
+            date_of_birth=_parse_iso_date(payload.date_of_birth, "date_of_birth"),
+        )
+    except IntegrityError as exc:
+        db.rollback()
+        if "uq_profiles_owner_self" in str(exc) or "profiles.account_owner_id" in str(exc):
+            raise HTTPException(status_code=409, detail="You already have a profile for yourself.") from exc
+        raise
     return _profile_response(row)
 
 
@@ -367,9 +375,8 @@ def get_combined_study_report(
     covered = {finding.report_id for finding in findings}
     for report in reports:
         if report.id not in covered:
-            findings.extend(findings_for_report(db, report, profile.id))
-    if len(covered) < len(reports):
-        db.commit()
+            # Not backfilled yet (the startup backfill runs in the background). Build in memory only.
+            findings.extend(findings_in_memory(report, profile.id))
 
     records = _dedupe_records([record_from_finding(finding) for finding in findings])
     insights = service.get_health_insights(records) if records else EMPTY_INSIGHTS
@@ -444,7 +451,7 @@ def read_job(
     job = get_job(db, job_id, owner.id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
-    return _job_response(job)
+    return _job_response(jobs.expire_if_stale(db, job))
 
 
 # ── History ────────────────────────────────────────────────────────────────────
