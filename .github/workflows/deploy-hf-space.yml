@@ -1,7 +1,11 @@
 name: Deploy backend to Hugging Face Space
 
+# Deploy only what CI has passed: a red build on main must never reach the Space,
+# because the Space runs database migrations at startup.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -11,18 +15,23 @@ concurrency:
 
 jobs:
   push:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The commit CI tested, not whatever main points at by the time this runs.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Push a snapshot of main to the Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE: ${{ vars.HF_SPACE }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           test -n "$HF_TOKEN" -a -n "$HF_SPACE" || { echo "Set the HF_TOKEN secret and HF_SPACE variable (user/space)"; exit 1; }
           git config user.name github-actions
           git config user.email github-actions@github.com
           git checkout -q --orphan deploy
           git ls-files -z -ci --exclude-from=.dockerignore | grep -zv '^README.md$' | xargs -0 -r git rm -q --cached
-          git commit -q -m "Deploy ${GITHUB_SHA}"
+          git commit -q -m "Deploy ${DEPLOY_SHA}"
           git push --force "https://oauth2:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" deploy:main
