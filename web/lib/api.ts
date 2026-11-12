@@ -68,7 +68,9 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
 
 async function authBackendFetch(path: string, options: RequestInit = {}): Promise<Response> {
   let response = await authFetch(`${API_BASE_URL}${path}`, options);
-  if (shouldRetryDirect(response)) {
+  // Only reads are retried: repeating a POST could start a second upload job.
+  const isRead = (options.method ?? "GET").toUpperCase() === "GET";
+  if (isRead && shouldRetryDirect(response)) {
     response = await authFetch(`${DIRECT_API_BASE_URL}${path}`, options);
   }
   return response;
@@ -173,6 +175,8 @@ export type JobProgress = {
   processed: number;
   total: number;
   eta_seconds?: number | null;
+  /** One entry per file that was skipped while the rest of the upload was saved. */
+  warnings?: string[];
 };
 
 export type ReportJob = {
@@ -312,21 +316,83 @@ export async function startAnalysisJob(formData: FormData): Promise<ReportJob> {
   return parseJsonResponse<ReportJob>(response);
 }
 
-export async function fetchJob(jobId: string): Promise<ReportJob> {
-  const response = await authBackendFetch(`/api/v1/reports/jobs/${jobId}`);
+/** The job no longer exists for this user (deleted, or another account's id). Polling cannot recover. */
+export class JobNotFoundError extends Error {
+  constructor() {
+    super("This upload could not be found. Please upload the files again.");
+    this.name = "JobNotFoundError";
+  }
+}
+
+/** A poll that failed for a reason worth retrying: network down, server waking up, or overloaded. */
+class TransientPollError extends Error {}
+
+export async function fetchJob(jobId: string, signal?: AbortSignal): Promise<ReportJob> {
+  let response: Response;
+  try {
+    response = await authBackendFetch(`/api/v1/reports/jobs/${jobId}`, { signal });
+  } catch (error) {
+    if (error instanceof AuthError || isAbortError(error)) throw error;
+    throw new TransientPollError(error instanceof Error ? error.message : "Network error");
+  }
+  if (response.status === 404 || response.status === 403) throw new JobNotFoundError();
+  if (response.status >= 500 || response.status === 429 || response.status === 408) {
+    throw new TransientPollError(`Server returned ${response.status}`);
+  }
   return parseJsonResponse<ReportJob>(response);
 }
 
+export function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 const JOB_POLL_INTERVAL_MS = 2_000;
+const JOB_POLL_MAX_INTERVAL_MS = 15_000;
+// Longer than the server's own stale-job limit (30 min), which settles a lost job as failed first.
+const JOB_POLL_DEADLINE_MS = 40 * 60_000;
 const JOB_SETTLED: JobStatus[] = ["done", "failed", "interrupted"];
 
-/** Polls until the job settles. Only the id is needed, so a refreshed tab can pick a job back up. */
-export async function waitForJob(jobId: string, onProgress: (job: ReportJob) => void): Promise<ReportJob> {
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Polls until the job settles. Only the id is needed, so a refreshed tab can pick a job back up.
+ * A failed poll is not a failed job: network blips and a waking server are retried with backoff,
+ * because the job keeps running on the server either way.
+ */
+export async function waitForJob(
+  jobId: string,
+  onProgress: (job: ReportJob) => void,
+  signal?: AbortSignal,
+): Promise<ReportJob> {
+  const deadline = Date.now() + JOB_POLL_DEADLINE_MS;
+  let delay = JOB_POLL_INTERVAL_MS;
   for (;;) {
-    const job = await fetchJob(jobId);
-    onProgress(job);
-    if (JOB_SETTLED.includes(job.status)) return job;
-    await new Promise((resolve) => setTimeout(resolve, JOB_POLL_INTERVAL_MS));
+    try {
+      const job = await fetchJob(jobId, signal);
+      onProgress(job);
+      if (JOB_SETTLED.includes(job.status)) return job;
+      delay = JOB_POLL_INTERVAL_MS;
+    } catch (error) {
+      if (!(error instanceof TransientPollError)) throw error;
+      delay = Math.min(delay * 2, JOB_POLL_MAX_INTERVAL_MS);
+    }
+    if (Date.now() + delay > deadline) {
+      throw new Error("Lost contact with the server while it was processing your upload. Check your reports list; it may still have been saved.");
+    }
+    await sleep(delay, signal);
   }
 }
 
