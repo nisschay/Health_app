@@ -1,29 +1,10 @@
 from datetime import date, datetime, timedelta
 
-import pytest
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import event
 
 from backend_api.app import database, main
 from backend_api.app.auth import RequestUser
-from backend_api.app.database import Base, Profile, Report, ReportAnalysis, ReportFinding, Study, User
-
-
-@pytest.fixture()
-def engine():
-    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(eng)
-    return eng
-
-
-@pytest.fixture()
-def db(engine):
-    session = sessionmaker(bind=engine)()
-    try:
-        yield session
-    finally:
-        session.close()
+from backend_api.app.database import Profile, Report, ReportAnalysis, ReportFinding, Study, User
 
 
 def _seed(db, studies=2, reports_per_study=2):

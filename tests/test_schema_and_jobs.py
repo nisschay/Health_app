@@ -3,9 +3,8 @@ from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from backend_api.app import jobs, main
 from backend_api.app.auth import RequestUser
@@ -30,26 +29,6 @@ from backend_api.app.saving import backfill_findings
 from backend_api.app.schemas import CreateProfileRequest
 
 
-def _engine():
-    return create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-
-
-@pytest.fixture()
-def engine():
-    eng = _engine()
-    Base.metadata.create_all(eng)
-    return eng
-
-
-@pytest.fixture()
-def db(engine):
-    session = sessionmaker(bind=engine)()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
 def _count_statements(engine):
     counter = {"n": 0}
 
@@ -72,8 +51,8 @@ def _create_pre_alembic_schema(eng):
         conn.execute(text("ALTER TABLE extraction_cache DROP COLUMN owner_uid"))  # 0003
 
 
-def test_migrations_build_exactly_the_model_schema():
-    eng = _engine()
+def test_migrations_build_exactly_the_model_schema(blank_engine):
+    eng = blank_engine
     run_migrations(eng)
     insp = inspect(eng)
     assert set(insp.get_table_names()) == set(Base.metadata.tables) | {"alembic_version"}
@@ -82,9 +61,9 @@ def test_migrations_build_exactly_the_model_schema():
     run_migrations(eng)  # idempotent
 
 
-def test_a_database_created_before_alembic_is_stamped_then_upgraded():
+def test_a_database_created_before_alembic_is_stamped_then_upgraded(blank_engine):
     """Production predates Alembic: it must be adopted, not recreated, and still gain the new tables."""
-    eng = _engine()
+    eng = blank_engine
     _create_pre_alembic_schema(eng)
     run_migrations(eng)
     with eng.connect() as conn:
@@ -92,9 +71,9 @@ def test_a_database_created_before_alembic_is_stamped_then_upgraded():
     assert {"report_findings", "report_jobs"} <= set(inspect(eng).get_table_names())
 
 
-def test_migration_keeps_one_self_profile_when_an_account_has_two():
+def test_migration_keeps_one_self_profile_when_an_account_has_two(blank_engine):
     """Before the unique index, concurrent sign-ins could create two self profiles; the upgrade must not crash on them."""
-    eng = _engine()
+    eng = blank_engine
     _create_pre_alembic_schema(eng)
     with eng.begin() as conn:
         conn.execute(text("INSERT INTO users (id, firebase_uid) VALUES (1, 'uid-1')"))
@@ -106,7 +85,7 @@ def test_migration_keeps_one_self_profile_when_an_account_has_two():
             )
     run_migrations(eng)
     with eng.connect() as conn:
-        rows = dict(conn.execute(text("SELECT id, relationship FROM profiles")).all())
+        rows = {str(pid).replace("-", ""): rel for pid, rel in conn.execute(text("SELECT id, relationship FROM profiles"))}
     assert rows == {"a" * 32: "self", "b" * 32: "other", "c" * 32: "mother"}, "oldest stays self, nothing is deleted"
 
 
