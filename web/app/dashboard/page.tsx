@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import type { Components } from "react-markdown";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -649,6 +650,7 @@ export default function DashboardPage() {
   const [selectedTest, setSelectedTest] = useState<string>("");
   const [isExporting, setIsExporting] = useState<"pdf" | "excel" | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [uploadConsent, setUploadConsent] = useState(false);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [studyFlowOpen, setStudyFlowOpen] = useState(false);
   const [studyFlowStep, setStudyFlowStep] = useState<"who" | "what" | "pick-study" | "confirm-add" | "new-study" | "new-member">("who");
@@ -1665,7 +1667,15 @@ export default function DashboardPage() {
 
               {errorMessage && <p className="status-text error-text">{errorMessage}</p>}
 
-              <button className="primary-button submit-button" disabled={isAnalyzing} type="submit">
+              <label className="consent-check">
+                <input type="checkbox" required checked={uploadConsent} onChange={(e) => setUploadConsent(e.target.checked)} />
+                <span>
+                  I understand the text of these reports is sent to Google&apos;s Gemini AI to be read, that I have permission
+                  to upload them, and that the results are not medical advice. <Link href="/privacy" target="_blank">How data is handled</Link>
+                </span>
+              </label>
+
+              <button className="primary-button submit-button" disabled={isAnalyzing || !uploadConsent} type="submit">
                 {isAnalyzing ? "Analyzing…" : "Analyze Reports"}
               </button>
             </form>
@@ -1755,7 +1765,7 @@ export default function DashboardPage() {
               <div>
                 <span className="assistant-kicker">Clinical Assistant</span>
                 <h2>Ask Follow-Up Questions</h2>
-                <p className="muted-copy">Get report-aware answers about abnormalities, trends, and clinical priorities. Markdown is supported in responses.</p>
+                <p className="muted-copy">Answers come only from your own results and can be wrong. They are not medical advice: check anything important with your doctor.</p>
               </div>
             </div>
 

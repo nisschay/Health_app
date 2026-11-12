@@ -4541,3 +4541,74 @@ h1 {
   background: var(--bg-surface);
   color: var(--text-primary);
 }
+
+/* Consent before an upload, and the privacy page. */
+.consent-check {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  font-size: 0.85rem;
+  color: var(--text-secondary, var(--text-muted));
+  line-height: 1.5;
+}
+
+.consent-check input {
+  margin-top: 0.2rem;
+  flex-shrink: 0;
+}
+
+.consent-check a,
+.auth-legal a,
+.legal-page a {
+  color: #d97706;
+  text-decoration: underline;
+}
+
+.auth-legal {
+  margin-top: 1rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.legal-page {
+  max-width: 68ch;
+  margin: 0 auto;
+  padding-block: 3rem 4rem;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.legal-page h1 {
+  font-family: var(--font-display), serif;
+  font-size: 2rem;
+  margin: 0.5rem 0 0;
+}
+
+.legal-page h2 {
+  font-size: 1.15rem;
+  margin: 1.2rem 0 0;
+}
+
+.legal-page ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.legal-updated {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.legal-back {
+  font-size: 0.85rem;
+}
