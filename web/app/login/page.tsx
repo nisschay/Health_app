@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 
@@ -276,6 +277,9 @@ export default function LoginPage() {
               </p>
             )}
           </form>
+          <p className="auth-legal">
+            Not medical advice. <Link href="/privacy">How your data is handled</Link>
+          </p>
         </div>
       </section>
     </main>
