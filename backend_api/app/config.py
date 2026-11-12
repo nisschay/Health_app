@@ -47,10 +47,6 @@ class Settings:
         os.getenv("PDF_OCR_FALLBACK_ENABLED"),
         default=True,
     )
-    ocr_min_text_chars: int = max(
-        0,
-        _as_int(os.getenv("PDF_OCR_MIN_TEXT_CHARS"), default=120),
-    )
     normalization_alias_whitelist_only: bool = _as_bool(
         os.getenv("NORMALIZATION_ALIAS_WHITELIST_ONLY"),
         default=True,

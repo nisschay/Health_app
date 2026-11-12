@@ -10,7 +10,7 @@ from datetime import datetime
 
 import google.generativeai as genai
 import pandas as pd
-import PyPDF2
+from pypdf import PdfReader
 
 try:
     import pytesseract
@@ -46,15 +46,14 @@ logger = logging.getLogger(__name__)
 
 
 EXTRACTION_MAX_CHARS = 120000
+# Part of the extraction cache key: bump it when the prompt, schema or parsing changes,
+# so reports already in the cache are read again with the fix.
+EXTRACTION_VERSION = 2
 
 
 PDF_OCR_FALLBACK_ENABLED = _env_bool("PDF_OCR_FALLBACK_ENABLED", default=True)
-
-
-PDF_OCR_MIN_TEXT_CHARS = max(0, int(os.getenv("PDF_OCR_MIN_TEXT_CHARS", "120")))
-
-
-PDF_OCR_MAX_PAGES = max(1, int(os.getenv("PDF_OCR_MAX_PAGES", "5")))
+# Pages read by OCR per PDF; each takes a few seconds on the free server.
+PDF_OCR_MAX_PAGES = max(1, int(os.getenv("PDF_OCR_MAX_PAGES", "15")))
 
 
 CANONICAL_CATEGORY_VALUES = [
@@ -75,67 +74,55 @@ CANONICAL_CATEGORY_VALUES = [
 ]
 
 
-def _ocr_extract_text_from_pdf(file_content):
-    if not PDF_OCR_FALLBACK_ENABLED:
-        return ""
+# Bounds on one PDF, so a crafted or huge file cannot hold a worker for long.
+PDF_MAX_PAGES = 30
+OCR_PAGE_TIMEOUT_SECONDS = 60
+# A page with less text than this is treated as a scanned image and read by OCR.
+PAGE_MIN_TEXT_CHARS = 20
+
+
+def _ocr_page(file_content: bytes, page_number: int) -> str:
     if convert_from_bytes is None or pytesseract is None:
-        logger.warning("OCR fallback unavailable: install pdf2image and pytesseract to enable image-PDF extraction.")
         return ""
-
     try:
-        images = convert_from_bytes(file_content, first_page=1, last_page=PDF_OCR_MAX_PAGES)
+        images = convert_from_bytes(
+            file_content, first_page=page_number, last_page=page_number, timeout=OCR_PAGE_TIMEOUT_SECONDS
+        )
+        return "".join(pytesseract.image_to_string(image, timeout=OCR_PAGE_TIMEOUT_SECONDS) for image in images)
     except Exception as exc:
-        logger.warning(f"OCR fallback could not rasterize PDF: {exc}")
+        logger.warning("OCR failed on page %d: %s", page_number, exc)
         return ""
 
-    text_parts = []
-    for page_num, image in enumerate(images, start=1):
-        try:
-            page_text = pytesseract.image_to_string(image)
-        except Exception as exc:
-            logger.warning(f"OCR failed on page {page_num}: {exc}")
-            continue
-        if page_text and page_text.strip():
-            text_parts.append(f"\n--- OCR Page {page_num} ---\n{page_text}")
 
-    return "".join(text_parts).strip()
+def extract_text_from_pdf(file_content: bytes) -> str | None:
+    """Text of each page in order; pages without a text layer go through OCR.
 
-
-def extract_text_from_pdf(file_content):
+    The old reader ran OCR only when the whole file had almost no text, and then only on the
+    first 5 pages, so a digital first page followed by scanned pages lost the scanned ones.
+    """
     try:
-        pdf_file = io.BytesIO(file_content)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text_parts = []
-        for page_num, page in enumerate(pdf_reader.pages):
-            page_text = page.extract_text()
-            if page_text:
-                text_parts.append(f"\n--- Page {page_num+1} ---\n{page_text}")
-        text = "".join(text_parts).strip()
-        if text and len(text) >= PDF_OCR_MIN_TEXT_CHARS:
-            return text
-
-        if not text:
-            logger.warning("No text extracted from PDF. Attempting OCR fallback.")
-        else:
-            logger.warning(
-                f"Extracted text length ({len(text)}) below OCR threshold ({PDF_OCR_MIN_TEXT_CHARS}). Attempting OCR fallback."
-            )
-
-        ocr_text = _ocr_extract_text_from_pdf(file_content)
-        if ocr_text:
-            if text:
-                return f"{text}\n\n--- OCR Fallback ---\n{ocr_text}"
-            return ocr_text
-
-        if not text:
-            logger.warning("No text extracted after OCR fallback.")
-        return text
-    except Exception as e:
-        logger.error(f"Error reading PDF: {str(e)}")
-        ocr_text = _ocr_extract_text_from_pdf(file_content)
-        if ocr_text:
-            return ocr_text
+        reader = PdfReader(io.BytesIO(file_content))
+        pages = list(reader.pages)
+    except Exception as exc:
+        logger.error("Could not open PDF: %s", exc)
         return None
+    if len(pages) > PDF_MAX_PAGES:
+        logger.warning("PDF has %d pages; reading the first %d", len(pages), PDF_MAX_PAGES)
+
+    ocr_budget = PDF_OCR_MAX_PAGES if PDF_OCR_FALLBACK_ENABLED else 0
+    parts = []
+    for number, page in enumerate(pages[:PDF_MAX_PAGES], start=1):
+        try:
+            text = page.extract_text() or ""
+        except Exception as exc:
+            logger.warning("Could not read text on page %d: %s", number, exc)
+            text = ""
+        if len(text.strip()) < PAGE_MIN_TEXT_CHARS and ocr_budget > 0:
+            ocr_budget -= 1
+            text = _ocr_page(file_content, number) or text
+        if text.strip():
+            parts.append(f"\n--- Page {number} ---\n{text}")
+    return "".join(parts).strip() or None
 
 
 def _extract_first_json_object(response_text: str) -> str | None:
