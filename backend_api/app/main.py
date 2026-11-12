@@ -1,10 +1,12 @@
 import json
 import logging
-from datetime import date
+from contextlib import asynccontextmanager
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import IntegrityError
@@ -14,6 +16,7 @@ from . import jobs
 from .auth import RequestUser, get_request_user
 from .config import settings
 from .database import (
+    LAST_LOGIN_TOUCH_INTERVAL,
     ReportFinding,
     create_profile,
     create_study,
@@ -24,6 +27,7 @@ from .database import (
     get_profile_by_id,
     get_study_by_id,
     get_user_analyses,
+    get_user_by_firebase_uid,
     list_dashboard_report_rows,
     list_findings_for_reports,
     list_profiles_for_owner,
@@ -68,20 +72,26 @@ from .services import MedicalAnalysisService
 
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    run_migrations()
+    jobs.mark_interrupted()
+    start_backfill_in_background()
+    yield
+
+
+_docs = settings.expose_api_docs
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
     description="API layer for the Medical Project – auth, analysis, history.",
+    lifespan=lifespan,
+    docs_url="/docs" if _docs else None,
+    redoc_url="/redoc" if _docs else None,
+    openapi_url="/openapi.json" if _docs else None,
 )
 
 service = MedicalAnalysisService()
-
-
-@app.on_event("startup")
-def startup_event() -> None:
-    run_migrations()
-    jobs.mark_interrupted()
-    start_backfill_in_background()
 
 
 app.add_middleware(BodySizeLimitMiddleware)
@@ -90,7 +100,7 @@ if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=True,
+        allow_credentials=False,  # auth is a bearer header, never a cookie
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -129,6 +139,13 @@ def sync_user(
 
 
 def _current_account_owner(user: RequestUser, db: Session):
+    """One SELECT for a user seen recently; the upsert (a write) only for new or stale users.
+
+    Every request used to upsert, so each 2-second job poll wrote to the database.
+    """
+    existing = get_user_by_firebase_uid(db, user.user_id)
+    if existing and existing.last_login and existing.last_login >= datetime.utcnow() - LAST_LOGIN_TOUCH_INTERVAL:
+        return existing
     return upsert_user(db, user.user_id, user.email, None)
 
 
@@ -141,11 +158,10 @@ def _owned_profile(db: Session, owner, profile_id: UUID):
 
 def _owned_study(db: Session, owner, study_id: UUID):
     study = get_study_by_id(db, study_id)
-    if not study:
+    profile = get_profile_by_id(db, study.profile_id) if study else None
+    if not study or not profile or profile.account_owner_id != owner.id:
+        # The same answer for missing and not-yours, so ids cannot be probed.
         raise HTTPException(status_code=404, detail="Study not found.")
-    profile = get_profile_by_id(db, study.profile_id)
-    if not profile or profile.account_owner_id != owner.id:
-        raise HTTPException(status_code=403, detail="You do not have access to this study.")
     return study, profile
 
 
@@ -434,11 +450,20 @@ async def create_job(
     existing_payload = await read_existing_data_upload(existing_data)
     if not pdf_payloads and not existing_payload:
         raise HTTPException(status_code=400, detail="At least one PDF or an existing data file is required.")
+    # Database calls block; on the event loop a slow Neon wake-up stalled every request, /health included.
+    return await run_in_threadpool(_accept_job, db, user, pdf_payloads, existing_payload, include_raw_texts, study_id)
+
+
+def _accept_job(db: Session, user: RequestUser, pdf_payloads, existing_payload, include_raw_texts: bool, study_id: UUID | None) -> JobResponse:
     owner = _current_account_owner(user, db)
     if study_id is not None:
         _owned_study(db, owner, study_id)
+    try:
+        job = jobs.submit(db, owner, service, pdf_payloads, existing_payload, include_raw_texts, study_id)
+    except jobs.TooManyJobs as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "60"}) from exc
     logger.info("Report job accepted: files=%d study=%s", len(pdf_payloads), study_id)
-    return _job_response(jobs.submit(db, owner, service, pdf_payloads, existing_payload, include_raw_texts, study_id))
+    return _job_response(job)
 
 
 @app.get(f"{settings.api_prefix}/reports/jobs/{{job_id}}", response_model=JobResponse)

@@ -98,3 +98,10 @@ async def test_rejects_other_extensions_for_existing_data():
     with pytest.raises(HTTPException) as excinfo:
         await read_existing_data_upload(_upload("payload.exe", b"MZ"))
     assert excinfo.value.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_two_files_with_one_name_get_distinct_names():
+    """Results are matched to files by name; two phone uploads called scan.pdf shared each other's rows."""
+    payloads = await read_pdf_uploads([_upload("scan.pdf", PDF), _upload("scan.pdf", PDF), _upload("scan.pdf", PDF)])
+    assert [name for name, _ in payloads] == ["scan.pdf", "scan (2).pdf", "scan (3).pdf"]

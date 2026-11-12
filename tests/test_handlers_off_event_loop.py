@@ -10,10 +10,12 @@ def test_blocking_export_handlers_are_sync_so_fastapi_threads_them():
 
 
 def test_job_creation_hands_the_work_to_the_pool():
-    """The request only reads the upload; extraction runs in the job pool and the client polls."""
-    source = inspect.getsource(main.create_job)
-    assert "jobs.submit(" in source
-    assert "analyze_reports(" not in source
+    """The request only reads the upload; database work runs in a thread and extraction in the job pool."""
+    route = inspect.getsource(main.create_job)
+    assert "run_in_threadpool(_accept_job" in route
+    assert "analyze_reports(" not in route
+    assert not inspect.iscoroutinefunction(main._accept_job)
+    assert "jobs.submit(" in inspect.getsource(main._accept_job)
 
 
 def test_job_polling_is_sync_so_fastapi_threads_it():
