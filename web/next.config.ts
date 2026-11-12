@@ -34,6 +34,19 @@ if (process.env.NODE_ENV !== "production" && process.env.VERCEL !== "1") {
   loadCentralEnv();
 }
 
+// Previews may build without Firebase settings, but a production site without them
+// cannot sign anyone in. Fail that build instead of shipping a broken login.
+const REQUIRED_IN_PRODUCTION = [
+  "NEXT_PUBLIC_FIREBASE_API_KEY",
+  "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN",
+  "NEXT_PUBLIC_FIREBASE_PROJECT_ID",
+  "NEXT_PUBLIC_FIREBASE_APP_ID",
+];
+if (process.env.VERCEL_ENV === "production") {
+  const missing = REQUIRED_IN_PRODUCTION.filter((key) => !process.env[key]);
+  if (missing.length) throw new Error(`Missing production environment variables: ${missing.join(", ")}`);
+}
+
 const nextConfig: NextConfig = {
   // Keep dev and production artifacts isolated so running `next build`
   // does not invalidate chunks served by `next dev`.
