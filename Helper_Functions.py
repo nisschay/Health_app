@@ -498,6 +498,15 @@ _RESULT_COMPARATOR_PATTERN = re.compile(
 )
 
 
+# Thousands grouping in both styles: Indian "2,50,000" and Western "250,000".
+_DIGIT_GROUPING_PATTERN = re.compile(r"\b\d{1,3}(?:,\d{2})*,\d{3}\b|\b\d{1,3}(?:,\d{3})+\b")
+
+
+def strip_digit_grouping(text: str) -> str:
+    """'2,50,000' -> '250000'. Reading only the last group turned a platelet count of 2.5 lakh into 2."""
+    return _DIGIT_GROUPING_PATTERN.sub(lambda match: match.group(0).replace(",", ""), text)
+
+
 def parse_result_numeric(value) -> tuple[float | None, str | None]:
     """Parse a lab result into (numeric_value, comparator); "< 0.5" -> (0.5, "<")."""
     if value is None:
@@ -520,7 +529,7 @@ def parse_result_numeric(value) -> tuple[float | None, str | None]:
         comparator = _COMPARATOR_CANONICAL.get(comparator_match.group(1))
         text = text[comparator_match.end():]
 
-    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
+    text = strip_digit_grouping(text)
 
     number_match = _RESULT_NUMBER_PATTERN.search(text)
     if not number_match:
@@ -1251,33 +1260,85 @@ Assistant Response (markdown):
         _ui_error(f"Error getting chatbot response from Gemini: {last_error_text}")
     return "Sorry, I encountered an error trying to respond."
 
+_RANGE_NUMBER = r"-?\d+(?:\.\d+)?"
+_RANGE_PAIR_PATTERN = re.compile(rf"(?<![\d.])({_RANGE_NUMBER})\s*(?:-|–|to)\s*({_RANGE_NUMBER})", re.IGNORECASE)
+_RANGE_UPPER_PATTERN = re.compile(rf"(?:<=?|≤|less\s+than|upto|up\s+to|below)\s*({_RANGE_NUMBER})", re.IGNORECASE)
+_RANGE_LOWER_PATTERN = re.compile(rf"(?:>=?|≥|greater\s+than|more\s+than|above)\s*({_RANGE_NUMBER})", re.IGNORECASE)
+_RANGE_SEGMENT_SPLIT = re.compile(r"[;,\n|]")
+
+
+_RANGE_EXPRESSION = (
+    rf"(?:(?:<=?|>=?|≤|≥|below|less\s+than|above|greater\s+than|upto|up\s+to)\s*{_RANGE_NUMBER}"
+    rf"|{_RANGE_NUMBER}\s*(?:-|–|to)\s*{_RANGE_NUMBER})"
+)
+# Labels a lab uses for its healthy tier. "Near optimal" and "above optimal" are not healthy,
+# and risk labels are left out on purpose: "low risk" for HDL is not the normal band.
+_NORMAL_TIER_LABEL = r"(?<!near\s)(?<!above\s)\b(?:normal|desirable|optimal|sufficien(?:t|cy))\b"
+_TIER_NUMBER_THEN_LABEL = re.compile(rf"({_RANGE_EXPRESSION})\s*[:\-]?\s*{_NORMAL_TIER_LABEL}", re.IGNORECASE)
+_TIER_LABEL_THEN_NUMBER = re.compile(rf"{_NORMAL_TIER_LABEL}(?:\s+level)?\s*[:\-]?\s*({_RANGE_EXPRESSION})", re.IGNORECASE)
+
+
+def _is_ambiguous_range(text: str) -> bool:
+    """More than one band or threshold: which one is "normal" cannot be read off the numbers."""
+    numeric_segments = [part for part in _RANGE_SEGMENT_SPLIT.split(text) if re.search(r"\d", part)]
+    pairs = _RANGE_PAIR_PATTERN.findall(text)
+    without_pairs = _RANGE_PAIR_PATTERN.sub(" ", text)
+    thresholds = _RANGE_UPPER_PATTERN.findall(without_pairs) + _RANGE_LOWER_PATTERN.findall(without_pairs)
+    return len(numeric_segments) > 1 or len(pairs) + len(thresholds) > 1
+
+
+def _labelled_normal_tier(text: str) -> str | None:
+    """The one band the lab itself labels healthy ("< 200 Desirable", "Normal : Below 5.7"), else None.
+
+    Two healthy bands (adult and paediatric vitamin D) are as ambiguous as none.
+    """
+    for pattern in (_TIER_NUMBER_THEN_LABEL, _TIER_LABEL_THEN_NUMBER):
+        found = {re.sub(r"\s+", " ", match.strip().lower()) for match in pattern.findall(text)}
+        if found:
+            return found.pop() if len(found) == 1 else None
+    return None
+
+
 def parse_reference_range(ref_range_str):
+    """(low, high, kind) for a single range or threshold; (None, None, None) when ambiguous.
+
+    Tiered ranges ("Desirable <200, Borderline 200-239") use the one tier the lab labels
+    healthy. Taking the first number pair instead turned a desirable cholesterol into "Low".
+    Ranges per sex or age ("Male 13-17 Female 12-15") stay unparsed, and the status falls
+    back to the lab's own flag: unknown is better than wrong.
+    """
     if not isinstance(ref_range_str, str) or ref_range_str.lower() == 'n/a' or not ref_range_str.strip():
         return None, None, None
-    
-    ref_range_str = ref_range_str.strip()
-    
-    match_range = re.search(r'([\d.]+)\s*-\s*([\d.]+)', ref_range_str)
-    if match_range:
-        try: return float(match_range.group(1)), float(match_range.group(2)), "range"
-        except ValueError: pass
 
-    match_less_than = re.search(r'(?:<|Less than|upto)\s*([\d.]+)', ref_range_str, re.IGNORECASE)
-    if match_less_than:
-        try: return None, float(match_less_than.group(1)), "less_than"
-        except ValueError: pass
-
-    match_greater_than = re.search(r'(?:>|Greater than|above)\s*([\d.]+)', ref_range_str, re.IGNORECASE)
-    if match_greater_than:
-        try: return float(match_greater_than.group(1)), None, "greater_than"
-        except ValueError: pass
-    
-    if ref_range_str.lower() in ["negative", "non reactive", "not detected"]:
+    text = strip_digit_grouping(ref_range_str.strip())
+    lowered = text.lower()
+    if lowered in ["negative", "non reactive", "not detected", "nil", "absent", "not present"]:
         return None, None, "qualitative_normal"
-    if ref_range_str.lower() in ["positive", "reactive", "detected"]:
+    if lowered in ["positive", "reactive", "detected"]:
         return None, None, "qualitative_abnormal"
-        
+
+    if _is_ambiguous_range(text):
+        normal_tier = _labelled_normal_tier(text)
+        if normal_tier is None or _is_ambiguous_range(normal_tier):
+            return None, None, None
+        text = normal_tier
+
+    pairs = _RANGE_PAIR_PATTERN.findall(text)
+    uppers = _RANGE_UPPER_PATTERN.findall(_RANGE_PAIR_PATTERN.sub(" ", text))
+    lowers = _RANGE_LOWER_PATTERN.findall(_RANGE_PAIR_PATTERN.sub(" ", text))
+
+    try:
+        if pairs:
+            low, high = float(pairs[0][0]), float(pairs[0][1])
+            return (low, high, "range") if low <= high else (None, None, None)
+        if uppers:
+            return None, float(uppers[0]), "less_than"
+        if lowers:
+            return float(lowers[0]), None, "greater_than"
+    except ValueError:
+        pass
     return None, None, None
+
 
 def generate_test_plot(df_report, selected_test_name, selected_date=None):
     test_data_for_plot = df_report[df_report['Test_Name'] == selected_test_name]
