@@ -66,6 +66,11 @@ class Settings:
     max_upload_file_mb: int = max(1, _as_int(os.getenv("MAX_UPLOAD_FILE_MB"), default=10))
     max_upload_total_mb: int = max(1, _as_int(os.getenv("MAX_UPLOAD_TOTAL_MB"), default=25))
     rate_limit_per_minute: int = max(1, _as_int(os.getenv("RATE_LIMIT_PER_MINUTE"), default=20))
+    # Each waiting job holds its uploads in memory on a small free machine.
+    max_active_jobs_per_user: int = max(1, _as_int(os.getenv("MAX_ACTIVE_JOBS_PER_USER"), default=2))
+    max_pending_jobs: int = max(1, _as_int(os.getenv("MAX_PENDING_JOBS"), default=6))
+    # The interactive API docs list every route; keep them for local development only.
+    expose_api_docs: bool = _as_bool(os.getenv("EXPOSE_API_DOCS"), default=False)
 
 
 settings = Settings()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -32,6 +33,12 @@ UPSTREAM_RATE_LIMIT_PREFIX = "RATE_LIMIT_EXCEEDED:"
 INTERRUPTED_MESSAGE = "The server restarted while this upload was being processed. Please upload the files again."
 STALE_MESSAGE = "This upload stopped making progress. Please upload the files again."
 _pool = ThreadPoolExecutor(max_workers=settings.job_workers, thread_name_prefix="report-job")
+_pending = 0  # jobs submitted to this process and not yet finished
+_pending_lock = threading.Lock()
+
+
+class TooManyJobs(Exception):
+    """Admission refused; the route turns this into 429."""
 
 
 def submit(
@@ -43,6 +50,15 @@ def submit(
     include_raw_texts: bool,
     study_id: uuid.UUID | None,
 ) -> ReportJob:
+    global _pending
+    active = db.query(ReportJob).filter(ReportJob.owner_id == owner.id, ReportJob.status.in_(JOB_ACTIVE_STATUSES)).count()
+    if active >= settings.max_active_jobs_per_user:
+        raise TooManyJobs("You already have uploads being processed. Wait for one to finish, then try again.")
+    with _pending_lock:
+        if _pending >= settings.max_pending_jobs:
+            raise TooManyJobs("The server is busy reading other reports. Please try again in a few minutes.")
+        _pending += 1
+
     names = [name for name, _ in pdf_files]
     job = ReportJob(
         owner_id=owner.id,
@@ -57,12 +73,22 @@ def submit(
             "eta_seconds": None,
         },
     )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    requester = RequestUser(user_id=owner.firebase_uid, email=owner.email)
-    _pool.submit(_run, job.id, requester, service, pdf_files, existing_data, include_raw_texts)
+    try:
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        requester = RequestUser(user_id=owner.firebase_uid, email=owner.email)
+        _pool.submit(_run, job.id, requester, service, pdf_files, existing_data, include_raw_texts)
+    except BaseException:
+        _release()
+        raise
     return job
+
+
+def _release() -> None:
+    global _pending
+    with _pending_lock:
+        _pending = max(0, _pending - 1)
 
 
 def _run(job_id, requester, service, pdf_files, existing_data, include_raw_texts) -> None:
@@ -101,6 +127,8 @@ def _run(job_id, requester, service, pdf_files, existing_data, include_raw_texts
         except Exception:
             # The database is unreachable too; the poller's staleness check reports this job as failed.
             logger.exception("Could not record the failure of report job %s", job_id)
+    finally:
+        _release()
 
 
 def failure_message(exc: Exception) -> str:

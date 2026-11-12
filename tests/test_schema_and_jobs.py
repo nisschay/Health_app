@@ -408,3 +408,51 @@ def test_a_finished_result_does_not_overwrite_an_interrupted_job(db, inline_jobs
     job = jobs.submit(db, owner, InterruptedMidway(TWO_FILES), [("good.pdf", b"%PDF")], None, False, study.id)
     db.refresh(job)
     assert job.status == JOB_INTERRUPTED and db.query(Report).count() == 0
+
+
+class _NeverRuns:
+    def submit(self, fn, *args):
+        pass  # the job stays queued, like one waiting behind others
+
+
+def test_a_user_cannot_queue_more_than_the_active_job_limit(db, engine, monkeypatch):
+    monkeypatch.setattr(jobs, "_pool", _NeverRuns())
+    monkeypatch.setattr(jobs, "_pending", 0)
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    for _ in range(jobs.settings.max_active_jobs_per_user):
+        jobs.submit(db, owner, _Service(RESULT), [("r.pdf", b"%PDF")], None, False, None)
+    with pytest.raises(jobs.TooManyJobs):
+        jobs.submit(db, owner, _Service(RESULT), [("r.pdf", b"%PDF")], None, False, None)
+
+
+def test_the_server_refuses_new_jobs_when_its_queue_is_full(db, monkeypatch):
+    monkeypatch.setattr(jobs, "_pool", _NeverRuns())
+    monkeypatch.setattr(jobs, "_pending", jobs.settings.max_pending_jobs)
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    with pytest.raises(jobs.TooManyJobs):
+        jobs.submit(db, owner, _Service(RESULT), [("r.pdf", b"%PDF")], None, False, None)
+    assert db.query(ReportJob).count() == 0
+
+
+def test_a_finished_job_frees_its_queue_slot(db, inline_jobs, monkeypatch):
+    monkeypatch.setattr(jobs, "_pending", 0)
+    owner = upsert_user(db, "uid-1", "a@example.com", "A")
+    jobs.submit(db, owner, _Service(RESULT), [("r.pdf", b"%PDF")], None, False, None)
+    jobs.submit(db, owner, _Service(error=ValueError("bad")), [("r.pdf", b"")], None, False, None)
+    assert jobs._pending == 0
+
+
+def test_a_recently_seen_user_costs_one_select_per_request(engine, db):
+    upsert_user(db, "uid-1", "a@example.com", "A")
+    counter, stop = _count_statements(engine)
+    main._current_account_owner(RequestUser(user_id="uid-1", email="a@example.com"), db)
+    stop()
+    assert counter["n"] == 1, "polling must not write"
+
+
+def test_another_users_study_looks_missing(db):
+    _, _, study = _seed_study(db, reports=1)
+    upsert_user(db, "uid-2", "b@example.com", "B")
+    with pytest.raises(HTTPException) as err:
+        main.get_combined_study_report(study_id=study.id, user=RequestUser(user_id="uid-2", email=None), db=db)
+    assert err.value.status_code == 404

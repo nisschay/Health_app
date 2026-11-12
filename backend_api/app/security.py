@@ -74,9 +74,21 @@ async def read_pdf_uploads(uploads: list[UploadFile] | None) -> list[tuple[str, 
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 detail=f"'{name}' is not a PDF.",
             )
-        payloads.append((name, payload))
+        payloads.append((_unique_name(name, {n for n, _ in payloads}), payload))
 
     return payloads
+
+
+def _unique_name(name: str, taken: set[str]) -> str:
+    """Results are matched to files by name, so two 'scan.pdf' uploads would share each other's rows."""
+    if name not in taken:
+        return name
+    stem, dot, suffix = name.rpartition(".")
+    stem, suffix = (stem, f".{suffix}") if dot else (name, "")
+    n = 2
+    while f"{stem} ({n}){suffix}" in taken:
+        n += 1
+    return f"{stem} ({n}){suffix}"
 
 
 async def read_existing_data_upload(upload: UploadFile | None) -> tuple[str, bytes] | None:
