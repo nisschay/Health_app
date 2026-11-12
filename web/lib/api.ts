@@ -176,6 +176,8 @@ export type JobProgress = {
   eta_seconds?: number | null;
   /** One entry per file that was skipped while the rest of the upload was saved. */
   warnings?: string[];
+  /** Values left out of saved files because the report text does not contain them. */
+  notes?: string[];
 };
 
 export type ReportJob = {

@@ -38,7 +38,7 @@ def test_small_batches_run_in_parallel(offline, monkeypatch):
     monkeypatch.setattr(services, "analyze_medical_report_with_gemini", slow_extract)
     events = []
     result = MedicalAnalysisService(api_key="k").analyze_reports(
-        pdf_files=[(f"r{i}.pdf", f"report {i}".encode()) for i in range(3)],
+        pdf_files=[(f"r{i}.pdf", f"report {i}: HbA1c 7.1 %".encode()) for i in range(3)],
         progress_callback=events.append,
     )
     assert len(threads) >= 2, "three files should not share one worker thread"
@@ -53,7 +53,7 @@ def test_a_failing_file_reports_its_own_reason(offline, monkeypatch):
     monkeypatch.setattr(services, "analyze_medical_report_with_gemini", extract)
     events = []
     MedicalAnalysisService(api_key="k").analyze_reports(
-        pdf_files=[("good.pdf", b"good report"), ("bad.pdf", b"bad report")],
+        pdf_files=[("good.pdf", b"good report: HbA1c 7.1 %"), ("bad.pdf", b"bad report")],
         progress_callback=events.append,
     )
     failed = [e for e in events if e.get("step") == "failed"]
