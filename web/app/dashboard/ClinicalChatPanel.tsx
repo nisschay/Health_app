@@ -16,7 +16,7 @@ import {
 import type { MedicalRecord } from "@/lib/api";
 import { parseMedicalDate } from "@/lib/medicalDate";
 
-type FindingSeverity = "HIGH" | "BORDERLINE" | "NORMAL";
+type FindingSeverity = "ABNORMAL" | "BORDERLINE" | "NORMAL";
 type MetricTrend = "improving" | "worsening" | "stable" | "insufficient_data";
 
 type FindingEntry = {
@@ -111,10 +111,11 @@ function normalizeStatus(status: string | null | undefined): string {
 
 function toSeverity(status: string): FindingSeverity {
   const normalized = normalizeStatus(status).toLowerCase();
-  if (normalized === "critical" || normalized === "high" || normalized === "positive" || normalized === "flagged") {
-    return "HIGH";
+  // A low result is as abnormal as a high one: a very low potassium was shown as "borderline".
+  if (["critical", "high", "low", "positive", "flagged", "insufficient"].includes(normalized)) {
+    return "ABNORMAL";
   }
-  if (normalized === "low" || normalized === "insufficient" || normalized === "borderline") {
+  if (normalized === "borderline") {
     return "BORDERLINE";
   }
   return "NORMAL";
@@ -162,7 +163,7 @@ function calculateDeviationPercent(
   severity: FindingSeverity,
 ): number {
   if (valueNumeric === null) {
-    if (severity === "HIGH") return 20;
+    if (severity === "ABNORMAL") return 20;
     if (severity === "BORDERLINE") return 8;
     return 0;
   }
@@ -180,7 +181,7 @@ function calculateDeviationPercent(
     return Math.round(((ref.low - valueNumeric) / Math.abs(ref.low)) * 100);
   }
 
-  if (severity === "HIGH") return 20;
+  if (severity === "ABNORMAL") return 20;
   if (severity === "BORDERLINE") return 8;
   return 0;
 }
@@ -228,13 +229,13 @@ function buildFindingEntries(records: MedicalRecord[]): FindingEntry[] {
 }
 
 function severityRank(severity: FindingSeverity): number {
-  if (severity === "HIGH") return 3;
+  if (severity === "ABNORMAL") return 3;
   if (severity === "BORDERLINE") return 2;
   return 1;
 }
 
 function toneForSeverity(severity: FindingSeverity): "critical" | "low" | "normal" {
-  if (severity === "HIGH") return "critical";
+  if (severity === "ABNORMAL") return "critical";
   if (severity === "BORDERLINE") return "low";
   return "normal";
 }
@@ -264,7 +265,7 @@ function buildPriorityFindings(entries: FindingEntry[]): PriorityFinding[] {
       else break;
     }
 
-    const severityScore = mostDeviant.severity === "HIGH" ? 100 : mostDeviant.severity === "BORDERLINE" ? 50 : 10;
+    const severityScore = mostDeviant.severity === "ABNORMAL" ? 100 : mostDeviant.severity === "BORDERLINE" ? 50 : 10;
     const score = severityScore + streak * 25 + mostDeviant.deviationPercent;
 
     return {

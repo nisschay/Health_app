@@ -335,6 +335,13 @@ function StudyFlowModal({
   onCreateMember: () => void;
   onStartNewMember: () => void;
 }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   const sortedProfiles = [...profiles].sort((a, b) => {
@@ -355,7 +362,7 @@ function StudyFlowModal({
   const { index, total } = stepMeta[step];
 
   return (
-    <div className="study-flow-backdrop" role="dialog" aria-modal="true">
+    <div className="study-flow-backdrop" role="dialog" aria-modal="true" aria-label="Choose where to save these reports">
       <div className="study-flow-modal">
         <div className="study-flow-head">
           <div className="study-flow-progress" aria-label="Step indicator">
@@ -630,6 +637,8 @@ export default function DashboardPage() {
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [selectedTest, setSelectedTest] = useState<string>("");
   const [isExporting, setIsExporting] = useState<"pdf" | "excel" | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [studyFlowOpen, setStudyFlowOpen] = useState(false);
   const [studyFlowStep, setStudyFlowStep] = useState<"who" | "what" | "pick-study" | "confirm-add" | "new-study" | "new-member">("who");
   const [flowLoading, setFlowLoading] = useState(false);
@@ -1130,6 +1139,7 @@ export default function DashboardPage() {
     const cleanQuestion = rawQuestion.trim();
     if (!cleanQuestion) return;
 
+    if (sendingRef.current) return; // keep the typed question; it can be sent once the answer arrives
     setChatError(null);
     setChatQuestion("");
     setShowAssistantPrompts(false);
@@ -1148,7 +1158,6 @@ export default function DashboardPage() {
       isLoading: true,
     };
 
-    if (sendingRef.current) return;
     sendingRef.current = true;
     setIsSending(true);
     const sessionAtSend = chatSessionRef.current;
@@ -1227,6 +1236,7 @@ export default function DashboardPage() {
   async function handleDownloadReport() {
     if (!analysis) return;
     setIsExporting("pdf");
+    setExportError(null);
     try {
       const { generateClinicalPdfReport } = await import("@/lib/pdf");
       const blob = generateClinicalPdfReport(analysis);
@@ -1238,19 +1248,28 @@ export default function DashboardPage() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch { /* graceful */ } finally { setIsExporting(null); }
+    } catch {
+      setExportError("Could not create the PDF. Please try again.");
+    } finally { setIsExporting(null); }
   }
 
   async function handleExportExcel() {
     if (!analysis) return;
     setIsExporting("excel");
+    setExportError(null);
     try {
       const blob = await runWithTokenRetry((_token) => exportExcel(analysis.records, analysis.patient_info));
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url;
-      a.download = `medical-data-${analysis.patient_info.name || "patient"}.xlsx`; a.click();
-      URL.revokeObjectURL(url);
-    } catch { /* graceful */ } finally { setIsExporting(null); }
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `medical-data-${analysis.patient_info.name || "patient"}.xlsx`;
+      document.body.appendChild(a); // Firefox ignores clicks on detached links
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      setExportError(err instanceof Error ? `Could not create the Excel file: ${err.message}` : "Could not create the Excel file.");
+    } finally { setIsExporting(null); }
   }
 
   const derived = useMemo(() => {
@@ -1498,12 +1517,23 @@ export default function DashboardPage() {
             )}
 
             <form className="upload-form" onSubmit={(e) => { e.preventDefault(); void submitAnalysis(); }}>
-              <label className="upload-zone">
-                <input accept="application/pdf" multiple type="file" onChange={(e) => setPdfFiles(Array.from(e.target.files ?? []))} />
+              <label
+                className={`upload-zone${isDraggingFiles ? " dragging" : ""}`}
+                onDragOver={(e) => { e.preventDefault(); setIsDraggingFiles(true); }}
+                onDragLeave={() => setIsDraggingFiles(false)}
+                onDrop={(e) => {
+                  // Without this the browser opens the dropped PDF in the tab and the app is lost.
+                  e.preventDefault();
+                  setIsDraggingFiles(false);
+                  const dropped = Array.from(e.dataTransfer.files).filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
+                  setPdfFiles((prev) => [...prev, ...dropped.filter((f) => !prev.some((p) => p.name === f.name && p.size === f.size))]);
+                }}
+              >
+                <input className="visually-hidden" accept="application/pdf" multiple type="file" onChange={(e) => setPdfFiles(Array.from(e.target.files ?? []))} />
                 <div className="upload-zone-inner">
                   <span className="upload-icon">Upload</span>
                   <strong>Drag &amp; drop or click to browse</strong>
-                  <span>PDF files only • Up to 200MB each</span>
+                  <span>PDF files only • Up to 20 files, 10 MB each, 25 MB in total</span>
                 </div>
               </label>
 
@@ -1513,7 +1543,7 @@ export default function DashboardPage() {
                     <div className="file-row" key={`${f.name}-${f.size}`}>
                       <span className="file-name">{f.name}</span>
                       <span className="file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
-                      <button className="file-remove" type="button" onClick={() => setPdfFiles((prev) => prev.filter((x) => x !== f))}>×</button>
+                      <button className="file-remove" type="button" aria-label={`Remove ${f.name}`} onClick={() => setPdfFiles((prev) => prev.filter((x) => x !== f))}>×</button>
                     </div>
                   ))}
                 </div>
@@ -1904,6 +1934,7 @@ export default function DashboardPage() {
                 {isExporting === "excel" ? "Generating…" : "Download Excel with Charts"}
               </button>
             </div>
+            {exportError && <p className="error-text" role="alert">{exportError}</p>}
           </section>
         </main>
       )}
