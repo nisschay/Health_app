@@ -4,7 +4,7 @@ import type { NextRequest } from "next/server";
 // Presence hint only, and forgeable by design. It decides whether to render
 // or redirect; the backend rejects any request without a valid Firebase token.
 const AUTH_PRESENCE_COOKIE = "mra_auth";
-const PROTECTED_PREFIXES = ["/dashboard", "/admin"];
+const PROTECTED_PREFIXES = ["/dashboard"];
 
 function isProtectedPath(pathname: string): boolean {
   return PROTECTED_PREFIXES.some(
