@@ -111,6 +111,7 @@ def _process_single_pdf(
     payload: bytes,
     api_key: str,
     include_raw_texts: bool,
+    owner_uid: str | None = None,
 ) -> dict[str, Any]:
     try:
         report_text = extract_text_from_pdf(payload)
@@ -124,15 +125,16 @@ def _process_single_pdf(
             "reason": "No extractable text found.",
         }
 
-    # The model and extraction version are in the key: a cached answer from an older prompt is not reused.
-    cache_key = f"{EXTRACTION_VERSION}|{','.join(EXTRACTION_MODEL_CANDIDATES)}|{report_text[:EXTRACTION_MAX_CHARS]}"
+    # The model and extraction version are in the key, so a cached answer from an older prompt is not reused.
+    # So is the owner: each user's cache is their own and is deleted with their account.
+    cache_key = f"{owner_uid}|{EXTRACTION_VERSION}|{','.join(EXTRACTION_MODEL_CANDIDATES)}|{report_text[:EXTRACTION_MAX_CHARS]}"
     text_hash = hashlib.sha256(cache_key.encode("utf-8", errors="ignore")).hexdigest()
     payload = _cached(get_cached_extraction, text_hash)
     if payload is None:
         payload, error = analyze_medical_report_with_gemini(report_text, api_key)
         if payload is None:
             return {"file": filename, "ok": False, "reason": error or "Extraction failed"}
-        _cached(store_cached_extraction, text_hash, payload)
+        _cached(store_cached_extraction, text_hash, payload, owner_uid)
 
     df_single, patient_info_single = create_structured_dataframe(payload, filename)
 
@@ -218,7 +220,7 @@ class MedicalAnalysisService:
         worker_count = min(settings.extraction_workers, max(1, total_files))
         executor = ThreadPoolExecutor(max_workers=worker_count)
         futures = [
-            executor.submit(_process_single_pdf, filename, payload, api_key, include_raw_texts)
+            executor.submit(_process_single_pdf, filename, payload, api_key, include_raw_texts, user.user_id if user else None)
             for filename, payload in pdf_files
         ]
         results = (future.result() for future in as_completed(futures))

@@ -62,6 +62,16 @@ def _count_statements(engine):
 
 # ── Migrations ─────────────────────────────────────────────────────────────────
 
+def _create_pre_alembic_schema(eng):
+    """Production's schema before Alembic: today's models minus everything a migration added."""
+    pre_alembic = [t for n, t in Base.metadata.tables.items() if n not in {"report_findings", "report_jobs"}]
+    Base.metadata.create_all(eng, tables=pre_alembic)
+    with eng.begin() as conn:
+        conn.execute(text("DROP INDEX uq_profiles_owner_self"))  # 0002
+        conn.execute(text("DROP INDEX ix_extraction_cache_owner_uid"))  # 0003
+        conn.execute(text("ALTER TABLE extraction_cache DROP COLUMN owner_uid"))  # 0003
+
+
 def test_migrations_build_exactly_the_model_schema():
     eng = _engine()
     run_migrations(eng)
@@ -75,23 +85,18 @@ def test_migrations_build_exactly_the_model_schema():
 def test_a_database_created_before_alembic_is_stamped_then_upgraded():
     """Production predates Alembic: it must be adopted, not recreated, and still gain the new tables."""
     eng = _engine()
-    pre_alembic = [t for n, t in Base.metadata.tables.items() if n not in {"report_findings", "report_jobs"}]
-    Base.metadata.create_all(eng, tables=pre_alembic)
-    with eng.begin() as conn:
-        conn.execute(text("DROP INDEX uq_profiles_owner_self"))
+    _create_pre_alembic_schema(eng)
     run_migrations(eng)
     with eng.connect() as conn:
-        assert conn.execute(text("select version_num from alembic_version")).scalar() == "0002"
+        assert conn.execute(text("select version_num from alembic_version")).scalar() == "0003"
     assert {"report_findings", "report_jobs"} <= set(inspect(eng).get_table_names())
 
 
 def test_migration_keeps_one_self_profile_when_an_account_has_two():
     """Before the unique index, concurrent sign-ins could create two self profiles; the upgrade must not crash on them."""
     eng = _engine()
-    pre_alembic = [t for n, t in Base.metadata.tables.items() if n not in {"report_findings", "report_jobs"}]
-    Base.metadata.create_all(eng, tables=pre_alembic)
+    _create_pre_alembic_schema(eng)
     with eng.begin() as conn:
-        conn.execute(text("DROP INDEX uq_profiles_owner_self"))
         conn.execute(text("INSERT INTO users (id, firebase_uid) VALUES (1, 'uid-1')"))
         for pid, rel, created in (("a" * 32, "self", "2024-01-01"), ("b" * 32, "Self", "2024-02-01"), ("c" * 32, "mother", "2024-03-01")):
             conn.execute(

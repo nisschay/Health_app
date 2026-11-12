@@ -31,6 +31,7 @@ import {
   exportExcel,
 } from "@/lib/api";
 import AlertsByCategory from "./AlertsByCategory";
+import YourDataPanel from "./YourDataPanel";
 import OrganizedDataTree from "./OrganizedDataTree";
 import { CANONICAL_CATEGORIES } from "@/lib/categoryMap";
 import { parseMedicalDate } from "@/lib/medicalDate";
@@ -1492,6 +1493,8 @@ export default function DashboardPage() {
               </div>
             </div>
           )}
+
+          <YourDataPanel runWithTokenRetry={runWithTokenRetry} onAccountDeleted={() => { void handleSignOut(); }} />
         </main>
       )}
 

@@ -192,6 +192,8 @@ class ExtractionCache(Base):
     text_hash = Column(String(64), primary_key=True)
     payload = Column(JSONB, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # Whose report this was. The key includes it too, so a deleted account takes its cache with it.
+    owner_uid = Column(String(128), index=True, nullable=True)
 
 
 def get_cached_extraction(text_hash: str) -> dict[str, Any] | None:
@@ -200,9 +202,9 @@ def get_cached_extraction(text_hash: str) -> dict[str, Any] | None:
         return dict(row.payload) if row else None
 
 
-def store_cached_extraction(text_hash: str, payload: dict[str, Any]) -> None:
+def store_cached_extraction(text_hash: str, payload: dict[str, Any], owner_uid: str | None = None) -> None:
     with SessionLocal() as db:
-        db.merge(ExtractionCache(text_hash=text_hash, payload=payload))
+        db.merge(ExtractionCache(text_hash=text_hash, payload=payload, owner_uid=owner_uid))
         db.commit()
 
 
@@ -523,3 +525,89 @@ def mark_active_jobs_interrupted(db: Session, message: str) -> int:
     )
     db.commit()
     return result.rowcount
+
+
+# ── Deleting and exporting a user's data ──────────────────────────────────────
+
+def _delete_reports(db: Session, report_ids) -> None:
+    db.query(ReportFinding).filter(ReportFinding.report_id.in_(report_ids)).delete(synchronize_session=False)
+    db.query(Report).filter(Report.id.in_(report_ids)).delete(synchronize_session=False)
+
+
+def delete_study(db: Session, study_id: uuid.UUID) -> None:
+    """The study, its reports and their findings. The caller commits."""
+    _delete_reports(db, db.query(Report.id).filter(Report.study_id == study_id).scalar_subquery())
+    db.query(ReportJob).filter(ReportJob.study_id == study_id).update({ReportJob.study_id: None}, synchronize_session=False)
+    db.query(Study).filter(Study.id == study_id).delete(synchronize_session=False)
+
+
+def delete_profile(db: Session, profile_id: uuid.UUID) -> None:
+    for (study_id,) in db.query(Study.id).filter(Study.profile_id == profile_id).all():
+        delete_study(db, study_id)
+    db.query(Profile).filter(Profile.id == profile_id).delete(synchronize_session=False)
+
+
+def delete_account(db: Session, user: User) -> None:
+    """Everything stored about one user, in one transaction. The caller commits."""
+    for (profile_id,) in db.query(Profile.id).filter(Profile.account_owner_id == user.id).all():
+        delete_profile(db, profile_id)
+    db.query(ReportJob).filter(ReportJob.owner_id == user.id).delete(synchronize_session=False)
+    db.query(ReportAnalysis).filter(ReportAnalysis.firebase_uid == user.firebase_uid).delete(synchronize_session=False)
+    db.query(ExtractionCache).filter(ExtractionCache.owner_uid == user.firebase_uid).delete(synchronize_session=False)
+    db.query(User).filter(User.id == user.id).delete(synchronize_session=False)
+
+
+def export_account(db: Session, user: User) -> dict[str, Any]:
+    """Everything stored about one user, as plain JSON-ready data."""
+    def iso(value):
+        return value.isoformat() if value else None
+
+    profiles = []
+    for profile in list_profiles_for_owner(db, user.id):
+        studies = []
+        for study in list_studies_for_profile(db, profile.id):
+            reports = list_reports_for_study(db, study.id)
+            findings = list_findings_for_reports(db, [r.id for r in reports])
+            studies.append({
+                "name": study.name,
+                "description": study.description,
+                "created_at": iso(study.created_at),
+                "reports": [
+                    {
+                        "file_name": r.file_name,
+                        "report_date": iso(r.report_date),
+                        "lab_name": r.lab_name,
+                        "uploaded_at": iso(r.uploaded_at),
+                        "findings": [
+                            {
+                                "test": f.canonical_test,
+                                "name_on_report": f.original_test_name,
+                                "result": f.result_text,
+                                "unit": f.unit,
+                                "reference_range": f.reference_range,
+                                "status": f.status,
+                                "test_date": iso(f.test_date),
+                            }
+                            for f in findings
+                            if f.report_id == r.id
+                        ],
+                    }
+                    for r in reports
+                ],
+            })
+        profiles.append({
+            "full_name": profile.full_name,
+            "relationship": profile.relationship,
+            "date_of_birth": iso(profile.date_of_birth),
+            "studies": studies,
+        })
+    analyses = db.query(ReportAnalysis).filter(ReportAnalysis.firebase_uid == user.firebase_uid).order_by(ReportAnalysis.created_at).all()
+    return {
+        "exported_at": datetime.utcnow().isoformat(),
+        "account": {"email": user.email, "display_name": user.display_name, "created_at": iso(user.created_at)},
+        "profiles": profiles,
+        "saved_analyses": [
+            {"created_at": iso(a.created_at), "source_files": a.source_filenames, "analysis": json.loads(a.analysis_json)}
+            for a in analyses
+        ],
+    }

@@ -4494,3 +4494,50 @@ h1 {
     transform: rotate(360deg);
   }
 }
+
+/* Destructive actions: delete account. */
+.danger-button {
+  padding: 0.6rem 1.1rem;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid #b91c1c;
+  background: transparent;
+  color: #ef4444;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.danger-button:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.danger-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.danger-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: var(--radius-md, 10px);
+}
+
+.danger-confirm-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.danger-confirm-row input {
+  min-width: 0;
+  width: 10rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}

@@ -23,7 +23,7 @@ PAYLOAD = {
 def offline(monkeypatch):
     monkeypatch.setattr(services, "extract_text_from_pdf", lambda payload: payload.decode())
     monkeypatch.setattr(services, "get_cached_extraction", lambda h: None)
-    monkeypatch.setattr(services, "store_cached_extraction", lambda h, p: None)
+    monkeypatch.setattr(services, "store_cached_extraction", lambda h, p, owner: None)
 
 
 def test_small_batches_run_in_parallel(offline, monkeypatch):
@@ -93,3 +93,17 @@ def test_extraction_cache_round_trips(monkeypatch):
     database.store_cached_extraction("abc", PAYLOAD)
     database.store_cached_extraction("abc", PAYLOAD)  # idempotent
     assert database.get_cached_extraction("abc") == PAYLOAD
+
+
+def test_each_user_has_their_own_cache_entry(monkeypatch):
+    """One user's cached report must never be read back for another, and must go with their account."""
+    keys = []
+    stored = []
+    monkeypatch.setattr(services, "extract_text_from_pdf", lambda payload: "same report text")
+    monkeypatch.setattr(services, "get_cached_extraction", lambda h: keys.append(h))
+    monkeypatch.setattr(services, "store_cached_extraction", lambda h, p, owner: stored.append(owner))
+    monkeypatch.setattr(services, "analyze_medical_report_with_gemini", lambda t, k: (PAYLOAD, ""))
+    services._process_single_pdf("r.pdf", b"x", "k", False, "uid-1")
+    services._process_single_pdf("r.pdf", b"x", "k", False, "uid-2")
+    assert keys[0] != keys[1]
+    assert stored == ["uid-1", "uid-2"]
