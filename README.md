@@ -317,6 +317,10 @@ Every pull request runs lint, typecheck and both test suites via GitHub Actions
 pytest
 ruff check .
 
+# the same tests against a throwaway Postgres database (CI runs both)
+createdb health_tests
+TEST_DATABASE_URL=postgresql://localhost/health_tests pytest
+
 # frontend
 cd web
 npm run typecheck

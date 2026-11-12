@@ -12,6 +12,20 @@ concurrency:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      # Production runs Postgres 17 on Neon; SQLite cannot check migrations, partial
+      # indexes, JSONB or locking, so the suite runs on both.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: health_tests
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,9 +34,16 @@ jobs:
           cache: pip
       - run: pip install -r requirements-dev.lock
       - run: ruff check .
-      - run: pytest
+      - name: Tests on SQLite
+        run: pytest
         env:
           DATABASE_URL: sqlite://
+          GEMINI_API_KEY: test-key-not-used
+      - name: Tests on Postgres 17
+        run: pytest
+        env:
+          DATABASE_URL: sqlite://
+          TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/health_tests
           GEMINI_API_KEY: test-key-not-used
       - name: Import the app the container runs
         run: python -c "import main"

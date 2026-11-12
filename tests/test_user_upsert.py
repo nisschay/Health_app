@@ -1,20 +1,12 @@
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from backend_api.app.database import Base, Profile, User, upsert_user
+from backend_api.app.database import upsert_user
 
 
 @pytest.fixture()
-def session():
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine, tables=[User.__table__, Profile.__table__])
-    factory = sessionmaker(bind=engine)
-    db = factory()
-    try:
-        yield db
-    finally:
-        db.close()
+def session(db):
+    """The shared database fixture: SQLite, or Postgres when TEST_DATABASE_URL is set."""
+    return db
 
 
 def test_display_name_survives_a_later_call_without_one(session):
