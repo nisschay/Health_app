@@ -199,21 +199,12 @@ export type ChatResponse = {
   answer: string;
 };
 
-export type ClinicalAssistantReportContext = {
-  patientInfo?: PatientInfo;
-  totalRecords?: number;
-  reportsIncluded?: number | null;
-  sourceFileNames?: string[];
-  records: MedicalRecord[];
-};
-
-export type ClinicalAssistantRequest = {
-  analysisId: string;
-  sessionId: string;
-  reportContext: ClinicalAssistantReportContext;
+/** The server loads the records for the study or saved analysis named here, after checking they are yours. */
+export type ChatRequest = {
+  question: string;
   history: ChatTurn[];
-  message: string;
-};
+  sessionId: string;
+} & ({ studyId: string } | { analysisId: number });
 
 export type AnalysisHistoryItem = {
   id: number;
@@ -387,14 +378,17 @@ export async function waitForJob(
   }
 }
 
-export async function sendChatMessage(
-  payload: ClinicalAssistantRequest,
-): Promise<ChatResponse> {
-  const response = await authFetch(`/api/clinical-assistant`, {
+export async function sendChatMessage(request: ChatRequest): Promise<ChatResponse> {
+  const response = await authBackendFetch("/api/v1/reports/chat", {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      question: request.question,
+      history: request.history,
+      session_id: request.sessionId,
+      study_id: "studyId" in request ? request.studyId : null,
+      analysis_id: "analysisId" in request ? request.analysisId : null,
+    }),
   });
-
   return parseJsonResponse<ChatResponse>(response);
 }
 

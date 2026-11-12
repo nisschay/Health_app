@@ -5,8 +5,9 @@ from pydantic import BaseModel, Field
 
 # Retrieved guideline snippets are data the caller may contribute; they are
 # never instructions, and the count and length are bounded.
-MAX_CHAT_GUIDELINES = 12
-MAX_CHAT_GUIDELINE_CHARS = 1500
+MAX_CHAT_QUESTION_CHARS = 2000
+MAX_CHAT_TURN_CHARS = 6000
+MAX_CHAT_HISTORY_TURNS = 20
 
 
 class PatientInfo(BaseModel):
@@ -63,17 +64,17 @@ class AnalysisResponse(BaseModel):
 
 class ChatTurn(BaseModel):
     role: Literal["user", "assistant"]
-    content: str
+    content: str = Field(max_length=MAX_CHAT_TURN_CHARS)
 
 
 class ChatRequest(BaseModel):
-    records: list[MedicalRecord]
-    question: str
-    analysis_id: str | None = None
-    session_id: str | None = None
-    guidelines: list[str] = Field(default_factory=list, max_length=MAX_CHAT_GUIDELINES)
-    report_context: dict[str, Any] = Field(default_factory=dict)
-    history: list[ChatTurn] = Field(default_factory=list)
+    """What to ask about is named by id; the server loads the records and checks they are the caller's."""
+
+    question: str = Field(min_length=1, max_length=MAX_CHAT_QUESTION_CHARS)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=MAX_CHAT_HISTORY_TURNS)
+    study_id: UUID | None = None
+    analysis_id: int | None = None
+    session_id: str | None = Field(default=None, max_length=128)
 
 
 class ChatResponse(BaseModel):

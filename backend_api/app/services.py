@@ -12,7 +12,7 @@ from typing import Any
 import pandas as pd
 
 from .auth import RequestUser
-from .chat import get_chatbot_response
+from .chat import answer_question
 from .config import settings
 from .database import get_cached_extraction, store_cached_extraction
 from .exports import create_enhanced_excel_with_trends, generate_pdf_health_report
@@ -354,28 +354,8 @@ class MedicalAnalysisService:
             "failed_files": failed_by_file,
         }
 
-    def get_chat_response(
-        self,
-        records: list[dict[str, Any]],
-        question: str,
-        history: list[dict[str, str]],
-        analysis_id: str | None = None,
-        session_id: str | None = None,
-        guidelines: list[str] | None = None,
-        report_context: dict[str, Any] | None = None,
-    ) -> str:
-        api_key = self._require_api_key()
-        report_df = dataframe_from_records(records)
-        return get_chatbot_response(
-            report_df,
-            question,
-            history,
-            api_key,
-            analysis_id=analysis_id,
-            session_id=session_id,
-            guidelines=guidelines or [],
-            report_context=report_context or {},
-        )
+    def answer_question(self, records: list[dict[str, Any]], question: str, history: list[dict[str, str]]) -> str:
+        return answer_question(records, question, history, self._require_api_key())
 
     def get_health_insights(self, records: list[dict[str, Any]]) -> dict[str, Any]:
         report_df = dataframe_from_records(normalize_records(records))

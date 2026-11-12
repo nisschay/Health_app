@@ -25,3 +25,28 @@ def _compile_jsonb_on_sqlite(type_, compiler, **kw):
 @compiles(UUID, "sqlite")
 def _compile_uuid_on_sqlite(type_, compiler, **kw):
     return "CHAR(36)"
+
+
+import pytest  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+
+@pytest.fixture()
+def engine():
+    """A fresh in-memory database with the model schema, shared by one test's sessions."""
+    from backend_api.app.database import Base
+
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(eng)
+    return eng
+
+
+@pytest.fixture()
+def db(engine):
+    session = sessionmaker(bind=engine)()
+    try:
+        yield session
+    finally:
+        session.close()

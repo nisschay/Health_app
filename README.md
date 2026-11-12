@@ -29,7 +29,7 @@ Medical Report Analyzer helps families and caregivers organize medical reports t
 - Extract medical findings from PDFs into a structured record.
 - Normalize noisy test names, categories, and statuses across report formats.
 - Track results over time using profile and study timelines.
-- Ask a clinical assistant questions grounded in report data and local guideline snippets.
+- Ask a clinical assistant questions answered from your own results, with cited guideline extracts.
 - View trend charts and report summaries for faster interpretation.
 - Export structured insights to PDF and Excel.
 - Use secure login with Firebase token verification in backend APIs.
@@ -259,15 +259,16 @@ Normalization entry points:
 
 Clinical assistant flow:
 
-- Frontend sends question + session history + analysis identifier to /api/clinical-assistant.
-- Route handler in web/app/api/clinical-assistant/route.ts can fetch full analysis from backend.
-- Request context is enriched with timeline findings and local guideline retrieval.
-- Enriched payload is forwarded to backend /api/v1/reports/chat.
+- The browser sends the question, recent history and a study or saved-analysis id to /api/v1/reports/chat.
+- The backend loads that study's findings (or the saved analysis) after checking the caller owns it.
+- It picks up to three guideline extracts by whole-word matches on the question and on results outside range.
+- The prompt puts the newest results and the abnormal ones first, and marks report text as data, not instructions.
+- A rate-limited or timed-out model returns 429 or 503, never an error message disguised as an answer.
 
-RAG assets:
+Code:
 
-- web/lib/medicalKnowledge.ts
-- web/lib/ragRetrieval.ts
+- backend_api/app/chat.py (prompt and model call)
+- backend_api/app/guidelines.py and backend_api/app/data/guidelines.json (18 guideline extracts)
 
 ## 13) Security
 
