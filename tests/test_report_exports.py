@@ -4,11 +4,8 @@ import pandas as pd
 import pytest
 from pypdf import PdfReader
 
-from Helper_Functions import (
-    calculate_health_score,
-    create_enhanced_excel_with_trends,
-    generate_pdf_health_report,
-)
+from backend_api.app.exports import create_enhanced_excel_with_trends, generate_pdf_health_report
+from backend_api.app.insights import calculate_health_score
 
 PATIENT = {"name": "Test Patient", "age": "40", "gender": "F", "patient_id": "P1"}
 

@@ -2,7 +2,7 @@
 import pytest
 
 from backend_api.app.normalization import normalize_records, normalize_status, normalize_test_name
-from Helper_Functions import derive_status, parse_reference_range, parse_result_numeric
+from backend_api.app.values import derive_status, parse_reference_range, parse_result_numeric
 
 
 def _row(name, result, status="N/A", category="Other", reference=""):

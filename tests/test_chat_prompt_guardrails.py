@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-import Helper_Functions as helpers
+from backend_api.app import chat, llm
 from backend_api.app.schemas import MAX_CHAT_GUIDELINES, ChatRequest
 
 GUARDRAIL = "Never diagnose"
@@ -40,11 +40,11 @@ class _CapturingModel:
 def _captured_prompt(monkeypatch, **kwargs):
     """Capture the prompt offline; genai is the only stable seam to patch."""
     seen = {}
-    monkeypatch.setattr(helpers.genai, "GenerativeModel", lambda *a, **k: _CapturingModel(seen))
-    monkeypatch.setattr(helpers, "init_gemini_models", lambda *a, **k: True, raising=False)
-    monkeypatch.setattr(helpers, "gemini_model_chat", None, raising=False)
-    monkeypatch.setattr(helpers, "_active_chat_model_name", None, raising=False)
-    helpers.get_chatbot_response(_records_df(), "What is my HbA1c?", [], "test-key", **kwargs)
+    monkeypatch.setattr(llm.genai, "GenerativeModel", lambda *a, **k: _CapturingModel(seen))
+    monkeypatch.setattr(chat, "init_gemini_models", lambda *a, **k: True, raising=False)
+    monkeypatch.setattr(chat, "gemini_model_chat", None, raising=False)
+    monkeypatch.setattr(chat, "_active_chat_model_name", None, raising=False)
+    chat.get_chatbot_response(_records_df(), "What is my HbA1c?", [], "test-key", **kwargs)
     return seen.get("prompt", "")
 
 

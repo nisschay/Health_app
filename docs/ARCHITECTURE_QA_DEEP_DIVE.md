@@ -285,8 +285,7 @@ It uses a two-step extraction strategy:
 2. If text is empty or below threshold, attempt OCR fallback using pdf2image + pytesseract.
 
 Relevant implementation:
-- OCR fallback function: [Helper_Functions.py](../Helper_Functions.py#L292)
-- Main extraction with fallback thresholds: [Helper_Functions.py](../Helper_Functions.py#L317)
+- OCR fallback and text extraction: [extraction.py](../backend_api/app/extraction.py)
 
 Important behavior:
 1. OCR can be disabled via env.

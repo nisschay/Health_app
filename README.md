@@ -237,8 +237,10 @@ Backend service path:
 
 Core implementation:
 
-- backend_api/app/services.py
-- Helper_Functions.py
+- backend_api/app/services.py (orchestration)
+- backend_api/app/extraction.py (PDF text, OCR, model prompt, validation)
+- backend_api/app/values.py (results, ranges, statuses, dates)
+- backend_api/app/patients.py, insights.py, exports.py, chat.py
 
 ### 11.3 Normalization and data engineering
 
@@ -335,19 +337,7 @@ FRONTEND_URL="https://your-frontend" \
 ./deploy/smoke_test.sh
 ```
 
-## 16) Legacy Stack
-
-If you are just exploring the project or testing extraction logic, the legacy Streamlit app is the fastest way to get started without setting up the full stack.
-
-Legacy artifacts retained in repository:
-
-- Streamlit entry points: main.py and Medical_Project.py.
-- Shared extraction and analytics utilities: Helper_Functions.py.
-- Lab name, unit and body-system lookup tables: category_mapping.py.
-
-The production path is Next.js + FastAPI, while legacy files remain useful for experimentation and reference implementations.
-
-## 17) Contributing
+## 16) Contributing
 
 Pull requests are welcome. For major changes, open an issue first to discuss what you would like to change.
 

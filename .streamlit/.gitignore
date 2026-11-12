@@ -1,8 +1,0 @@
-# Ignore Python cache
-__pycache__/
-
-# Ignore virtual environment
-venv/
-
-# Ignore Streamlit secrets
-.streamlit/

@@ -1,6 +1,6 @@
 # Medical Project Backend API
 
-This folder contains the first migration slice away from the Streamlit-only application.
+The FastAPI service behind the web app: authentication, report jobs, studies, trends, chat and exports.
 
 ## What It Does
 

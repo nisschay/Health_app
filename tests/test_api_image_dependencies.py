@@ -23,19 +23,18 @@ PROBE = textwrap.dedent(
             del sys.modules[name]
 
     import main  # noqa: F401
-    import Helper_Functions as helpers
     import pandas as pd
+    from backend_api.app.exports import generate_pdf_health_report
+    from backend_api.app.values import _canonical_status
 
-    assert helpers.st is None and helpers.go is None
-    assert helpers._has_streamlit_context() is False
-    assert helpers._canonical_status("Abnormal") == "Flagged"
+    assert _canonical_status("Abnormal") == "Flagged"
 
     df = pd.DataFrame([{{
         "Test_Name": "Haemoglobin (Hb)", "Test_Category": "Haematology",
         "Test_Date": "05-03-2024", "Result": "12.4", "Unit": "g/dL",
         "Reference_Range": "12 - 15", "Status": "Normal",
     }}])
-    assert len(helpers.generate_pdf_health_report(df, {{"name": "T"}}, api_key=None)) > 0
+    assert len(generate_pdf_health_report(df, {{"name": "T"}}, api_key=None)) > 0
     print("ok")
     """
 )
@@ -56,4 +55,4 @@ def test_backend_runs_without_the_ui_packages():
 def test_ui_packages_are_not_in_the_api_requirements():
     requirements = open("requirements.txt").read().lower()
     for package in UI_ONLY_PACKAGES:
-        assert package not in requirements, f"{package} belongs in requirements-ui.txt"
+        assert package not in requirements, f"{package} is a UI package; the API image does not use it"
