@@ -23,6 +23,7 @@ from .extraction import (
     create_structured_dataframe,
     extract_text_from_pdf,
 )
+from .grounding import ground_results
 from .insights import calculate_health_score, get_body_system_analysis
 from .llm import EXTRACTION_MODEL_CANDIDATES
 from .normalization import normalize_dataframe, normalize_records
@@ -136,11 +137,15 @@ def _process_single_pdf(
             return {"file": filename, "ok": False, "reason": error or "Extraction failed"}
         _cached(store_cached_extraction, text_hash, payload, owner_uid)
 
+    payload, ungrounded = ground_results(payload, report_text)
+    if ungrounded:
+        logger.warning("Left out %d extracted values not found in %s", len(ungrounded), filename)
     df_single, patient_info_single = create_structured_dataframe(payload, filename)
 
     return {
         "file": filename,
         "ok": True,
+        "ungrounded": ungrounded,
         "df": df_single,
         "patient_info": patient_info_single,
         "raw_preview": (
@@ -202,6 +207,7 @@ class MedicalAnalysisService:
         raw_texts: list[dict[str, str]] = []
         failed_files: list[str] = []
         failed_by_file: dict[str, str] = {}
+        notes: list[str] = []
 
         for filename, _ in pdf_files:
             emit(
@@ -260,6 +266,9 @@ class MedicalAnalysisService:
             df_single = result.get("df")
             patient_info_single = result.get("patient_info")
             raw_preview = result.get("raw_preview")
+            if result.get("ungrounded"):
+                names = ", ".join(result["ungrounded"][:5])
+                notes.append(f"{filename}: left out {len(result['ungrounded'])} value(s) the report does not contain ({names})")
 
             if isinstance(df_single, pd.DataFrame) and not df_single.empty:
                 all_dfs.append(df_single)
@@ -358,6 +367,7 @@ class MedicalAnalysisService:
             "body_systems": body_systems,
             "raw_texts": raw_texts,
             "failed_files": failed_by_file,
+            "notes": notes,
         }
 
     def answer_question(self, records: list[dict[str, Any]], question: str, history: list[dict[str, str]]) -> str:

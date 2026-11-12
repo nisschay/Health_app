@@ -171,6 +171,7 @@ def _run(job_id, service, pdf_files, existing_data, include_raw_texts) -> None:
             progress_callback=lambda event: _record(job_id, event),
         )
         failed = result.pop("failed_files", None) or {}
+        notes = result.pop("notes", None) or []
         result = normalize_analysis_payload(result, service)
         _set(job_id, progress_stage="saving")
         with SessionLocal() as db:
@@ -186,7 +187,7 @@ def _run(job_id, service, pdf_files, existing_data, include_raw_texts) -> None:
                 job.analysis_id = analysis.id
             job.status = JOB_DONE
             job.finished_at = datetime.utcnow()
-            job.progress = {**job.progress, "stage": "done", "warnings": warnings}
+            job.progress = {**job.progress, "stage": "done", "warnings": warnings, "notes": notes}
             _delete_files(db, job_id)
             db.commit()  # the reports, the "done" status and the files' removal land together
     except Exception as exc:

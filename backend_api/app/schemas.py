@@ -176,7 +176,8 @@ class JobProgress(BaseModel):
     processed: int
     total: int
     eta_seconds: int | None = None
-    warnings: list[str] = []
+    warnings: list[str] = []  # files skipped
+    notes: list[str] = []  # values left out of files that were saved
 
 
 class JobResponse(BaseModel):

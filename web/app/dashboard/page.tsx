@@ -1023,7 +1023,9 @@ export default function DashboardPage() {
       if (viewRef.current !== "analyze") return;
       const warnings = job.progress.warnings ?? [];
       const savedCount = job.source_filenames.length - warnings.length;
-      const skipped = warnings.length ? ` Skipped ${warnings.length}: ${warnings.join("; ")}` : "";
+      const notes = job.progress.notes ?? [];
+      const skipped = (warnings.length ? ` Skipped ${warnings.length}: ${warnings.join("; ")}.` : "")
+        + (notes.length ? ` Checked against the reports: ${notes.join("; ")}.` : "");
       if (context?.mode === "existing") {
         setStudySuccessMessage(`${savedCount} new reports added to ${context.study.name}. Dashboard updated with new trends.${skipped}`);
       } else if (context) {
