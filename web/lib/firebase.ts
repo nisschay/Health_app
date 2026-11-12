@@ -1,5 +1,5 @@
-import { initializeApp, getApps } from "firebase/app";
-import { getAuth } from "firebase/auth";
+import { initializeApp, getApps, type FirebaseApp } from "firebase/app";
+import { getAuth, type Auth } from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY!,
@@ -10,6 +10,11 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
 };
 
-const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
-export const auth = getAuth(app);
-export default app;
+/**
+ * Started on first use, in the browser. Starting it at import ran during the build's
+ * prerender, so a build without the Firebase variables failed with auth/invalid-api-key.
+ */
+export function getFirebaseAuth(): Auth {
+  const app: FirebaseApp = getApps()[0] ?? initializeApp(firebaseConfig);
+  return getAuth(app);
+}

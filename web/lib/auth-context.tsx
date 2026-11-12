@@ -21,7 +21,7 @@ import {
   GoogleAuthProvider,
   signOut,
 } from "firebase/auth";
-import { auth } from "./firebase";
+import { getFirebaseAuth } from "./firebase";
 import { buildApiUrl, getDirectApiBaseUrl, getPublicApiBaseUrl } from "./apiBaseUrl";
 import { setAuthTokenProvider } from "./api";
 
@@ -81,7 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let isActive = true;
 
-    getRedirectResult(auth)
+    getRedirectResult(getFirebaseAuth())
       .then((result) => {
         if (!isActive || !result?.user) {
           return;
@@ -95,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.warn("[Auth] redirect sign-in failed", error);
       });
 
-    const unsub = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsub = onAuthStateChanged(getFirebaseAuth(), (firebaseUser) => {
       setUser(firebaseUser);
       if (!firebaseUser) {
         clearAuthPresenceCookie();
@@ -200,13 +200,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithGoogle = useCallback(async () => {
     try {
-      const credential = await signInWithPopup(auth, googleProvider);
+      const credential = await signInWithPopup(getFirebaseAuth(), googleProvider);
       if (credential.user) {
         setAuthPresenceCookie();
       }
     } catch (error) {
       if (shouldFallBackToRedirect(error)) {
-        await signInWithRedirect(auth, googleProvider);
+        await signInWithRedirect(getFirebaseAuth(), googleProvider);
         return;
       }
       throw error;
@@ -214,19 +214,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signInWithEmail = useCallback(async (email: string, password: string) => {
-    await signInWithEmailAndPassword(auth, email, password);
+    await signInWithEmailAndPassword(getFirebaseAuth(), email, password);
     setAuthPresenceCookie();
   }, []);
 
   const registerWithEmail = useCallback(async (email: string, password: string, displayName: string) => {
-    const credential = await createUserWithEmailAndPassword(auth, email, password);
+    const credential = await createUserWithEmailAndPassword(getFirebaseAuth(), email, password);
     await updateProfile(credential.user, { displayName });
     setAuthPresenceCookie();
   }, []);
 
   const logout = useCallback(async () => {
     try {
-      await signOut(auth);
+      await signOut(getFirebaseAuth());
     } finally {
       clearAuthPresenceCookie();
       if (typeof window !== "undefined") {
