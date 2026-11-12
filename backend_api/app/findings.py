@@ -7,6 +7,7 @@ from typing import Any
 
 from .database import ReportFinding
 from .normalization import STATUS_NOT_APPLICABLE
+from .units import format_number, to_common_unit
 from .values import parse_date_dd_mm_yyyy, parse_reference_range, parse_result_numeric
 
 
@@ -34,6 +35,16 @@ def findings_from_records(profile_id: uuid.UUID, rows: list[dict[str, Any]], sou
             continue
         value, comparator = parse_result_numeric(row.get("Result"))
         ref_low, ref_high, _ = parse_reference_range(row.get("Reference_Range"))
+        result_text = _text(row.get("Result"), 256)
+        reference_text = _text(row.get("Reference_Range"), 256)
+        unit = _text(row.get("Unit"), 64)
+        common_unit, (common_value, common_low, common_high) = to_common_unit(name, unit, value, ref_low, ref_high)
+        if common_unit != unit and common_value is not None:
+            # Stored, shown and charted in the common unit; the report's own wording stays in Report.analysis_data.
+            unit, value, ref_low, ref_high = common_unit, common_value, common_low, common_high
+            result_text = f"{comparator or ''}{format_number(value)}"
+            if ref_low is not None and ref_high is not None:
+                reference_text = f"{format_number(ref_low)} - {format_number(ref_high)}"
         findings.append(
             ReportFinding(
                 profile_id=profile_id,
@@ -41,11 +52,11 @@ def findings_from_records(profile_id: uuid.UUID, rows: list[dict[str, Any]], sou
                 original_test_name=_text(row.get("Original_Test_Name"), 256),
                 category=_text(row.get("Test_Category"), 128),
                 test_date=_as_date(row.get("Test_Date")),
-                result_text=_text(row.get("Result"), 256),
+                result_text=result_text,
                 value_numeric=value,
                 comparator=comparator,
-                unit=_text(row.get("Unit"), 64),
-                reference_range=_text(row.get("Reference_Range"), 256),
+                unit=unit,
+                reference_range=reference_text,
                 ref_low=ref_low,
                 ref_high=ref_high,
                 status=_text(row.get("Status"), 32) or STATUS_NOT_APPLICABLE,
