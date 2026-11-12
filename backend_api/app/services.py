@@ -11,27 +11,26 @@ from typing import Any
 
 import pandas as pd
 
-from Helper_Functions import (
-    EXTRACTION_MAX_CHARS,
-    analyze_medical_report_with_gemini,
-    calculate_health_score,
-    consolidate_patient_info,
-    create_consolidated_info_with_smart_selection,
-    create_structured_dataframe,
-    extract_text_from_pdf,
-    generate_pdf_health_report,
-    get_body_system_analysis,
-    get_chatbot_response,
-    parse_date_dd_mm_yyyy,
-    process_existing_excel_csv,
-    result_series_to_numeric,
-    smart_consolidate_patient_info,
-)
-
 from .auth import RequestUser
+from .chat import get_chatbot_response
 from .config import settings
 from .database import get_cached_extraction, store_cached_extraction
+from .exports import create_enhanced_excel_with_trends, generate_pdf_health_report
+from .extraction import (
+    EXTRACTION_MAX_CHARS,
+    analyze_medical_report_with_gemini,
+    create_structured_dataframe,
+    extract_text_from_pdf,
+)
+from .insights import calculate_health_score, get_body_system_analysis
 from .normalization import normalize_dataframe, normalize_records
+from .patients import (
+    consolidate_patient_info,
+    create_consolidated_info_with_smart_selection,
+    process_existing_excel_csv,
+    smart_consolidate_patient_info,
+)
+from .values import parse_date_dd_mm_yyyy, result_series_to_numeric
 
 logger = logging.getLogger(__name__)
 
@@ -400,8 +399,6 @@ class MedicalAnalysisService:
         patient_info: dict[str, Any],
     ) -> bytes:
         """Generate an Excel file with organized test data."""
-        from Helper_Functions import create_enhanced_excel_with_trends, parse_date_dd_mm_yyyy
-
         report_df = dataframe_from_records(records)
         if report_df.empty:
             raise ValueError("No records to export.")

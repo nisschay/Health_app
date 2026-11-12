@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-import Helper_Functions as helpers
+from backend_api.app import extraction, llm, values
 
 VALID_PAYLOAD = {
     "patient_info": {"name": "T", "age": "40", "gender": "F", "patient_id": "P1", "date": "05-03-2024", "lab_name": "L"},
@@ -41,27 +41,27 @@ class _FakeModel:
 @pytest.fixture
 def fake_gemini(monkeypatch):
     _FakeModel.calls = 0
-    monkeypatch.setattr(helpers.genai, "GenerativeModel", _FakeModel)
-    monkeypatch.setattr(helpers.genai, "configure", lambda **kwargs: None)
-    monkeypatch.setattr(helpers, "_genai_configured_key", None)
-    monkeypatch.setattr(helpers._model_call_pacer, "wait", lambda: None)
+    monkeypatch.setattr(llm.genai, "GenerativeModel", _FakeModel)
+    monkeypatch.setattr(llm.genai, "configure", lambda **kwargs: None)
+    monkeypatch.setattr(llm, "_genai_configured_key", None)
+    monkeypatch.setattr(llm._model_call_pacer, "wait", lambda: None)
     return _FakeModel
 
 
 def test_missing_key_and_empty_text_fail_without_calling_the_model(fake_gemini):
-    assert helpers.analyze_medical_report_with_gemini("some text", None) == (None, "Gemini API key is missing or invalid.")
-    assert helpers.analyze_medical_report_with_gemini("   ", "key")[0] is None
+    assert extraction.analyze_medical_report_with_gemini("some text", None) == (None, "Gemini API key is missing or invalid.")
+    assert extraction.analyze_medical_report_with_gemini("   ", "key")[0] is None
     assert fake_gemini.calls == 0
 
 
 def test_a_report_costs_exactly_one_model_call(fake_gemini):
     """A second classification call used to double every upload's latency and quota."""
-    payload, error = helpers.analyze_medical_report_with_gemini("Haemoglobin 12.4 g/dL", "key")
+    payload, error = extraction.analyze_medical_report_with_gemini("Haemoglobin 12.4 g/dL", "key")
     assert error == ""
     assert payload["test_results"][0]["test_name"] == "HbA1c"
     assert fake_gemini.calls == 1
 
-    df, _ = helpers.create_structured_dataframe(payload, "r.pdf")
+    df, _ = extraction.create_structured_dataframe(payload, "r.pdf")
     assert len(df) == 1
     assert fake_gemini.calls == 1, "building the dataframe must not call the model again"
 
@@ -70,7 +70,7 @@ def test_concurrent_failures_keep_their_own_error(fake_gemini):
     """The old module-level error string let one thread report another file's failure."""
     inputs = [f"report FAIL-{i} text" for i in range(8)]
     with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(lambda text: helpers.analyze_medical_report_with_gemini(text, "key"), inputs))
+        results = list(pool.map(lambda text: extraction.analyze_medical_report_with_gemini(text, "key"), inputs))
     for i, (payload, error) in enumerate(results):
         assert payload is None
         assert f"boom for {i}" in error, f"input {i} got someone else's error: {error!r}"
@@ -81,7 +81,7 @@ def test_rate_limit_is_reported_as_such(fake_gemini, monkeypatch):
         raise RuntimeError("429 quota exceeded, retry in 12s")
 
     monkeypatch.setattr(_FakeModel, "generate_content", limited)
-    payload, error = helpers.analyze_medical_report_with_gemini("text", "key")
+    payload, error = extraction.analyze_medical_report_with_gemini("text", "key")
     assert payload is None
     assert "Rate limit" in error and "12s" in error
 
@@ -93,8 +93,8 @@ def test_pacer_blocks_once_the_window_is_full(monkeypatch):
         sleeps.append(seconds)
         pacer._calls.clear()  # simulate the window rolling over
 
-    monkeypatch.setattr(helpers.time, "sleep", fake_sleep)
-    pacer = helpers._CallPacer(per_minute=2)
+    monkeypatch.setattr(llm.time, "sleep", fake_sleep)
+    pacer = llm._CallPacer(per_minute=2)
     pacer.wait()
     pacer.wait()
     assert sleeps == []
@@ -118,4 +118,4 @@ def test_pacer_blocks_once_the_window_is_full(monkeypatch):
     ],
 )
 def test_derive_status(result, reference, reported, expected):
-    assert helpers.derive_status(result, reference, reported) == expected
+    assert values.derive_status(result, reference, reported) == expected

@@ -15,8 +15,3 @@ ignore = [
     "B008",   # FastAPI Depends() in defaults is the framework's own idiom
 ]
 
-[tool.ruff.lint.per-file-ignores]
-# The legacy Streamlit modules are scheduled for extraction; lint them for real
-# errors only until then.
-"Helper_Functions.py" = ["E", "W", "I", "UP", "B"]
-"Medical_Project.py" = ["E", "W", "I", "UP", "B", "F405", "F403"]

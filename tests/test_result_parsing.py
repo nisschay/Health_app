@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from Helper_Functions import parse_result_numeric, result_series_to_numeric
+from backend_api.app.values import parse_result_numeric, result_series_to_numeric
 
 
 @pytest.mark.parametrize(
