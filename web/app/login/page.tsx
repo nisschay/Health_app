@@ -4,6 +4,12 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 
+/** Where the middleware sent the user from, if it is a path on this site; else the dashboard. */
+function pathAfterLogin(): string {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
+}
+
 export default function LoginPage() {
   const { user, loading, signInWithGoogle, signInWithEmail, registerWithEmail } = useAuth();
   const router = useRouter();
@@ -21,7 +27,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!loading && user) {
-      router.replace("/dashboard");
+      router.replace(pathAfterLogin());
     }
   }, [user, loading, router]);
 
@@ -74,7 +80,7 @@ export default function LoginPage() {
         }
         await registerWithEmail(email, password, displayName);
       }
-      router.replace("/dashboard");
+      router.replace(pathAfterLogin());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Authentication failed.";
       // Surface friendly messages

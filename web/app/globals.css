@@ -1764,8 +1764,28 @@ h1 {
   cursor: pointer;
 }
 
-.upload-zone input[type="file"] {
-  display: none;
+/* Hidden visually but still focusable, so the upload works from the keyboard. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.upload-zone {
+  position: relative;
+}
+
+.upload-zone:focus-within .upload-zone-inner {
+  outline: 2px solid #b45309;
+  outline-offset: 2px;
+}
+
+.upload-zone.dragging .upload-zone-inner {
+  border-color: #b45309;
+  background: rgba(251, 191, 36, 0.16);
 }
 
 .upload-zone-inner {
