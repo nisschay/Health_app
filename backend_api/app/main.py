@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,10 @@ from .database import (
     create_profile,
     create_study,
     dashboard_alert_counts,
+    delete_account,
+    delete_profile,
+    delete_study,
+    export_account,
     get_analysis_by_id,
     get_db,
     get_job,
@@ -526,6 +530,59 @@ def get_report_by_id(
     if "health_summary" not in data:
         data = normalize_analysis_payload(data, service)  # rows saved before insights were stored
     return AnalysisResponse(**data)
+
+
+# ── Your data ──────────────────────────────────────────────────────────────────
+
+@app.get(f"{settings.api_prefix}/me/export")
+def export_my_data(user: RequestUser = Depends(get_request_user), db: Session = Depends(get_db)) -> JSONResponse:
+    """Everything stored about the caller, as one JSON download."""
+    owner = _current_account_owner(user, db)
+    return JSONResponse(
+        export_account(db, owner),
+        headers={"Content-Disposition": 'attachment; filename="my-health-data.json"'},
+    )
+
+
+@app.delete(f"{settings.api_prefix}/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_my_account(user: RequestUser = Depends(get_request_user), db: Session = Depends(get_db)) -> Response:
+    """Delete every report, finding, study, profile, saved analysis, job and cached extraction. Not undoable."""
+    owner = get_user_by_firebase_uid(db, user.user_id)
+    if owner:
+        delete_account(db, owner)
+        db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.delete(f"{settings.api_prefix}/studies/{{study_id}}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_study_endpoint(study_id: UUID, user: RequestUser = Depends(get_request_user), db: Session = Depends(get_db)) -> Response:
+    owner = _current_account_owner(user, db)
+    _owned_study(db, owner, study_id)
+    delete_study(db, study_id)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.delete(f"{settings.api_prefix}/studies/profiles/{{profile_id}}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_profile_endpoint(profile_id: UUID, user: RequestUser = Depends(get_request_user), db: Session = Depends(get_db)) -> Response:
+    owner = _current_account_owner(user, db)
+    profile = _owned_profile(db, owner, profile_id)
+    if profile.relationship.lower() == "self":
+        raise HTTPException(status_code=409, detail="Your own profile goes only with your account. Delete the account instead.")
+    delete_profile(db, profile_id)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.delete(f"{settings.api_prefix}/reports/history/{{analysis_id}}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_history_item(analysis_id: int, user: RequestUser = Depends(get_request_user), db: Session = Depends(get_db)) -> Response:
+    owner = _current_account_owner(user, db)
+    row = get_analysis_by_id(db, analysis_id, owner.firebase_uid)
+    if not row:
+        raise HTTPException(status_code=404, detail="Analysis not found.")
+    db.delete(row)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ── Chat / Export ──────────────────────────────────────────────────────────────

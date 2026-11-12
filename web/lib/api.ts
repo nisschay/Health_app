@@ -293,6 +293,17 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
+export async function downloadMyData(): Promise<Blob> {
+  const response = await authBackendFetch("/api/v1/me/export");
+  if (!response.ok) await parseJsonResponse(response);
+  return response.blob();
+}
+
+export async function deleteMyAccount(): Promise<void> {
+  const response = await authBackendFetch("/api/v1/me", { method: "DELETE" });
+  if (!response.ok) await parseJsonResponse(response);
+}
+
 export async function startAnalysisJob(formData: FormData): Promise<ReportJob> {
   const response = await authBackendFetch("/api/v1/reports/jobs", { method: "POST", body: formData });
   return parseJsonResponse<ReportJob>(response);
