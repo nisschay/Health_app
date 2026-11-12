@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -182,6 +183,22 @@ class ReportJob(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+    # A running job's worker touches this every few seconds; when it stops, the worker is gone.
+    heartbeat_at = Column(DateTime, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+
+
+class ReportJobFile(Base):
+    """An upload kept until its job finishes, so a server restart resumes the job instead of losing it."""
+
+    __tablename__ = "report_job_files"
+
+    id = Column(Integer, primary_key=True)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("report_jobs.id", ondelete="CASCADE"), index=True, nullable=False)
+    position = Column(Integer, nullable=False)
+    kind = Column(String(16), nullable=False)  # "pdf", or "existing" for a CSV/Excel to merge
+    filename = Column(String(512), nullable=False)
+    content = Column(LargeBinary, nullable=False)
 
 
 class ExtractionCache(Base):
@@ -516,17 +533,6 @@ def get_job(db: Session, job_id: uuid.UUID, owner_id: int) -> ReportJob | None:
     return db.query(ReportJob).filter(ReportJob.id == job_id, ReportJob.owner_id == owner_id).first()
 
 
-def mark_active_jobs_interrupted(db: Session, message: str) -> int:
-    """Jobs that were mid-flight when the process died can never finish; say so."""
-    result = db.execute(
-        update(ReportJob)
-        .where(ReportJob.status.in_(JOB_ACTIVE_STATUSES))
-        .values(status=JOB_INTERRUPTED, error=message, finished_at=datetime.utcnow())
-    )
-    db.commit()
-    return result.rowcount
-
-
 # ── Deleting and exporting a user's data ──────────────────────────────────────
 
 def _delete_reports(db: Session, report_ids) -> None:
@@ -551,6 +557,8 @@ def delete_account(db: Session, user: User) -> None:
     """Everything stored about one user, in one transaction. The caller commits."""
     for (profile_id,) in db.query(Profile.id).filter(Profile.account_owner_id == user.id).all():
         delete_profile(db, profile_id)
+    job_ids = db.query(ReportJob.id).filter(ReportJob.owner_id == user.id).scalar_subquery()
+    db.query(ReportJobFile).filter(ReportJobFile.job_id.in_(job_ids)).delete(synchronize_session=False)
     db.query(ReportJob).filter(ReportJob.owner_id == user.id).delete(synchronize_session=False)
     db.query(ReportAnalysis).filter(ReportAnalysis.firebase_uid == user.firebase_uid).delete(synchronize_session=False)
     db.query(ExtractionCache).filter(ExtractionCache.owner_uid == user.firebase_uid).delete(synchronize_session=False)

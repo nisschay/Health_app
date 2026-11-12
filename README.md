@@ -222,8 +222,10 @@ Schema assets:
 - The browser polls GET /api/v1/reports/jobs/{id}; the job carries per-file
   progress (queued, extracting, parsing, done, failed) and a stage
   (processing, saving, done). A refresh resumes the same job.
-- Jobs in flight when the server restarts are marked interrupted with a
-  message asking for a re-upload.
+- A job's files are stored with it until it finishes, and a running job sends a
+  heartbeat. When a restart or crash stops the worker, the job is resumed at the
+  next startup, or by the next poll that sees the stale heartbeat. An atomic
+  claim stops two servers from running the same job; after 3 attempts it fails.
 
 ### 11.2 PDF extraction and LLM parsing
 

@@ -40,9 +40,6 @@ class Settings:
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY")
     extraction_workers: int = max(1, _as_int(os.getenv("EXTRACTION_WORKERS"), default=4))
     job_workers: int = max(1, _as_int(os.getenv("JOB_WORKERS"), default=2))
-    # A job active for longer than this has lost its worker. Each file can take up to
-    # about 8 minutes of model calls (2 attempts x 2 modes x 120 s), so this is generous.
-    job_stale_minutes: int = max(5, _as_int(os.getenv("JOB_STALE_MINUTES"), default=30))
     ocr_fallback_enabled: bool = _as_bool(
         os.getenv("PDF_OCR_FALLBACK_ENABLED"),
         default=True,
