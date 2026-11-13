@@ -1,6 +1,7 @@
 """The clinical assistant: what the model is shown, and how it is asked."""
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -106,7 +107,8 @@ def ask_model(prompt: str, api_key: str) -> str:
             prompt,
             api_key=api_key,
             models=CHAT_MODEL_CANDIDATES,
-            config={"temperature": 0.3},
+            # Low thinking answers in ~6s with the same content; the default often ran past the deadline.
+            config={"temperature": 0.3, "thinking_config": {"thinking_level": "low"}},
             timeout_seconds=CHAT_MODEL_TIMEOUT_SECONDS,
         )
     except ModelUnavailable as exc:
@@ -117,7 +119,42 @@ def ask_model(prompt: str, api_key: str) -> str:
         raise ChatUnavailable("The assistant could not answer just now. Please try again.", rate_limited=False) from exc
 
 
+_NUMBER = re.compile(r"(?<![\w.])\d{1,3}(?:,\d{2,3})+(?:\.\d+)?(?![\w])|(?<![\w.])\d+(?:\.\d+)?")
+
+
+def _numbers(text: str) -> list[str]:
+    return [m.replace(",", "") for m in _NUMBER.findall(text)]
+
+
+def unverified_numbers(answer: str, prompt: str) -> list[str]:
+    """Numbers in the answer that appear nowhere in what the model was shown.
+
+    A number rounded from a shown value counts as shown. Small whole numbers are
+    skipped: they are list markers and counts ("3 reports"), not results.
+    """
+    shown = {float(n) for n in _numbers(prompt)}
+    missing: list[str] = []
+    for text in _numbers(answer):
+        value = float(text)
+        if "." not in text and value <= 10:
+            continue
+        decimals = len(text.split(".")[1]) if "." in text else 0
+        if any(round(v, decimals) == value for v in shown):
+            continue
+        if text not in missing:
+            missing.append(text)
+    return missing
+
+
 def answer_question(records: list[dict[str, Any]], question: str, history: list[dict[str, str]], api_key: str) -> str:
     abnormal = sorted({str(r.get("Test_Name")) for r in records if _is_concerning(r) and r.get("Test_Name")})
     guidelines = select_guidelines(question, abnormal)
-    return ask_model(build_prompt(records, question, history, guidelines), api_key)
+    prompt = build_prompt(records, question, history, guidelines)
+    answer = ask_model(prompt, api_key)
+    missing = unverified_numbers(answer, prompt)
+    if missing:
+        answer += (
+            f"\n\n_Not found in your results: {', '.join(missing)}. These may be the assistant's own arithmetic"
+            " or a mistake; check them against your reports._"
+        )
+    return answer
