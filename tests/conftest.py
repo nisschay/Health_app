@@ -85,3 +85,6 @@ def _no_overload_wait(monkeypatch):
     from backend_api.app import llm
 
     monkeypatch.setattr(llm, "OVERLOAD_RETRY_SECONDS", 0)
+    # Which models are overloaded or rate limited is process state; each test starts with none.
+    monkeypatch.setattr(llm, "_cooling_until", {})
+    monkeypatch.setattr(llm, "_resting_until", {})

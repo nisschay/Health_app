@@ -422,7 +422,7 @@ def _extract_part(text: str, api_key: str) -> tuple[dict | None, str]:
             )
         except ModelUnavailable as exc:
             if exc.rate_limited:
-                return None, "Rate limit reached for extraction." + (f" Retry after {exc.retry_after}." if exc.retry_after else "")
+                return None, "Every free model has used up its limit for now." + (f" Try again in {exc.retry_after}." if exc.retry_after else "")
             return None, "The report reader is unavailable right now. Please try again shortly."
         payload, feedback = _parse_extraction_response(response_text)
         if payload is not None:

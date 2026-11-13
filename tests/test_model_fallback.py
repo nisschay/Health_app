@@ -27,7 +27,11 @@ def model(monkeypatch):
     monkeypatch.setattr(llm, "_call_model", call)
     monkeypatch.setattr(llm, "_cooling_until", {})
     monkeypatch.setattr(llm._model_call_pacer, "wait", lambda: None)
-    monkeypatch.setattr(llm._model_call_pacer, "pause", pauses.append)
+    def pause(seconds):  # stands in for the wait: the resting models are free again afterwards
+        pauses.append(seconds)
+        llm._resting_until.clear()
+
+    monkeypatch.setattr(llm._model_call_pacer, "pause", pause)
     return script, calls, pauses
 
 
@@ -77,22 +81,33 @@ def test_a_model_that_does_not_exist_is_not_retried(model):
     assert len(calls) == 2
 
 
-def test_a_short_rate_limit_is_waited_out_on_the_same_model(model):
+def test_a_rate_limited_model_steps_aside_for_the_next(model):
+    """Waiting a minute on one model while another is free made uploads crawl."""
+    script, calls, pauses = model
+    script.update(primary=[_error(429, "Quota exceeded. Please retry in 52.3s.")], fallback=["answer"])
+    assert _generate() == "answer"
+    assert [name for name, _ in calls] == ["primary", "fallback"]
+    assert pauses == []
+
+
+def test_when_every_model_is_briefly_limited_the_call_waits_for_the_first(model):
     """Two of three files in one upload used to fail with 'Retry after 52s'."""
     script, calls, pauses = model
-    script.update(primary=[_error(429, "Quota exceeded. Please retry in 52.3s."), "answer"])
+    script.update(primary=[_error(429, "Please retry in 52.3s."), "answer"], fallback=[_error(429, "Please retry in 70s.")])
     assert _generate() == "answer"
-    assert [name for name, _ in calls] == ["primary", "primary"]
-    assert pauses == [pytest.approx(52.3)]
+    assert [name for name, _ in calls] == ["primary", "fallback", "primary"]
+    assert pauses == [pytest.approx(52.3, abs=1)]
 
 
 def test_waits_are_capped_per_call(model):
     script, calls, pauses = model
-    limited = _error(429, "Quota exceeded. Please retry in 5s.")
-    script.update(primary=[limited, limited, limited], fallback=["answer"])
-    assert _generate() == "answer"
+    limited = _error(429, "Quota exceeded. Please retry in 30s.")
+    script.update(primary=[limited] * 5)
+    with pytest.raises(llm.ModelUnavailable) as err:
+        _generate(["primary"])
+    assert err.value.rate_limited
     assert len(pauses) == llm.RATE_LIMIT_WAITS_PER_CALL
-    assert [name for name, _ in calls] == ["primary"] * 3 + ["fallback"]
+    assert len(calls) == llm.RATE_LIMIT_WAITS_PER_CALL + 1
 
 
 def test_a_long_rate_limit_is_not_waited_and_is_reported(model):
@@ -143,3 +158,62 @@ def test_pacer_pause_holds_every_caller(monkeypatch):
     pacer.pause(30)
     pacer.wait()
     assert sum(sleeps) == pytest.approx(30)
+
+
+def test_a_model_whose_daily_quota_is_spent_is_skipped_until_it_resets(model):
+    """Each free model has its own daily quota; asking a spent one again wastes a call per file."""
+    script, calls, _ = model
+    spent = _error(429, "Quota exceeded. Please retry in 79200s.")
+    script.update(primary=[spent], fallback=["one", "two"])
+    assert _generate() == "one"
+    assert _generate() == "two"
+    assert [name for name, _ in calls] == ["primary", "fallback", "fallback"]
+
+
+def test_a_provider_without_a_key_is_left_out(model, monkeypatch):
+    script, calls, _ = model
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    script.update({"groq:some-model": ["never"], "fallback": ["answer"]})
+    assert _generate(["groq:some-model", "fallback"]) == "answer"
+    assert [name for name, _ in calls] == ["fallback"]
+
+
+def test_other_hosts_get_the_same_rate_limit_handling(model, monkeypatch):
+    script, calls, pauses = model
+    monkeypatch.setenv("GROQ_API_KEY", "g")
+    script.update({"groq:some-model": [llm.ProviderError(429, "groq 429: slow down. Please retry in 7s."), "answer"]})
+    assert _generate(["groq:some-model"]) == "answer"
+    assert pauses == [pytest.approx(7, abs=1)]
+
+
+def test_openai_compatible_request_shape(monkeypatch):
+    """Extraction asks for JSON; the schema itself is in the prompt, since not every host accepts one."""
+    sent = {}
+
+    class Reply:
+        status_code = 200
+        headers: dict = {}
+
+        def json(self):
+            return {"choices": [{"message": {"content": " {\"ok\": 1} "}}]}
+
+    def post(url, json, headers, timeout):
+        sent.update(url=url, body=json, auth=headers["Authorization"], timeout=timeout)
+        return Reply()
+
+    monkeypatch.setenv("GROQ_API_KEY", "secret")
+    monkeypatch.setattr(llm.httpx, "post", post)
+    out = llm._call_model(None, "groq:llama-x", "prompt", {"temperature": 0.0, "response_mime_type": "application/json", "thinking_config": {}}, 30)
+    assert out == '{"ok": 1}'
+    assert sent["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert sent["body"] == {"model": "llama-x", "messages": [{"role": "user", "content": "prompt"}], "temperature": 0.0, "response_format": {"type": "json_object"}}
+    assert sent["auth"] == "Bearer secret" and sent["timeout"] == 30
+
+
+def test_a_few_seconds_limit_is_waited_on_the_same_fast_model(model):
+    """Groq asked for 1s; moving on to an overloaded Gemini model cost two minutes instead."""
+    script, calls, pauses = model
+    script.update(primary=[_error(429, "Please retry in 1.2s."), "answer"], fallback=["slow answer"])
+    assert _generate() == "answer"
+    assert [name for name, _ in calls] == ["primary", "primary"]
+    assert pauses == [pytest.approx(1.2)]
