@@ -27,6 +27,8 @@ function severityRank(status: string | null | undefined): number {
   return 4;
 }
 
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
 export default function OrganizedDataTree({ records }: { records: MedicalRecord[] }) {
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({});
   const [search, setSearch] = useState("");
@@ -58,6 +60,7 @@ export default function OrganizedDataTree({ records }: { records: MedicalRecord[
         return {
           category,
           tests: sortedTests,
+          testCount: new Set(sortedTests.map((test) => test.Test_Name)).size,
           alertCount,
         };
       })
@@ -124,7 +127,7 @@ export default function OrganizedDataTree({ records }: { records: MedicalRecord[
                   <span className={`organized-chevron ${isOpen ? "open" : ""}`}>▸</span>
                   <div>
                     <strong>{group.category}</strong>
-                    <span>{group.tests.length} tests</span>
+                    <span>{plural(group.testCount, "test")} · {plural(group.tests.length, "result")}</span>
                   </div>
                 </div>
                 {group.alertCount > 0 ? (

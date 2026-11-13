@@ -104,9 +104,13 @@ def test_a_second_self_profile_is_a_conflict_not_a_server_error(db):
 
 def test_upsert_is_two_statements_and_one_self_profile(engine, db):
     counter, stop = _count_statements(engine)
-    user = upsert_user(db, "uid-1", "a@example.com", "Asha")
+    user = upsert_user(db, "uid-1", "a@example.com", None)
     stop()
-    assert counter["n"] == 2, "insert-or-update the user, insert-or-ignore the self profile"
+    assert counter["n"] == 2, "every request: insert-or-update the user, insert-or-ignore the self profile"
+    counter, stop = _count_statements(engine)
+    upsert_user(db, "uid-1", "a@example.com", "Asha")
+    stop()
+    assert counter["n"] == 3, "a sign-in with a name may also rename the placeholder profile"
     upsert_user(db, "uid-1", None, None)
     upsert_user(db, "uid-1", "a@example.com", "Asha")
     assert db.query(Profile).filter(Profile.account_owner_id == user.id).count() == 1

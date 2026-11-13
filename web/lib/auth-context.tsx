@@ -72,6 +72,32 @@ function shouldFallBackToRedirect(error: unknown): boolean {
   );
 }
 
+/** Upserts the signed-in user and their own profile in the backend. A failure is retried on the next sign-in. */
+async function syncBackendUser(firebaseUser: User): Promise<void> {
+  const syncAbort = new AbortController();
+  const syncTimeout = window.setTimeout(() => syncAbort.abort(), BACKEND_SYNC_TIMEOUT_MS);
+  try {
+    const token = await firebaseUser.getIdToken();
+    const publicApiBase = getPublicApiBaseUrl();
+    const directApiBase = getDirectApiBaseUrl();
+    const primaryBase = publicApiBase.startsWith("/") ? directApiBase : publicApiBase;
+    const syncTargets = [primaryBase, directApiBase].filter(
+      (value, index, arr) => Boolean(value) && arr.indexOf(value) === index,
+    );
+    for (const base of syncTargets) {
+      const response = await fetch(
+        buildApiUrl(base!, "/api/v1/auth/sync", { display_name: firebaseUser.displayName ?? "" }),
+        { method: "POST", headers: { Authorization: `Bearer ${token}` }, signal: syncAbort.signal },
+      );
+      if (response.status !== 404 && response.status < 500) return;
+    }
+  } catch {
+    // the backend also upserts on every route
+  } finally {
+    window.clearTimeout(syncTimeout);
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -118,50 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setLoading(false);
 
-      const syncAbort = new AbortController();
-      const syncTimeout = window.setTimeout(() => syncAbort.abort(), BACKEND_SYNC_TIMEOUT_MS);
-      firebaseUser.getIdToken()
-        .then(async (token) => {
-          const publicApiBase = getPublicApiBaseUrl();
-          const directApiBase = getDirectApiBaseUrl();
-          const primaryBase = publicApiBase.startsWith("/") ? directApiBase : publicApiBase;
-
-          const syncTargets = [primaryBase, directApiBase].filter(
-            (value, index, arr) => Boolean(value) && arr.indexOf(value) === index,
-          );
-
-          const syncUrl = buildApiUrl(syncTargets[0]!, "/api/v1/auth/sync", {
-            display_name: firebaseUser.displayName ?? "",
-          });
-          let response = await fetch(
-            syncUrl,
-            {
-              method: "POST",
-              headers: { Authorization: `Bearer ${token}` },
-              signal: syncAbort.signal,
-            },
-          );
-
-          if ((response.status === 404 || response.status >= 500) && syncTargets.length > 1) {
-            const fallbackSyncUrl = buildApiUrl(syncTargets[1]!, "/api/v1/auth/sync", {
-              display_name: firebaseUser.displayName ?? "",
-            });
-            response = await fetch(
-              fallbackSyncUrl,
-              {
-                method: "POST",
-                headers: { Authorization: `Bearer ${token}` },
-                signal: syncAbort.signal,
-              },
-            );
-          }
-
-          return response;
-        })
-        .catch(() => undefined) // a failed sync is retried on the next sign-in; the backend upserts on every route anyway
-        .finally(() => {
-          window.clearTimeout(syncTimeout);
-        });
+      void syncBackendUser(firebaseUser);
     });
 
     return () => {
@@ -205,6 +188,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const registerWithEmail = useCallback(async (email: string, password: string, displayName: string) => {
     const credential = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(credential.user, { displayName });
+    // The sign-in listener already synced before the name existed; send it now.
+    await syncBackendUser(credential.user);
     setAuthPresenceCookie();
   }, []);
 
