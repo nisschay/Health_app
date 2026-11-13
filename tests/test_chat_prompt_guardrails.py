@@ -119,29 +119,20 @@ def test_an_unavailable_model_is_an_error_not_an_answer(db, monkeypatch, rate_li
     assert err.value.status_code == code
 
 
-class _Model:
-    def __init__(self, behaviour):
-        self.behaviour = behaviour
-
-    def generate_content(self, prompt, **kwargs):
-        return self.behaviour(prompt, kwargs)
-
-
 def _with_model(monkeypatch, behaviour):
-    monkeypatch.setattr(llm.genai, "configure", lambda **k: None)
-    monkeypatch.setattr(llm, "_genai_configured_key", None)
     monkeypatch.setattr(llm._model_call_pacer, "wait", lambda: None)
-    monkeypatch.setattr(llm.genai, "GenerativeModel", lambda name: _Model(behaviour))
+    monkeypatch.setattr(llm, "_cooling_until", {})
+    monkeypatch.setattr(llm, "_call_model", lambda key, name, prompt, config, timeout: behaviour())
 
 
 def test_an_answer_that_mentions_429_is_returned_as_is(monkeypatch):
-    _with_model(monkeypatch, lambda p, k: type("R", (), {"text": "Your platelets are 429 x10^3/uL."})())
+    _with_model(monkeypatch, lambda: "Your platelets are 429 x10^3/uL.")
     assert chat.ask_model("prompt", "key") == "Your platelets are 429 x10^3/uL."
 
 
 def test_a_rate_limited_model_raises(monkeypatch):
-    def limited(p, k):
-        raise RuntimeError("429 Quota exceeded. Please retry in 12s")
+    def limited():
+        raise llm.errors.ClientError(429, {"error": {"code": 429, "message": "Quota exceeded. Please retry in 3600s"}})
 
     _with_model(monkeypatch, limited)
     with pytest.raises(chat.ChatUnavailable) as err:

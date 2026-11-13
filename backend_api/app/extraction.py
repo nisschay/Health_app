@@ -8,7 +8,6 @@ import os
 import re
 from datetime import datetime
 
-import google.generativeai as genai
 import pandas as pd
 from pypdf import PdfReader
 
@@ -22,16 +21,7 @@ try:
 except Exception:  # optional: OCR for scanned PDFs
     convert_from_bytes = None
 
-from .llm import (
-    EXTRACTION_MODEL_CANDIDATES,
-    EXTRACTION_MODEL_TIMEOUT_SECONDS,
-    _ensure_genai_configured,
-    _env_bool,
-    _extract_retry_delay,
-    _extract_text_from_response,
-    _is_rate_limit_error,
-    _model_call_pacer,
-)
+from .llm import EXTRACTION_MODEL_CANDIDATES, EXTRACTION_MODEL_TIMEOUT_SECONDS, ModelUnavailable, _env_bool, generate
 from .normalization import CANONICAL_STATUS_VALUES, canonicalize_category, normalize_test_name
 from .values import (
     _canonical_status,
@@ -154,34 +144,6 @@ def _extract_first_json_object(response_text: str) -> str | None:
             if depth == 0:
                 return response_text[start_index:i + 1]
     return None
-
-
-def _generate_with_extraction_models(prompt: str, generation_config: dict | None = None) -> tuple[str, Exception | None]:
-    """Try each candidate model once; a fresh model per call keeps threads independent."""
-    last_exception = None
-    for model_name in EXTRACTION_MODEL_CANDIDATES:
-        try:
-            model = genai.GenerativeModel(model_name)
-        except Exception as model_exc:
-            last_exception = model_exc
-            continue
-
-        for config in ((generation_config, None) if generation_config else (None,)):
-            _model_call_pacer.wait()
-            try:
-                response = model.generate_content(
-                    prompt,
-                    request_options={"timeout": EXTRACTION_MODEL_TIMEOUT_SECONDS},
-                    **({"generation_config": config} if config else {}),
-                )
-                response_text = _extract_text_from_response(response)
-                if response_text:
-                    return response_text, None
-            except Exception as call_exc:
-                last_exception = call_exc
-                if _is_rate_limit_error(str(call_exc)):
-                    break
-    return "", last_exception
 
 
 def _normalize_patient_info_payload(patient_info) -> dict:
@@ -373,8 +335,10 @@ EXTRACTION_RESPONSE_SCHEMA = {
 
 _EXTRACTION_GENERATION_CONFIG = {
     "response_mime_type": "application/json",
-    "response_schema": EXTRACTION_RESPONSE_SCHEMA,
+    "response_json_schema": EXTRACTION_RESPONSE_SCHEMA,
     "temperature": 0.0,
+    # Copying a lab table needs little reasoning; the default thinking made each report ~5x slower.
+    "thinking_config": {"thinking_level": "low"},
 }
 
 
@@ -399,33 +363,30 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini) -> tupl
     Thread-safe: holds no module state, so worker threads never see each
     other's errors.
     """
-    if not _ensure_genai_configured(api_key_for_gemini):
+    if not api_key_for_gemini:
         return None, "Gemini API key is missing or invalid."
     if not text_content or not text_content.strip():
         return None, "No extractable text was provided."
 
     bounded_text = text_content[:EXTRACTION_MAX_CHARS]
     feedback = ""
-    last_exception = None
     for _attempt in range(2):
         prompt = _build_structured_extraction_prompt(bounded_text, validation_feedback=feedback)
-        response_text, last_exception = _generate_with_extraction_models(prompt, _EXTRACTION_GENERATION_CONFIG)
-
-        if not response_text:
-            if last_exception and _is_rate_limit_error(str(last_exception)):
-                break
-            feedback = "Empty response from model."
-            continue
-
+        try:
+            response_text = generate(
+                prompt,
+                api_key=api_key_for_gemini,
+                models=EXTRACTION_MODEL_CANDIDATES,
+                config=_EXTRACTION_GENERATION_CONFIG,
+                timeout_seconds=EXTRACTION_MODEL_TIMEOUT_SECONDS,
+            )
+        except ModelUnavailable as exc:
+            if exc.rate_limited:
+                return None, "Rate limit reached for extraction." + (f" Retry after {exc.retry_after}." if exc.retry_after else "")
+            return None, "The report reader is unavailable right now. Please try again shortly."
         payload, feedback = _parse_extraction_response(response_text)
         if payload is not None:
             return payload, ""
-
-    if last_exception and _is_rate_limit_error(str(last_exception)):
-        delay = _extract_retry_delay(str(last_exception))
-        return None, "Rate limit reached for extraction." + (f" Retry after {delay}." if delay else "")
-    if last_exception:
-        return None, f"Extraction error: {last_exception}"
     return None, feedback or "Extraction failed after retry."
 
 
