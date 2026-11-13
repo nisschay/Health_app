@@ -35,7 +35,8 @@ from .values import (
 logger = logging.getLogger(__name__)
 
 
-EXTRACTION_MAX_CHARS = 120000
+# Longer reports are read in parts of at most this size, split at page boundaries.
+EXTRACTION_CHUNK_CHARS = 60000
 # Part of the extraction cache key: bump it when the prompt, schema or parsing changes,
 # so reports already in the cache are read again with the fix.
 EXTRACTION_VERSION = 2
@@ -65,7 +66,7 @@ CANONICAL_CATEGORY_VALUES = [
 
 
 # Bounds on one PDF, so a crafted or huge file cannot hold a worker for long.
-PDF_MAX_PAGES = 30
+PDF_MAX_PAGES = 50
 OCR_PAGE_TIMEOUT_SECONDS = 60
 # A page with less text than this is treated as a scanned image and read by OCR.
 PAGE_MIN_TEXT_CHARS = 20
@@ -189,6 +190,16 @@ def _normalize_single_test_result(raw_result) -> dict | None:
     }
 
 
+NO_RESULTS_ISSUE = "No valid entries were present in 'test_results'."
+
+
+def pdf_page_count(file_content: bytes) -> int:
+    try:
+        return len(PdfReader(io.BytesIO(file_content)).pages)
+    except Exception:
+        return 0
+
+
 def _validate_extraction_payload(parsed_payload) -> tuple[bool, dict, list[str]]:
     if not isinstance(parsed_payload, dict):
         return False, {}, ["Top-level payload must be a JSON object."]
@@ -217,7 +228,7 @@ def _validate_extraction_payload(parsed_payload) -> tuple[bool, dict, list[str]]
     if malformed_entries:
         issues.append(f"Dropped {malformed_entries} malformed test entries.")
     if not normalized_test_results:
-        issues.append("No valid entries were present in 'test_results'.")
+        issues.append(NO_RESULTS_ISSUE)
 
     raw_summary = parsed_payload.get("abnormal_findings_summary_from_report", [])
     if isinstance(raw_summary, str):
@@ -357,25 +368,54 @@ def _parse_extraction_response(response_text: str) -> tuple[dict | None, str]:
     return None, "; ".join(issues[:6]) or "Schema validation failed."
 
 
-def analyze_medical_report_with_gemini(text_content, api_key_for_gemini) -> tuple[dict | None, str]:
-    """Extract structured findings from report text. Returns (payload, "") or (None, reason).
+def split_into_chunks(text: str, max_chars: int | None = None) -> list[str]:
+    """Whole pages per part, so a table is never cut mid-row; a single oversized page is cut by length."""
+    max_chars = max_chars or EXTRACTION_CHUNK_CHARS
+    pages = re.split(r"(?=\n--- Page \d+ ---\n)", text)
+    chunks: list[str] = []
+    current = ""
+    for page in pages:
+        while len(page) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(page[:max_chars])
+            page = page[max_chars:]
+        if len(current) + len(page) > max_chars and current:
+            chunks.append(current)
+            current = ""
+        current += page
+    if current.strip():
+        chunks.append(current)
+    return chunks
 
-    Thread-safe: holds no module state, so worker threads never see each
-    other's errors.
-    """
-    if not api_key_for_gemini:
-        return None, "Gemini API key is missing or invalid."
-    if not text_content or not text_content.strip():
-        return None, "No extractable text was provided."
 
-    bounded_text = text_content[:EXTRACTION_MAX_CHARS]
+def _merge_parts(parts: list[dict]) -> dict:
+    """One payload from the parts of a long report: every result once, patient details from the first part that has them."""
+    patient_info = dict(parts[0]["patient_info"])
+    for part in parts[1:]:
+        for key, value in part["patient_info"].items():
+            if patient_info.get(key) in (None, "", "N/A") and value not in (None, "", "N/A"):
+                patient_info[key] = value
+    results, seen = [], set()
+    for part in parts:
+        for row in part["test_results"]:
+            key = (row.get("test_name"), row.get("result"), row.get("unit"))
+            if key not in seen:
+                seen.add(key)
+                results.append(row)
+    summary = list(dict.fromkeys(item for part in parts for item in part.get("abnormal_findings_summary_from_report", [])))
+    return {"patient_info": patient_info, "test_results": results, "abnormal_findings_summary_from_report": summary}
+
+
+def _extract_part(text: str, api_key: str) -> tuple[dict | None, str]:
     feedback = ""
     for _attempt in range(2):
-        prompt = _build_structured_extraction_prompt(bounded_text, validation_feedback=feedback)
+        prompt = _build_structured_extraction_prompt(text, validation_feedback=feedback)
         try:
             response_text = generate(
                 prompt,
-                api_key=api_key_for_gemini,
+                api_key=api_key,
                 models=EXTRACTION_MODEL_CANDIDATES,
                 config=_EXTRACTION_GENERATION_CONFIG,
                 timeout_seconds=EXTRACTION_MODEL_TIMEOUT_SECONDS,
@@ -388,6 +428,32 @@ def analyze_medical_report_with_gemini(text_content, api_key_for_gemini) -> tupl
         if payload is not None:
             return payload, ""
     return None, feedback or "Extraction failed after retry."
+
+
+def analyze_medical_report_with_gemini(text_content, api_key_for_gemini) -> tuple[dict | None, str]:
+    """Extract structured findings from report text. Returns (payload, "") or (None, reason).
+
+    A long report is read in parts; a part with no results (a cover page, notes) is fine
+    as long as some part has them. Thread-safe: holds no module state.
+    """
+    if not api_key_for_gemini:
+        return None, "Gemini API key is missing or invalid."
+    if not text_content or not text_content.strip():
+        return None, "No extractable text was provided."
+
+    chunks = split_into_chunks(text_content)
+    if len(chunks) == 1:
+        return _extract_part(chunks[0], api_key_for_gemini)
+    parts = []
+    for number, chunk in enumerate(chunks, start=1):
+        payload, error = _extract_part(chunk, api_key_for_gemini)
+        if payload is not None:
+            parts.append(payload)
+        elif NO_RESULTS_ISSUE not in error:
+            return None, f"Part {number} of {len(chunks)} could not be read: {error}"
+    if not parts:
+        return None, NO_RESULTS_ISSUE
+    return _merge_parts(parts), ""
 
 
 def create_structured_dataframe(ai_results_json, source_filename="Uploaded PDF"):

@@ -40,6 +40,8 @@ RATE_LIMIT_WAITS_PER_CALL = 2
 _DEFAULT_RATE_LIMIT_WAIT_SECONDS = 15
 # A model that was overloaded or timed out is tried last for this long, so each file does not wait on it again.
 MODEL_COOLDOWN_SECONDS = 300
+# When every model is overloaded at once, wait this long and go round the list one more time.
+OVERLOAD_RETRY_SECONDS = 10
 
 
 class ModelUnavailable(Exception):
@@ -153,41 +155,51 @@ def generate(prompt: str, *, api_key: str | None, models: list[str], config: dic
     """Ask each model in turn and return the first non-empty answer.
 
     A short rate limit is waited out on the same model; an overloaded, missing or
-    slow model hands over to the next one. Raises ModelUnavailable when none answers.
+    slow model hands over to the next one. If every model was overloaded, the list is
+    tried once more after a short wait. Raises ModelUnavailable when none answers.
     """
     if not api_key:
         raise ModelUnavailable("GEMINI_API_KEY is not configured.", rate_limited=False)
     waits_left = RATE_LIMIT_WAITS_PER_CALL
-    rate_limited, retry_after = False, None
-    for model in _in_preferred_order(models):
-        while True:
-            _model_call_pacer.wait()
-            try:
-                text = _call_model(api_key, model, prompt, config, timeout_seconds)
-            except errors.APIError as exc:
-                if exc.code != 429:
-                    logger.warning("Model %s failed with %s: %s", model, exc.code, str(exc)[:200])
-                    if exc.code >= 500:
-                        _cool_down(model)
+    rate_limited, retry_after, overloaded = False, None, False
+    for round_number in range(2):
+        if round_number:
+            if rate_limited or not overloaded:
+                break
+            logger.warning("Every model is overloaded; trying again in %ss", OVERLOAD_RETRY_SECONDS)
+            time.sleep(OVERLOAD_RETRY_SECONDS)
+        overloaded = False
+        for model in _in_preferred_order(models):
+            while True:
+                _model_call_pacer.wait()
+                try:
+                    text = _call_model(api_key, model, prompt, config, timeout_seconds)
+                except errors.APIError as exc:
+                    if exc.code != 429:
+                        logger.warning("Model %s failed with %s: %s", model, exc.code, str(exc)[:200])
+                        if exc.code >= 500:
+                            _cool_down(model)
+                            overloaded = True
+                        break
+                    delay = retry_after_seconds(str(exc))
+                    wait = _DEFAULT_RATE_LIMIT_WAIT_SECONDS if delay is None else delay
+                    if waits_left > 0 and wait <= RATE_LIMIT_MAX_WAIT_SECONDS:
+                        waits_left -= 1
+                        logger.warning("Model %s is rate limited; waiting %.0fs", model, wait)
+                        _model_call_pacer.pause(wait)
+                        continue
+                    rate_limited, retry_after = True, format_delay(wait)
+                    logger.warning("Model %s is rate limited for %s; trying the next model", model, retry_after)
                     break
-                delay = retry_after_seconds(str(exc))
-                wait = _DEFAULT_RATE_LIMIT_WAIT_SECONDS if delay is None else delay
-                if waits_left > 0 and wait <= RATE_LIMIT_MAX_WAIT_SECONDS:
-                    waits_left -= 1
-                    logger.warning("Model %s is rate limited; waiting %.0fs", model, wait)
-                    _model_call_pacer.pause(wait)
-                    continue
-                rate_limited, retry_after = True, format_delay(wait)
-                logger.warning("Model %s is rate limited for %s; trying the next model", model, retry_after)
+                except Exception as exc:  # timeouts and network errors: the next model may still answer
+                    logger.warning("Model %s failed: %s: %s", model, type(exc).__name__, str(exc)[:200])
+                    _cool_down(model)
+                    overloaded = True
+                    break
+                if text:
+                    return text
+                logger.warning("Model %s returned an empty answer", model)
                 break
-            except Exception as exc:  # timeouts and network errors: the next model may still answer
-                logger.warning("Model %s failed: %s: %s", model, type(exc).__name__, str(exc)[:200])
-                _cool_down(model)
-                break
-            if text:
-                return text
-            logger.warning("Model %s returned an empty answer", model)
-            break
     if rate_limited:
         raise ModelUnavailable("Rate limit reached.", rate_limited=True, retry_after=retry_after)
     raise ModelUnavailable("No model answered.", rate_limited=False)
