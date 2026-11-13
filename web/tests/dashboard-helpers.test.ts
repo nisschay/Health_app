@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { chatTarget, splitAssistantResponseForSources, toApiChatHistory } from "../app/dashboard/helpers";
+import { chatTarget, dashboardUrl, splitAssistantResponseForSources, toApiChatHistory } from "../app/dashboard/helpers";
 
 describe("chatTarget", () => {
   it("names a study or a saved analysis, the only things the assistant may read", () => {
@@ -36,5 +36,15 @@ describe("toApiChatHistory", () => {
       { id: "4", role: "assistant", content: "a", createdAt: 0 },
     ]);
     expect(history).toEqual([{ role: "user", content: "q" }, { role: "assistant", content: "a" }]);
+  });
+});
+
+describe("dashboardUrl", () => {
+  it("gives each view its own address so refresh and Back return to it", () => {
+    expect(dashboardUrl("home", null)).toBe("/dashboard");
+    expect(dashboardUrl("analyze", "study-abc")).toBe("/dashboard?view=upload");
+    expect(dashboardUrl("result", "study-1b2c")).toBe("/dashboard?study=1b2c");
+    expect(dashboardUrl("result", "history-42")).toBe("/dashboard?analysis=42");
+    expect(dashboardUrl("result", null)).toBe("/dashboard");
   });
 });

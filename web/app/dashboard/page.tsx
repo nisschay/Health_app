@@ -44,6 +44,7 @@ import {
   buildUserInitials,
   chatTarget,
   createChatMessageId,
+  dashboardUrl,
   formatChatTimestamp,
   formatFileSize,
   fmtRange,
@@ -548,6 +549,37 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
+  // The URL names the current view, so a refresh, Back or Forward lands on the same screen.
+  const urlRestoredRef = useRef(false);
+
+  function openFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const studyId = params.get("study");
+    const analysisId = Number(params.get("analysis"));
+    if (studyId) void openStudyCombinedAnalysis(studyId);
+    else if (analysisId) void loadHistoryItem(analysisId);
+    else setView(params.get("view") === "upload" ? "analyze" : "home");
+  }
+
+  useEffect(() => {
+    if (!user) return;
+    if (!urlRestoredRef.current) {
+      urlRestoredRef.current = true;
+      // An upload still running takes precedence; followJob shows it.
+      if (!window.localStorage.getItem(ACTIVE_JOB_KEY)) openFromUrl();
+    }
+    const onPopState = () => openFromUrl();
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  useEffect(() => {
+    if (!urlRestoredRef.current) return; // the address must be read before it is overwritten
+    const target = dashboardUrl(view, activeAnalysisId);
+    if (window.location.pathname + window.location.search !== target) window.history.pushState(null, "", target);
+  }, [view, activeAnalysisId]);
+
   async function submitAnalysis() {
     setErrorMessage(null);
     setIsAnalyzing(true);
@@ -609,13 +641,13 @@ export default function DashboardPage() {
     } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Failed to load."); }
   }
 
-  async function openStudyCombinedAnalysis(studyId: string, studyName: string, reportCount: number) {
+  async function openStudyCombinedAnalysis(studyId: string, studyName?: string, reportCount: number | null = null) {
     setErrorMessage(null);
     setViewLoadingStudyId(studyId);
     try {
       const result = await runWithTokenRetry((_token) => fetchStudyCombinedReport(studyId));
       setStudyContext(null);
-      setStudySuccessMessage(`Loaded combined analysis for ${studyName}.`);
+      setStudySuccessMessage(studyName ? `Loaded combined analysis for ${studyName}.` : null);
       setResultStudyReportCount(reportCount);
       setAnalysis(result);
       setActiveAnalysisId(`study-${studyId}`);

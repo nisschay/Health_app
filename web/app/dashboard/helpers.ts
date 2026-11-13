@@ -136,3 +136,11 @@ export function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+
+/** The address of a dashboard view: home, the upload screen, a study's results, or one saved analysis. */
+export function dashboardUrl(view: "home" | "analyze" | "result", activeAnalysisId: string | null): string {
+  if (view === "analyze") return "/dashboard?view=upload";
+  if (view === "result" && activeAnalysisId?.startsWith("study-")) return `/dashboard?study=${activeAnalysisId.slice("study-".length)}`;
+  if (view === "result" && activeAnalysisId?.startsWith("history-")) return `/dashboard?analysis=${activeAnalysisId.slice("history-".length)}`;
+  return "/dashboard";
+}
