@@ -76,7 +76,7 @@ def test_a_long_rate_limit_is_reported_as_such(fake_gemini, monkeypatch):
     monkeypatch.setattr(llm, "_call_model", limited)
     payload, error = extraction.analyze_medical_report_with_gemini("text", "key")
     assert payload is None
-    assert "Rate limit" in error and "5m" in error
+    assert "used up its limit" in error and "5m" in error
 
 
 def test_pacer_blocks_once_the_window_is_full(monkeypatch):

@@ -114,7 +114,7 @@ def ask_model(prompt: str, api_key: str) -> str:
     except ModelUnavailable as exc:
         if exc.rate_limited:
             raise ChatUnavailable(
-                "The assistant has reached its usage limit. Please try again shortly.", rate_limited=True, retry_after=exc.retry_after
+                "Every free model has used up its limit for now.", rate_limited=True, retry_after=exc.retry_after
             ) from exc
         raise ChatUnavailable("The assistant could not answer just now. Please try again.", rate_limited=False) from exc
 
