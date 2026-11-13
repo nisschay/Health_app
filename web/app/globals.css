@@ -534,3 +534,12 @@ progress { width:100%; accent-color:var(--primary); }
  .dropzone input { max-width:100%; }
 }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
+.sample { background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.18); border-radius:var(--radius-lg); padding:20px; max-width:420px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 16px; }
+.sample>span { font:var(--text-small); }
+.sample>.chip { justify-self:end; }
+.auth-points li { display:list-item; list-style:disc; margin-left:20px; }
+.auth-link { align-self:flex-end; margin-top:-12px; margin-bottom:-36px; z-index:1; font:var(--text-small); }
+.auth-field>span { font:var(--text-label); }
+.auth-brand { color:var(--ink); }
+.auth-form { gap:16px; }
+.auth-card { gap:20px; }
