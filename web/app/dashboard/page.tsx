@@ -44,6 +44,7 @@ import {
   buildUserInitials,
   chatTarget,
   createChatMessageId,
+  dashboardUrl,
   formatChatTimestamp,
   formatFileSize,
   fmtRange,
@@ -513,7 +514,7 @@ export default function DashboardPage() {
       } else if (context) {
         setStudySuccessMessage(`New study ${context.study.name} created for ${context.profile.full_name}.${skipped}`);
       } else {
-        setStudySuccessMessage(skipped ? `Analysis saved.${skipped}` : null);
+        setStudySuccessMessage(`Analysis saved.${skipped}`);
       }
       setResultStudyReportCount(job.study_id ? result.combined_report_file_names?.length ?? null : null);
       setAnalysis(result);
@@ -547,6 +548,41 @@ export default function DashboardPage() {
     return () => jobAbortRef.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
+
+  // The URL names the current view, so a refresh, Back or Forward lands on the same screen.
+  const urlRestoredRef = useRef(false);
+
+  function openFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const studyId = params.get("study");
+    const analysisId = Number(params.get("analysis"));
+    const opened = studyId ? openStudyCombinedAnalysis(studyId) : analysisId ? loadHistoryItem(analysisId) : null;
+    if (opened) {
+      // A deleted study or someone else's id: show home, and stop the address pointing at it.
+      void opened.then((ok) => { if (!ok) { setView("home"); window.history.replaceState(null, "", "/dashboard"); } });
+    } else {
+      setView(params.get("view") === "upload" ? "analyze" : "home");
+    }
+  }
+
+  useEffect(() => {
+    if (!user) return;
+    if (!urlRestoredRef.current) {
+      urlRestoredRef.current = true;
+      // An upload still running takes precedence; followJob shows it.
+      if (!window.localStorage.getItem(ACTIVE_JOB_KEY)) openFromUrl();
+    }
+    const onPopState = () => openFromUrl();
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  useEffect(() => {
+    if (!urlRestoredRef.current) return; // the address must be read before it is overwritten
+    const target = dashboardUrl(view, activeAnalysisId);
+    if (window.location.pathname + window.location.search !== target) window.history.pushState(null, "", target);
+  }, [view, activeAnalysisId]);
 
   async function submitAnalysis() {
     setErrorMessage(null);
@@ -593,7 +629,7 @@ export default function DashboardPage() {
     }
   }
 
-  async function loadHistoryItem(id: number) {
+  async function loadHistoryItem(id: number): Promise<boolean> {
     try {
       const result = await runWithTokenRetry((_token) => fetchReportById(id));
       setStudyContext(null);
@@ -606,16 +642,20 @@ export default function DashboardPage() {
       setSelectedCategory("all");
       setSelectedTest("");
       setView("result");
-    } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Failed to load."); }
+      return true;
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Failed to load.");
+      return false;
+    }
   }
 
-  async function openStudyCombinedAnalysis(studyId: string, studyName: string, reportCount: number) {
+  async function openStudyCombinedAnalysis(studyId: string, studyName?: string, reportCount: number | null = null): Promise<boolean> {
     setErrorMessage(null);
     setViewLoadingStudyId(studyId);
     try {
       const result = await runWithTokenRetry((_token) => fetchStudyCombinedReport(studyId));
       setStudyContext(null);
-      setStudySuccessMessage(`Loaded combined analysis for ${studyName}.`);
+      setStudySuccessMessage(studyName ? `Loaded combined analysis for ${studyName}.` : null);
       setResultStudyReportCount(reportCount);
       setAnalysis(result);
       setActiveAnalysisId(`study-${studyId}`);
@@ -624,8 +664,10 @@ export default function DashboardPage() {
       setSelectedCategory("all");
       setSelectedTest("");
       setView("result");
+      return true;
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Failed to open study analysis.");
+      return false;
     } finally {
       setViewLoadingStudyId(null);
     }
@@ -1187,9 +1229,7 @@ export default function DashboardPage() {
             {saveStatus === "error" && <span className="save-badge error-badge">Not saved</span>}
           </div>
 
-          <div className="success-banner">
-            {studySuccessMessage || `Successfully analyzed ${analysis.total_records} test records.`}
-          </div>
+          {studySuccessMessage && <div className="success-banner">{studySuccessMessage}</div>}
 
           {/* Patient profile */}
           <section className="result-section">
