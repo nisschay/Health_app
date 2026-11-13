@@ -18,6 +18,7 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
+  sendEmailVerification,
   GoogleAuthProvider,
   signOut,
 } from "firebase/auth";
@@ -52,7 +53,17 @@ export type AuthContextValue = {
   signInWithEmail: (email: string, password: string) => Promise<void>;
   registerWithEmail: (email: string, password: string, displayName: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** False for an email-and-password account that has not opened its verification link yet. */
+  emailVerified: boolean;
+  /** Re-reads the account after the user opened the link; true once the address is confirmed. */
+  refreshEmailVerified: () => Promise<boolean>;
+  resendVerificationEmail: () => Promise<void>;
 };
+
+/** Google vouches for its addresses; only email-and-password sign-ups must confirm theirs. */
+function isEmailVerified(firebaseUser: User): boolean {
+  return firebaseUser.emailVerified || !firebaseUser.providerData.some((p) => p.providerId === "password");
+}
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
@@ -101,6 +112,7 @@ async function syncBackendUser(firebaseUser: User): Promise<void> {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [emailVerified, setEmailVerified] = useState(true);
 
   useEffect(() => {
     let isActive = true;
@@ -121,6 +133,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const unsub = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
+      setEmailVerified(firebaseUser ? isEmailVerified(firebaseUser) : true);
       if (!firebaseUser) {
         clearAuthPresenceCookie();
         setAuthTokenProvider(async () => null);
@@ -144,7 +157,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setLoading(false);
 
-      void syncBackendUser(firebaseUser);
+      if (isEmailVerified(firebaseUser)) void syncBackendUser(firebaseUser);
     });
 
     return () => {
@@ -188,8 +201,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const registerWithEmail = useCallback(async (email: string, password: string, displayName: string) => {
     const credential = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(credential.user, { displayName });
-    // The sign-in listener already synced before the name existed; send it now.
-    await syncBackendUser(credential.user);
+    await sendEmailVerification(credential.user);
+    // The account is synced once the address is confirmed (refreshEmailVerified); the backend refuses it before.
     setAuthPresenceCookie();
   }, []);
 
@@ -206,9 +219,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // A fresh object every render re-fired every effect that listed getToken or logout.
+  const refreshEmailVerified = useCallback(async () => {
+    const current = auth.currentUser;
+    if (!current) return false;
+    await current.reload();
+    await current.getIdToken(true); // the backend reads email_verified from the token
+    const verified = isEmailVerified(current);
+    setEmailVerified(verified);
+    if (verified) await syncBackendUser(current);
+    return verified;
+  }, []);
+
+  const resendVerificationEmail = useCallback(async () => {
+    if (auth.currentUser) await sendEmailVerification(auth.currentUser);
+  }, []);
+
   const value = useMemo<AuthContextValue>(
-    () => ({ user, loading, getToken, signInWithGoogle, signInWithEmail, registerWithEmail, logout }),
-    [user, loading, getToken, signInWithGoogle, signInWithEmail, registerWithEmail, logout],
+    () => ({
+      user, loading, getToken, signInWithGoogle, signInWithEmail, registerWithEmail, logout,
+      emailVerified, refreshEmailVerified, resendVerificationEmail,
+    }),
+    [user, loading, getToken, signInWithGoogle, signInWithEmail, registerWithEmail, logout,
+      emailVerified, refreshEmailVerified, resendVerificationEmail],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
