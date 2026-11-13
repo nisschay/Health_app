@@ -15,36 +15,27 @@ VALID_PAYLOAD = {
 }
 
 
-class _FakeResponse:
-    def __init__(self, text):
-        self.text = text
-
-
 class _FakeModel:
-    """Echoes a payload, or fails with an error that names the prompt it was given."""
+    """Echoes a payload, or fails when the prompt asks it to."""
 
     calls = 0
     lock = threading.Lock()
 
-    def __init__(self, name):
-        self.name = name
-
-    def generate_content(self, prompt, **kwargs):
+    @staticmethod
+    def call(api_key, model, prompt, config, timeout_seconds):
         with _FakeModel.lock:
             _FakeModel.calls += 1
         if "FAIL" in prompt:
-            marker = prompt.split("FAIL-")[1].split()[0]
-            raise RuntimeError(f"boom for {marker}")
-        return _FakeResponse(json.dumps(VALID_PAYLOAD))
+            raise RuntimeError("boom")
+        return json.dumps(VALID_PAYLOAD)
 
 
 @pytest.fixture
 def fake_gemini(monkeypatch):
     _FakeModel.calls = 0
-    monkeypatch.setattr(llm.genai, "GenerativeModel", _FakeModel)
-    monkeypatch.setattr(llm.genai, "configure", lambda **kwargs: None)
-    monkeypatch.setattr(llm, "_genai_configured_key", None)
+    monkeypatch.setattr(llm, "_call_model", _FakeModel.call)
     monkeypatch.setattr(llm._model_call_pacer, "wait", lambda: None)
+    monkeypatch.setattr(llm, "_cooling_until", {})
     return _FakeModel
 
 
@@ -66,24 +57,26 @@ def test_a_report_costs_exactly_one_model_call(fake_gemini):
     assert fake_gemini.calls == 1, "building the dataframe must not call the model again"
 
 
-def test_concurrent_failures_keep_their_own_error(fake_gemini):
+def test_concurrent_calls_keep_their_own_result(fake_gemini):
     """The old module-level error string let one thread report another file's failure."""
-    inputs = [f"report FAIL-{i} text" for i in range(8)]
+    inputs = [f"report {'FAIL' if i % 2 else 'ok'} {i} text" for i in range(8)]
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda text: extraction.analyze_medical_report_with_gemini(text, "key"), inputs))
     for i, (payload, error) in enumerate(results):
-        assert payload is None
-        assert f"boom for {i}" in error, f"input {i} got someone else's error: {error!r}"
+        if i % 2:
+            assert payload is None and "unavailable" in error, f"input {i} got {error!r}"
+        else:
+            assert payload is not None and error == "", f"input {i} got {error!r}"
 
 
-def test_rate_limit_is_reported_as_such(fake_gemini, monkeypatch):
-    def limited(self, prompt, **kwargs):
-        raise RuntimeError("429 quota exceeded, retry in 12s")
+def test_a_long_rate_limit_is_reported_as_such(fake_gemini, monkeypatch):
+    def limited(*args):
+        raise llm.errors.ClientError(429, {"error": {"code": 429, "message": "Quota exceeded. Please retry in 300s."}})
 
-    monkeypatch.setattr(_FakeModel, "generate_content", limited)
+    monkeypatch.setattr(llm, "_call_model", limited)
     payload, error = extraction.analyze_medical_report_with_gemini("text", "key")
     assert payload is None
-    assert "Rate limit" in error and "12s" in error
+    assert "Rate limit" in error and "5m" in error
 
 
 def test_pacer_blocks_once_the_window_is_full(monkeypatch):
