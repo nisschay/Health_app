@@ -17,11 +17,12 @@ from .config import settings
 from .database import get_cached_extraction, store_cached_extraction
 from .exports import create_enhanced_excel_with_trends, generate_pdf_health_report
 from .extraction import (
-    EXTRACTION_MAX_CHARS,
     EXTRACTION_VERSION,
+    PDF_MAX_PAGES,
     analyze_medical_report_with_gemini,
     create_structured_dataframe,
     extract_text_from_pdf,
+    pdf_page_count,
 )
 from .grounding import ground_results
 from .insights import calculate_health_score, get_body_system_analysis
@@ -128,7 +129,7 @@ def _process_single_pdf(
 
     # The model and extraction version are in the key, so a cached answer from an older prompt is not reused.
     # So is the owner: each user's cache is their own and is deleted with their account.
-    cache_key = f"{owner_uid}|{EXTRACTION_VERSION}|{','.join(EXTRACTION_MODEL_CANDIDATES)}|{report_text[:EXTRACTION_MAX_CHARS]}"
+    cache_key = f"{owner_uid}|{EXTRACTION_VERSION}|{','.join(EXTRACTION_MODEL_CANDIDATES)}|{report_text}"
     text_hash = hashlib.sha256(cache_key.encode("utf-8", errors="ignore")).hexdigest()
     payload = _cached(get_cached_extraction, text_hash)
     if payload is None:
@@ -146,6 +147,7 @@ def _process_single_pdf(
         "file": filename,
         "ok": True,
         "ungrounded": ungrounded,
+        "skipped_pages": max(0, pdf_page_count(payload) - PDF_MAX_PAGES),
         "df": df_single,
         "patient_info": patient_info_single,
         "raw_preview": (
@@ -266,6 +268,8 @@ class MedicalAnalysisService:
             df_single = result.get("df")
             patient_info_single = result.get("patient_info")
             raw_preview = result.get("raw_preview")
+            if result.get("skipped_pages"):
+                notes.append(f"{filename}: only the first {PDF_MAX_PAGES} pages were read; {result['skipped_pages']} more were not")
             if result.get("ungrounded"):
                 names = ", ".join(result["ungrounded"][:5])
                 notes.append(f"{filename}: left out {len(result['ungrounded'])} value(s) the report does not contain ({names})")

@@ -77,3 +77,11 @@ def db(engine):
         yield session
     finally:
         session.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_overload_wait(monkeypatch):
+    """generate() waits before a second round when every model is overloaded; tests need not."""
+    from backend_api.app import llm
+
+    monkeypatch.setattr(llm, "OVERLOAD_RETRY_SECONDS", 0)

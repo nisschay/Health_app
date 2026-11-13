@@ -107,3 +107,10 @@ def test_each_user_has_their_own_cache_entry(monkeypatch):
     services._process_single_pdf("r.pdf", b"x", "k", False, "uid-2")
     assert keys[0] != keys[1]
     assert stored == ["uid-1", "uid-2"]
+
+
+def test_pages_past_the_limit_are_reported_not_dropped_silently(offline, monkeypatch):
+    monkeypatch.setattr(services, "analyze_medical_report_with_gemini", lambda text, key: (PAYLOAD, ""))
+    monkeypatch.setattr(services, "pdf_page_count", lambda payload: services.PDF_MAX_PAGES + 7)
+    result = MedicalAnalysisService(api_key="k").analyze_reports(pdf_files=[("long.pdf", b"HbA1c 7.1 %")])
+    assert any("long.pdf" in note and "7 more" in note for note in result["notes"])

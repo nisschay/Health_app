@@ -53,11 +53,28 @@ def test_an_overloaded_model_is_tried_last_for_a_while(model):
 
 def test_a_timeout_or_empty_answer_hands_over_to_the_next(model):
     script, calls, _ = model
-    script.update(primary=[httpx.ReadTimeout("timed out")], fallback=[""])
+    script.update(primary=[httpx.ReadTimeout("timed out"), ""], fallback=["", ""])
     with pytest.raises(llm.ModelUnavailable) as err:
         _generate()
     assert not err.value.rate_limited
-    assert [name for name, _ in calls] == ["primary", "fallback"]
+    assert [name for name, _ in calls] == ["primary", "fallback", "fallback", "primary"]
+
+
+def test_when_every_model_is_overloaded_the_list_is_tried_once_more(model):
+    """Both models returned 503 at the same moment during a live test; a few seconds later they answered."""
+    script, calls, _ = model
+    busy = _error(503, "high demand")
+    script.update(primary=[busy, busy], fallback=[busy, "answer"])
+    assert _generate() == "answer"
+    assert [name for name, _ in calls] == ["primary", "fallback", "primary", "fallback"]
+
+
+def test_a_model_that_does_not_exist_is_not_retried(model):
+    script, calls, _ = model
+    script.update(primary=[_error(404, "not found")], fallback=[_error(404, "not found")])
+    with pytest.raises(llm.ModelUnavailable):
+        _generate()
+    assert len(calls) == 2
 
 
 def test_a_short_rate_limit_is_waited_out_on_the_same_model(model):
