@@ -8,20 +8,20 @@ import {
   fetchReportHistory,
   fetchStudyCombinedReport,
   fetchReportById,
-  deleteStudy,
   exportExcel,
   type DashboardSummary,
   type AnalysisHistoryItem,
   type AnalysisResponse,
   type ReportJob,
 } from "@/lib/api";
-import { summariseTests, summariseStudy } from "@/lib/results";
+import { summariseTests, summariseStudy, doctorList } from "@/lib/results";
 import { formatDate } from "@/lib/format";
 import TopBar from "./TopBar";
 import HomeScreen from "./HomeScreen";
 import UploadScreen from "./UploadScreen";
 import ResultsScreen from "./ResultsScreen";
 import TestScreen from "./TestScreen";
+import StudyActions from "./StudyActions";
 import AssistantPanel from "./AssistantPanel";
 import AccountScreen from "./AccountScreen";
 import VerifyEmailPanel from "./VerifyEmailPanel";
@@ -118,7 +118,13 @@ export default function DashboardPage() {
     : `?analysis=${saved}`;
   useEffect(() => {
     // Wait for Firebase to restore the sign-in: asking before it has would read as an expired session.
-    if (!auth.user || !auth.emailVerified || view === "upload" || (!study && !saved)) return;
+    if (
+      !auth.user ||
+      !auth.emailVerified ||
+      view === "upload" ||
+      (!study && !saved)
+    )
+      return;
     let active = true;
     setLoadingResult(true);
     setAnalysis(null);
@@ -297,11 +303,30 @@ export default function DashboardPage() {
             <>
               <div className="page-heading">
                 <div className="grow">
-                  <h1 className="display">{selectedTest?.name || title}</h1>
+                  <div className="title-line">
+                    <h1>{selectedTest?.name || title}</h1>
+                    {study && !selectedTest && (
+                      <StudyActions
+                        id={study}
+                        title={title}
+                        count={
+                          analysis.combined_report_file_names?.length ||
+                          new Set(
+                            analysis.records.map((r) => r.Source_Filename),
+                          ).size
+                        }
+                        run={run}
+                        deleted={async () => {
+                          await reload();
+                          navigate("/dashboard");
+                        }}
+                      />
+                    )}
+                  </div>
                   <p className="soft">
                     {selectedTest
                       ? `${selectedTest.category}${selectedTest.printedNames.length ? ` · Printed as ${selectedTest.printedNames.join(", ")}` : ""}`
-                      : `${analysis.combined_report_file_names?.length || new Set(analysis.records.map((r) => r.Source_Filename)).size} reports · ${stats.earliestReportDate && stats.earliestReportDate !== stats.latestReportDate ? `${formatDate(stats.earliestReportDate)} to ` : ""}${formatDate(stats.latestReportDate)}`}
+                      : `${analysis.combined_report_file_names?.length || new Set(analysis.records.map((r) => r.Source_Filename)).size} reports · ${stats.earliestReportDate && stats.earliestReportDate !== stats.latestReportDate ? `${formatDate(stats.earliestReportDate)} to ` : ""}${formatDate(stats.latestReportDate)}${studyInfo?.consistent_lab_name ? ` · ${studyInfo.consistent_lab_name}` : ""}`}
                   </p>
                 </div>
                 <div className="row row-wrap">
@@ -318,6 +343,23 @@ export default function DashboardPage() {
                       {exporting ? "Preparing..." : "Download"}
                     </summary>
                     <div className="stack">
+                      <button
+                        className="btn btn-secondary"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(
+                              `${person}\n${title}\n${formatDate(stats.latestReportDate)}\n${doctorList(tests).join("\n")}`,
+                            );
+                            setNotice("Doctor notes copied");
+                          } catch {
+                            setExportError(
+                              "Could not copy the doctor notes. Please try again.",
+                            );
+                          }
+                        }}
+                      >
+                        Copy notes for the doctor
+                      </button>
                       <button
                         className="btn btn-secondary"
                         disabled={exporting}
@@ -346,46 +388,27 @@ export default function DashboardPage() {
                       analysis={analysis}
                       tests={tests}
                       base={base}
-                      person={person}
-                      title={title}
-                      download={() => void download("pdf")}
+                      ask={
+                        <AssistantPanel
+                          key={target}
+                          person={person}
+                          target={target}
+                          run={run}
+                        />
+                      }
                     />
                   )}
                   <Disclaimer />
-                  {study && (
-                    <button
-                      className="btn btn-danger"
-                      onClick={async () => {
-                        if (
-                          !confirm(
-                            `Delete ${title} and all its reports? This cannot be undone.`,
-                          )
-                        )
-                          return;
-                        try {
-                          await run(() => deleteStudy(study));
-                          await reload();
-                          navigate("/dashboard");
-                        } catch (e) {
-                          setError(
-                            e instanceof Error
-                              ? e.message
-                              : "Could not delete study.",
-                          );
-                        }
-                      }}
-                    >
-                      Delete this study
-                    </button>
-                  )}
                 </div>
-                <AssistantPanel
-                  key={target}
-                  person={person}
-                  target={target}
-                  test={selectedTest?.name}
-                  run={run}
-                />
+                {selectedTest && (
+                  <AssistantPanel
+                    key={target}
+                    person={person}
+                    target={target}
+                    test={selectedTest.name}
+                    run={run}
+                  />
+                )}
               </div>
             </>
           )}

@@ -1,12 +1,12 @@
 "use client";
 import { useState } from "react";
-import { ChartNoAxesCombined, Plus, ChevronDown } from "lucide-react";
+import { ChartNoAxesCombined, ChevronDown } from "lucide-react";
 import { buildUserInitials } from "./helpers";
 export function ThemePicker() {
   const [theme, setTheme] = useState(() =>
     typeof window === "undefined"
-      ? "system"
-      : localStorage.getItem("health-app.theme") || "system",
+      ? "dark"
+      : localStorage.getItem("health-app.theme") || "dark",
   );
   return (
     <label className="field">
@@ -18,7 +18,12 @@ export function ThemePicker() {
           const t = e.target.value;
           setTheme(t);
           localStorage.setItem("health-app.theme", t);
-          if (t === "system") delete document.documentElement.dataset.theme;
+          if (t === "system")
+            document.documentElement.dataset.theme = window.matchMedia(
+              "(prefers-color-scheme: light)",
+            ).matches
+              ? "light"
+              : "dark";
           else document.documentElement.dataset.theme = t;
         }}
       >
@@ -50,10 +55,6 @@ export default function TopBar({
           <span className="brand-name">LabTrail</span>
         </a>
         <span className="topbar-spacer" />
-        <a className="btn btn-primary btn-sm" href="/dashboard?view=upload">
-          <Plus size={16} />
-          Add reports
-        </a>
         <details
           className="account-menu"
           onKeyDown={(e) => {

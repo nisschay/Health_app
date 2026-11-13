@@ -6,7 +6,6 @@ import {
   OctagonAlert,
   CircleDot,
   CirclePlus,
-  Info,
 } from "lucide-react";
 import type { StatusKind } from "@/lib/results";
 export const statusLabels = {
@@ -16,7 +15,7 @@ export const statusLabels = {
   normal: "In range",
   borderline: "Borderline",
   detected: "Detected",
-  none: "No range given",
+  none: "No range",
 };
 export const statusIcons = {
   critical: OctagonAlert,
@@ -38,14 +37,13 @@ export function StatusChip({
   return (
     <span className={`chip ${status}`}>
       <Icon size={16} />
-      {negative ? "Not detected" : statusLabels[status]}
+      {negative ? "As expected" : statusLabels[status]}
     </span>
   );
 }
 export function Disclaimer() {
   return (
     <p className="disclaimer">
-      <Info size={20} />
       <span>
         &quot;High&quot;, &quot;Low&quot; and &quot;Critical&quot; come from the
         ranges printed on each lab report. This is not medical advice and can
