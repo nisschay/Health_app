@@ -139,6 +139,7 @@ export default function StudyFlowModal({
                 <span>Create profile and continue to first study setup</span>
               </button>
             </div>
+            {sortedProfiles.length === 0 && loading && <p className="muted-copy">Loading your profiles…</p>}
             {sortedProfiles.length === 0 && !loading && (
               <p className="muted-copy">
                 We could not load your existing profiles yet. Try closing this dialog and reopening it after your session refreshes.
@@ -203,7 +204,9 @@ export default function StudyFlowModal({
           <section className="study-step-panel">
             <h3>Add to {selectedStudy.name}?</h3>
             <p>
-              New reports will be analyzed together with {selectedStudy.report_count} existing reports in this study to strengthen trend tracking.
+              {selectedStudy.report_count > 0
+                ? `New reports will be analyzed together with the ${selectedStudy.report_count} already in this study, so trends cover all of them.`
+                : "This study has no reports yet; these will be its first."}
             </p>
             <div className="study-step-actions">
               <button className="primary-button" type="button" onClick={onConfirmAdd}>Yes, Add to This Study</button>

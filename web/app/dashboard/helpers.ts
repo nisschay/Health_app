@@ -131,3 +131,8 @@ export function buildUserInitials(displayName?: string | null, email?: string | 
   }
   return fallback.slice(0, 2).toUpperCase();
 }
+
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}

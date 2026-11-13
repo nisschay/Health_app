@@ -45,6 +45,7 @@ import {
   chatTarget,
   createChatMessageId,
   formatChatTimestamp,
+  formatFileSize,
   fmtRange,
   isConcerningStatus,
   normalizeSourceFileName,
@@ -504,8 +505,9 @@ export default function DashboardPage() {
       const warnings = job.progress.warnings ?? [];
       const savedCount = job.source_filenames.length - warnings.length;
       const notes = job.progress.notes ?? [];
-      const skipped = (warnings.length ? ` Skipped ${warnings.length}: ${warnings.join("; ")}.` : "")
-        + (notes.length ? ` Checked against the reports: ${notes.join("; ")}.` : "");
+      const list = (items: string[]) => items.map((item) => item.replace(/\.+$/, "")).join("; ");
+      const skipped = (warnings.length ? ` Skipped ${warnings.length}: ${list(warnings)}.` : "")
+        + (notes.length ? ` Checked against the reports: ${list(notes)}.` : "");
       if (context?.mode === "existing") {
         setStudySuccessMessage(`${savedCount} new reports added to ${context.study.name}. Dashboard updated with new trends.${skipped}`);
       } else if (context) {
@@ -898,7 +900,7 @@ export default function DashboardPage() {
               <p>Track, analyze, and revisit your medical history.</p>
             </div>
             <button className="primary-button" onClick={() => { void openStudyFlow(); }} type="button">
-              {(dashboardSummary?.total_reports ?? 0) > 0 ? "Analyze New Report" : "Upload & Analyze"}
+              Upload &amp; Analyze
             </button>
           </section>
 
@@ -929,6 +931,9 @@ export default function DashboardPage() {
                     <h2>{profile.full_name} - {relationshipLabel(profile.relationship)}</h2>
                   </div>
 
+                  {profile.studies.length === 0 && (
+                    <p className="muted-copy">No reports yet. Choose Upload &amp; Analyze to add the first one.</p>
+                  )}
                   <div className="study-cards-grid">
                     {profile.studies.map((study) => (
                       <article className="study-dashboard-card" key={study.id}>
@@ -968,7 +973,7 @@ export default function DashboardPage() {
           {!historyLoading && (dashboardSummary?.profiles?.length ?? 0) === 0 && (
             <div className="empty-state">
               <h3>No studies yet</h3>
-              <p>Create your first profile study flow by clicking Analyze New Report.</p>
+              <p>Choose Upload &amp; Analyze to add your first report.</p>
               <div className="feature-row">
                 <div className="feature-pill">Profiles</div>
                 <div className="feature-pill">Study timelines</div>
@@ -993,7 +998,7 @@ export default function DashboardPage() {
               {studyContext && (
                 <div className="study-upload-summary">
                   {studyContext.mode === "existing"
-                    ? `Adding to: ${studyContext.study.name} • ${studyContext.study.report_count} existing reports`
+                    ? `Adding to: ${studyContext.study.name} • ${studyContext.study.report_count} ${studyContext.study.report_count === 1 ? "report" : "reports"} so far`
                     : `New Study: ${studyContext.study.name} • For: ${studyContext.profile.full_name}`}
                 </div>
               )}
@@ -1032,7 +1037,7 @@ export default function DashboardPage() {
                   {pdfFiles.map((f) => (
                     <div className="file-row" key={`${f.name}-${f.size}`}>
                       <span className="file-name">{f.name}</span>
-                      <span className="file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                      <span className="file-size">{formatFileSize(f.size)}</span>
                       <button className="file-remove" type="button" aria-label={`Remove ${f.name}`} onClick={() => setPdfFiles((prev) => prev.filter((x) => x !== f))}>×</button>
                     </div>
                   ))}
@@ -1053,9 +1058,11 @@ export default function DashboardPage() {
                     <div>
                       <h3>{analyzeStep === "error" ? "Analysis stopped" : "Processing reports"}</h3>
                       <p className="analysis-progress-subcopy">
-                        {analyzeStep === "uploading"
-                          ? "Uploading your files."
-                          : "Your reports are being read on the server. Progress updates every few seconds."}
+                        {analyzeStep === "error"
+                          ? "Nothing was saved. The reason for each file is listed below."
+                          : analyzeStep === "uploading"
+                            ? "Uploading your files."
+                            : "Your reports are being read on the server. Progress updates every few seconds."}
                       </p>
                     </div>
                     <span className="analysis-clock-badge">{elapsedMinutes}m {elapsedSeconds}s elapsed</span>
@@ -1102,11 +1109,13 @@ export default function DashboardPage() {
                             style={{ width: `${overallProgressPercent}%` }}
                           />
                         </div>
-                        <span className="analysis-eta-copy">
-                          {estimatedRemainingSeconds !== null
-                            ? `Estimated remaining time: ${etaMinutes}m ${etaSeconds}s`
-                            : "Calculating estimated completion time..."}
-                        </span>
+                        {isAnalyzing && (
+                          <span className="analysis-eta-copy">
+                            {estimatedRemainingSeconds !== null
+                              ? `Estimated remaining time: ${etaMinutes}m ${etaSeconds}s`
+                              : "Calculating estimated completion time..."}
+                          </span>
+                        )}
                       </div>
 
                       <div className="analysis-file-list" role="list">
@@ -1141,9 +1150,11 @@ export default function DashboardPage() {
                     <p className="analysis-current-file">Currently parsing: {currentParsingFile}</p>
                   )}
 
-                  <p className="analysis-progress-note">
-                    Large report sets can take a few minutes. You can close this tab or refresh; the upload keeps going and the result is saved to your account.
-                  </p>
+                  {isAnalyzing && (
+                    <p className="analysis-progress-note">
+                      Large report sets can take a few minutes. You can close this tab or refresh; the upload keeps going and the result is saved to your account.
+                    </p>
+                  )}
                 </section>
               )}
 

@@ -258,6 +258,7 @@ def _default_self_profile_name(display_name: str | None, email: str | None) -> s
 
 def upsert_user(db: Session, firebase_uid: str, email: str | None, display_name: str | None) -> User:
     """One statement for the user, one for the self profile; both idempotent under concurrency."""
+    display_name = (display_name or "").strip() or None  # a blank name must not erase a saved one
     now = datetime.utcnow()
     touch_before = now - LAST_LOGIN_TOUCH_INTERVAL
     stmt = _insert(db, User).values(
@@ -282,6 +283,15 @@ def upsert_user(db: Session, firebase_uid: str, email: str | None, display_name:
         updated_at=now,
     )
     db.execute(profile.on_conflict_do_nothing(index_elements=[Profile.account_owner_id], index_where=text("lower(relationship) = 'self'")))
+    if display_name:
+        # Sign-up syncs once before the name is saved, so the profile can start out named after the
+        # email. Replace that placeholder, but never a name the user chose.
+        db.query(Profile).filter(
+            Profile.account_owner_id == user.id,
+            func.lower(Profile.relationship) == "self",
+            Profile.full_name == _default_self_profile_name(None, user.email),
+            Profile.full_name != display_name,
+        ).update({"full_name": display_name, "updated_at": now}, synchronize_session=False)
     db.commit()
     return user
 
