@@ -19,7 +19,7 @@ export function generateClinicalPdfReport(analysis: AnalysisResponse): Blob {
   doc.setFontSize(11);
   doc.text(
     doc.splitTextToSize(
-      `${analysis.patient_info.name || "Your results"}\nMost recent report: ${formatDate(summary.latestReportDate)}\n${summary.attention} of ${summary.total} tests need attention, counted from each test's latest reading.`,
+      `${analysis.patient_info.name || "Your results"}\nMost recent report: ${formatDate(summary.latestReportDate)}\n${summary.attention} of ${summary.total} tests ${summary.attention === 1 ? "needs" : "need"} attention, counted from each test's latest reading.`,
       180,
     ),
     14,
@@ -82,7 +82,7 @@ export function generateClinicalPdfReport(analysis: AnalysisResponse): Blob {
               ? "No range given"
               : r.status,
           r.rangeText,
-          r.lab || "Lab not named",
+          r.lab || "",
         ]),
     ),
     styles: { fontSize: 8 },

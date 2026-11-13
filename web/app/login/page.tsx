@@ -223,6 +223,37 @@ export default function LoginPage() {
               />
             </label>
 
+
+            <label className="auth-field auth-password-field">
+              <span>Password</span>
+              <div className="password-wrap">
+                <input
+                  autoComplete={
+                    mode === "login" ? "current-password" : "new-password"
+                  }
+                  disabled={isPending}
+                  minLength={6}
+                  name={mode === "login" ? "password" : "new-password"}
+                  placeholder="••••••••"
+                  ref={passwordInputRef}
+                  required
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+                <button
+                  className="password-toggle"
+                  disabled={isPending}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowPassword((prev) => !prev);
+                  }}
+                  type="button"
+                >
+                  {showPassword ? "Hide" : "Show"}
+                </button>
+              </div>
+            </label>
             {mode === "login" && (
               <button
                 className="auth-link"
@@ -257,37 +288,6 @@ export default function LoginPage() {
                 Forgot password?
               </button>
             )}
-
-            <label className="auth-field auth-password-field">
-              <span>Password</span>
-              <div className="password-wrap">
-                <input
-                  autoComplete={
-                    mode === "login" ? "current-password" : "new-password"
-                  }
-                  disabled={isPending}
-                  minLength={6}
-                  name={mode === "login" ? "password" : "new-password"}
-                  placeholder="••••••••"
-                  ref={passwordInputRef}
-                  required
-                  type={showPassword ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-                <button
-                  className="password-toggle"
-                  disabled={isPending}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setShowPassword((prev) => !prev);
-                  }}
-                  type="button"
-                >
-                  {showPassword ? "Hide" : "Show"}
-                </button>
-              </div>
-            </label>
 
             {error && (
               <p className="auth-error" role="alert">

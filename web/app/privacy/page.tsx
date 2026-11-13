@@ -52,11 +52,12 @@ export default function PrivacyPage() {
         <h2>Who processes it</h2>
         <ul>
           <li>
-            <strong>Google Gemini</strong> reads the text of each uploaded
-            report and answers assistant questions. This app uses the Gemini API
-            free tier, under which Google may use what is sent to improve its
-            products and humans may review it. Do not upload reports you are not
-            comfortable sharing on those terms.
+            <strong>Groq</strong> and <strong>Google Gemini</strong> read the text
+            of each uploaded report and answer assistant questions. The app uses
+            their free tiers and tries Groq first. Groq says it does not train on
+            what is sent through its API. Under the Gemini free tier, Google may use
+            what is sent to improve its products and humans may review it. Do not
+            upload reports you are not comfortable sharing on those terms.
           </li>
           <li>
             <strong>Neon</strong> (Postgres) stores the data listed above.

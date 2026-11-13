@@ -9,6 +9,7 @@ export default function TestScreen({ test: t }: { test: TestSummary }) {
     (r) => r.value !== null && r.unit === l.unit,
   );
   const first = values[0];
+  const hasLab = t.readings.some((r) => r.lab);
   return (
     <div className="stack sections">
       <section className="card card-pad stack">
@@ -19,9 +20,10 @@ export default function TestScreen({ test: t }: { test: TestSummary }) {
         <div>
           <StatusChip status={l.status} negative={l.negative} />
         </div>
-        <p>Lab&apos;s range: {l.rangeText}.</p>
-        {l.value !== null && (l.low !== null || l.high !== null) && (
+        {l.value !== null && (l.low !== null || l.high !== null) ? (
           <RangeBar test={t} />
+        ) : (
+          <p>Lab&apos;s range: {l.rangeText}.</p>
         )}
       </section>
       <section className="card card-pad stack">
@@ -55,7 +57,7 @@ export default function TestScreen({ test: t }: { test: TestSummary }) {
                 <th>Status</th>
                 <th>Change</th>
                 <th className="hide-sm">Lab&apos;s range</th>
-                <th className="hide-sm">Lab</th>
+                {hasLab && <th className="hide-sm">Lab</th>}
               </tr>
             </thead>
             <tbody>
@@ -81,7 +83,7 @@ export default function TestScreen({ test: t }: { test: TestSummary }) {
                           : "First reading"}
                     </td>
                     <td className="hide-sm">{r.rangeText}</td>
-                    <td className="hide-sm">{r.lab || "Lab not named"}</td>
+                    {hasLab && <td className="hide-sm">{r.lab || ""}</td>}
                   </tr>
                 );
               })}

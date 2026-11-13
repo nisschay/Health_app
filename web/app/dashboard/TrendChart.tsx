@@ -11,7 +11,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import type { TestSummary } from "@/lib/results";
-import { formatDate } from "@/lib/format";
+import { formatAmount, formatDate } from "@/lib/format";
 import { statusLabels } from "./ui";
 export default function TrendChart({ test }: { test: TestSummary }) {
   const readings = test.readings.filter(
@@ -28,7 +28,12 @@ export default function TrendChart({ test }: { test: TestSummary }) {
   const min = Math.min(...nums),
     max = Math.max(...nums),
     pad = (max - min || Math.abs(max) || 1) * 0.1;
-  const domain = [min - pad, max + pad];
+  const raw = (max + pad - (min - pad)) / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(raw || 1));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((s) => s >= raw) ?? raw;
+  const lo = Math.floor((min - pad) / step) * step, hi = Math.ceil((max + pad) / step) * step;
+  const domain = [lo, hi];
+  const ticks = Array.from({ length: Math.round((hi - lo) / step) + 1 }, (_, i) => +(lo + i * step).toFixed(6));
   return (
     <>
       <div
@@ -52,7 +57,7 @@ export default function TrendChart({ test }: { test: TestSummary }) {
               }
               stroke="var(--ink-3)"
             />
-            <YAxis domain={domain} width={58} stroke="var(--ink-3)" />
+            <YAxis domain={domain} ticks={ticks} width={58} stroke="var(--ink-3)" tickFormatter={(v: number) => formatAmount(v)} />
             {(low !== null || high !== null) && (
               <ReferenceArea
                 y1={low ?? domain[0]}
@@ -154,7 +159,6 @@ export default function TrendChart({ test }: { test: TestSummary }) {
         </ResponsiveContainer>
       </div>
       <p className="small muted">
-        Lab&apos;s range: {test.latest.rangeText}.{" "}
         {test.readings.some((r) => r.rangeText !== test.latest.rangeText) &&
           "The lab’s range changed between reports. The band shows the latest."}{" "}
         {test.readings.some((r) => r.unit !== test.latest.unit) &&

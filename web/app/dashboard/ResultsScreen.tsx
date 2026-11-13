@@ -59,7 +59,7 @@ export default function ResultsScreen({
               "No results were read from these reports"
             ) : s.attention ? (
               <>
-                <b>{s.attention}</b> of {s.total} tests need attention
+                <b>{s.attention}</b> of {s.total} tests {s.attention === 1 ? "needs" : "need"} attention
               </>
             ) : s.inRange === s.total ? (
               `All ${s.total} tests are in range`

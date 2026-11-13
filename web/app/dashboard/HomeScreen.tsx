@@ -52,11 +52,16 @@ export default function HomeScreen({
   const hour = new Date().getHours();
   return (
     <main className="page home-page stack">
-      <h1 className="display">
-        Good {hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening"},{" "}
-        {first}
-      </h1>
-      <p className="soft">Here is how everyone&apos;s latest reports look.</p>
+      {/* A first visit gets the welcome card below instead of a second greeting. */}
+      {!(summary && !summary.total_reports && !history.length) && (
+        <>
+          <h1 className="display">
+            Good {hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening"},{" "}
+            {first}
+          </h1>
+          <p className="soft">Here is how everyone&apos;s latest reports look.</p>
+        </>
+      )}
       {error && <p role="alert">{error}</p>}
       {!summary ? (
         <Skeleton />

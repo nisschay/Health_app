@@ -175,6 +175,7 @@ export function summariseStudy(tests: TestSummary[]) {
     inRange: count("normal"),
     unknown: count("none"),
     latestReportDate: dates[0],
+    earliestReportDate: dates[dates.length - 1],
     previousReportDate: dates[1],
     better: tests.filter((t) => t.verdict === "better").length,
     worse: tests.filter((t) => t.verdict === "worse").length,

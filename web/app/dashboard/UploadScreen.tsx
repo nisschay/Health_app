@@ -220,14 +220,10 @@ export default function UploadScreen({
               </li>
             ))}
           </ul>
-          {j?.progress.warnings?.map((w) => (
-            <p key={w}>{skipReason(w)}</p>
-          ))}
           {!!j?.progress.notes?.length && (
             <div>
               <h2 className="h2">
-                Values we left out because we could not find them in the report
-                text
+                Notes about these reports
               </h2>
               {j.progress.notes.map((n) => (
                 <p key={n}>{n}</p>
@@ -511,11 +507,7 @@ export default function UploadScreen({
                   </li>
                 ))}
               </ul>
-              <details
-                onToggle={(e) =>
-                  setUploadMode(e.currentTarget.open ? "append" : "new")
-                }
-              >
+              <details open={!!existingDataFile || undefined}>
                 <summary>Already have a spreadsheet of results? Add it</summary>
                 <label className="field">
                   Excel or CSV results
@@ -523,9 +515,12 @@ export default function UploadScreen({
                     className="input"
                     type="file"
                     accept=".xlsx,.csv"
-                    onChange={(e) =>
-                      setExistingDataFile(e.target.files?.[0] ?? null)
-                    }
+                    onChange={(e) => {
+                      // The spreadsheet itself decides the mode, so closing this section cannot drop it silently.
+                      const sheet = e.target.files?.[0] ?? null;
+                      setExistingDataFile(sheet);
+                      setUploadMode(sheet ? "append" : "new");
+                    }}
                   />
                 </label>
                 <p className="small muted">
@@ -541,7 +536,7 @@ export default function UploadScreen({
                 />
                 <span>
                   I have permission to upload these reports. I understand their
-                  text is sent to Google&apos;s Gemini AI to be read, and that
+                  text is sent to an AI service (Groq or Google Gemini) to be read, and that
                   the results are not medical advice.{" "}
                   <a href="/privacy">How your data is handled</a>
                 </span>
@@ -553,8 +548,10 @@ export default function UploadScreen({
                 {pending
                   ? "Preparing..."
                   : files.length
-                    ? `Read ${files.length} ${files.length === 1 ? "report" : "reports"}`
-                    : "Read spreadsheet results"}
+                    ? `Read ${files.length} ${files.length === 1 ? "report" : "reports"}${existingDataFile ? " and 1 spreadsheet" : ""}`
+                    : existingDataFile
+                      ? "Read spreadsheet results"
+                      : "Read reports"}
               </button>
               {missing && <p className="small muted">{missing}</p>}
             </div>

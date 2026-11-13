@@ -538,7 +538,7 @@ progress { width:100%; accent-color:var(--primary); }
 .sample>span { font:var(--text-small); }
 .sample>.chip { justify-self:end; }
 .auth-points li { display:list-item; list-style:disc; margin-left:20px; }
-.auth-link { align-self:flex-end; margin-top:-12px; margin-bottom:-36px; z-index:1; font:var(--text-small); }
+.auth-link { align-self:flex-end; margin-top:-8px; font:var(--text-small); }
 .auth-field>span { font:var(--text-label); }
 .auth-brand { color:var(--ink); }
 .auth-form { gap:16px; }

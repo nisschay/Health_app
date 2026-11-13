@@ -117,7 +117,8 @@ export default function DashboardPage() {
     ? `?study=${encodeURIComponent(study)}`
     : `?analysis=${saved}`;
   useEffect(() => {
-    if (!auth.emailVerified || view === "upload" || (!study && !saved)) return;
+    // Wait for Firebase to restore the sign-in: asking before it has would read as an expired session.
+    if (!auth.user || !auth.emailVerified || view === "upload" || (!study && !saved)) return;
     let active = true;
     setLoadingResult(true);
     setAnalysis(null);
@@ -139,7 +140,7 @@ export default function DashboardPage() {
     return () => {
       active = false;
     };
-  }, [study, saved, view, run, navigate, auth.emailVerified]);
+  }, [auth.user, study, saved, view, run, navigate, auth.emailVerified]);
   const completed = useCallback(
     (j: ReportJob) => {
       void reload();
@@ -300,7 +301,7 @@ export default function DashboardPage() {
                   <p className="soft">
                     {selectedTest
                       ? `${selectedTest.category}${selectedTest.printedNames.length ? ` · Printed as ${selectedTest.printedNames.join(", ")}` : ""}`
-                      : `${analysis.combined_report_file_names?.length || new Set(analysis.records.map((r) => r.Source_Filename)).size} reports · ${formatDate(stats.latestReportDate)}`}
+                      : `${analysis.combined_report_file_names?.length || new Set(analysis.records.map((r) => r.Source_Filename)).size} reports · ${stats.earliestReportDate && stats.earliestReportDate !== stats.latestReportDate ? `${formatDate(stats.earliestReportDate)} to ` : ""}${formatDate(stats.latestReportDate)}`}
                   </p>
                 </div>
                 <div className="row row-wrap">
