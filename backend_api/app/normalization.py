@@ -12,7 +12,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # Bump when normalisation output changes shape; the backfill re-normalises older rows.
-NORMALIZATION_VERSION = 5
+NORMALIZATION_VERSION = 6
 
 CANONICAL_CATEGORIES = [
     "Haematology",
@@ -138,11 +138,16 @@ TEST_NAME_MAP: dict[str, str] = {
     "sgpt": "Alanine Aminotransferase (SGPT/ALT)",
     "alt": "Alanine Aminotransferase (SGPT/ALT)",
     "alanine aminotransferase": "Alanine Aminotransferase (SGPT/ALT)",
+    "sgpt/alt": "Alanine Aminotransferase (SGPT/ALT)",
+    "alt/sgpt": "Alanine Aminotransferase (SGPT/ALT)",
     "hba1c": "Glycated Haemoglobin (HbA1C)",
     "glycated haemoglobin": "Glycated Haemoglobin (HbA1C)",
     "haemoglobin a1c": "Glycated Haemoglobin (HbA1C)",
     "25-oh vitamin d": "25-OH Vitamin D (Total)",
     "25 oh vitamin d": "25-OH Vitamin D (Total)",
+    "vitamin d 25-oh": "25-OH Vitamin D (Total)",
+    "vitamin d 25 oh": "25-OH Vitamin D (Total)",
+    "vitamin d 25 hydroxy": "25-OH Vitamin D (Total)",
     "vitamin d total": "25-OH Vitamin D (Total)",
     "vitamin d3": "25-OH Vitamin D (Total)",
     "cholecalciferol": "25-OH Vitamin D (Total)",
@@ -154,6 +159,8 @@ TEST_NAME_MAP: dict[str, str] = {
     "hdl cholesterol": "HDL Cholesterol",
     "high density lipoprotein": "HDL Cholesterol",
     "tsh": "Thyroid Stimulating Hormone (TSH)",
+    "tsh ultrasensitive": "Thyroid Stimulating Hormone (TSH)",
+    "ultrasensitive tsh": "Thyroid Stimulating Hormone (TSH)",
     "thyroid stimulating hormone": "Thyroid Stimulating Hormone (TSH)",
     "t3": "Triiodothyronine (T3)",
     "t4": "Thyroxine (T4)",
@@ -189,6 +196,7 @@ TEST_NAME_MAP: dict[str, str] = {
     "rbc": "Red Blood Cell Count (RBC)",
     "red blood cell count": "Red Blood Cell Count (RBC)",
     "total rbc": "Red Blood Cell Count (RBC)",
+    "rbc count": "Red Blood Cell Count (RBC)",
     "rbc electrical impedance": "Red Blood Cell Count (RBC)",
     "total leucocyte count": "Total WBC Count",
     "total leucocytes count": "Total WBC Count",
@@ -310,6 +318,7 @@ TEST_NAME_MAP: dict[str, str] = {
     # Kidney
     "uric acid": "Uric Acid",
     "est. glomerular filtration rate (egfr)": "eGFR (Estimated)",
+    "egfr": "eGFR (Estimated)",
     "microalbuminuria": "Microalbuminuria",
 
     # Lipids
@@ -614,35 +623,35 @@ def are_same_test(a: str, b: str) -> bool:
 
 
 def _display_name_from_key(value: str) -> str:
+    """Title-case a lab name the way labs write it: 'sgpt/alt' -> 'SGPT/ALT', 'hbsag' -> 'HBsAg'."""
     special_tokens = {
         "ph": "pH",
-        "sgot": "SGOT",
-        "sgpt": "SGPT",
-        "ast": "AST",
-        "alt": "ALT",
-        "tlc": "TLC",
-        "rbc": "RBC",
-        "rdw": "RDW",
-        "mpv": "MPV",
-        "pdw": "PDW",
-        "ldl": "LDL",
-        "hdl": "HDL",
-        "vldl": "VLDL",
-        "ra": "RA",
         "hba1c": "HbA1C",
+        "hbsag": "HBsAg",
+        "hb": "Hb",
+        "egfr": "eGFR",
+        "eag": "eAG",
+        "rh": "Rh",
+        "pus": "Pus",
+        "hs": "hs",
+        "ra": "RA",
+        "vldl": "VLDL",
+        "mchc": "MCHC",
     }
 
-    words = [token for token in re.split(r"\s+", value.strip()) if token]
-    rendered: list[str] = []
-    for word in words:
-        key = word.lower()
+    def render(token: str) -> str:
+        key = token.lower()
         if key in special_tokens:
-            rendered.append(special_tokens[key])
-        elif len(key) <= 3 and key.isalpha():
-            rendered.append(key.upper())
-        else:
-            rendered.append(key.capitalize())
-    return " ".join(rendered)
+            return special_tokens[key]
+        if len(key) <= 3 and key.isalnum() and key[0].isalpha():
+            return key.upper()  # tsh, ldl, ns1, ft4
+        if any(ch.isdigit() for ch in key) and any(ch.isalpha() for ch in key) and len(key) <= 4:
+            return key.upper()  # b12, 25oh
+        return key.capitalize()
+
+    # Capitalise each part of "sgpt/alt", "25-oh" or "t3," on its own, keeping the punctuation.
+    parts = re.split(r"([^A-Za-z0-9]+)", re.sub(r"\s+", " ", value.strip()))
+    return "".join(render(part) if part.isalnum() else part for part in parts)
 
 
 def pick_canonical_name(names: list[str]) -> str:
