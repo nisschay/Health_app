@@ -44,8 +44,7 @@ export default function YourDataPanel({ runWithTokenRetry, onAccountDeleted }: P
     setError(null);
     try {
       await runWithTokenRetry(() => deleteMyAccount());
-      // The health data is gone at this point. Removing the sign-in itself can need a recent
-      // login; if Firebase refuses, signing out still leaves nothing behind but the email.
+      // The server removed the data and the login. This is only a fallback if it could not remove the login.
       if (auth.currentUser) await deleteUser(auth.currentUser).catch(() => undefined);
       onAccountDeleted();
     } catch (err) {

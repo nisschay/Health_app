@@ -61,6 +61,15 @@ def test_deleting_an_account_removes_every_row_and_spares_other_users(db):
     assert _everything(db, "uid-2") == {"user": 1, "profiles": 1, "analyses": 1, "cache": 1}
 
 
+def test_deleting_an_account_also_removes_the_login(db, monkeypatch):
+    """The browser's deleteUser needs a sign-in from the last few minutes, so the login used to survive."""
+    requester, _, _ = _populate(db)
+    removed = []
+    monkeypatch.setattr(main, "delete_sign_in", removed.append)
+    main.delete_my_account(user=requester, db=db)
+    assert removed == [requester.user_id]
+
+
 def test_deleting_a_study_removes_its_reports_and_findings(db):
     requester, _, study = _populate(db)
     main.delete_study_endpoint(study_id=study.id, user=requester, db=db)

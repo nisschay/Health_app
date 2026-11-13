@@ -42,8 +42,8 @@ export default function PrivacyPage() {
       <h2>Download or delete</h2>
       <p>
         On the dashboard, under <strong>Your data</strong>, you can download everything stored about you as one file,
-        or delete your account. Deleting removes every report, result, study, profile, saved analysis and cached reading
-        at once. It cannot be undone.
+        or delete your account. Deleting removes every report, result, study, profile, saved analysis and cached reading,
+        and your sign-in, at once. It cannot be undone.
       </p>
     </main>
   );
