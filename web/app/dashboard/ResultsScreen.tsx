@@ -33,21 +33,26 @@ export default function ResultsScreen({
             Needs attention <span>{attention.length}</span>
           </h2>
           <div className="pills" aria-label="Filter results needing attention">
-            {["all", "critical", "high", "low"].map((f) => (
-              <button
-                key={f}
-                className={`pill ${filter === f ? "on" : ""}`}
-                aria-pressed={filter === f}
-                onClick={() => setFilter(f)}
-              >
-                {f[0].toUpperCase() + f.slice(1)}{" "}
-                <b>
-                  {f === "all"
-                    ? attention.length
-                    : attention.filter((t) => t.latest.status === f).length}
-                </b>
-              </button>
-            ))}
+            {["all", "critical", "high", "low"]
+              .filter(
+                (f) =>
+                  f === "all" || attention.some((t) => t.latest.status === f),
+              )
+              .map((f) => (
+                <button
+                  key={f}
+                  className={`pill ${filter === f ? "on" : ""}`}
+                  aria-pressed={filter === f}
+                  onClick={() => setFilter(f)}
+                >
+                  {f[0].toUpperCase() + f.slice(1)}{" "}
+                  <b>
+                    {f === "all"
+                      ? attention.length
+                      : attention.filter((t) => t.latest.status === f).length}
+                  </b>
+                </button>
+              ))}
           </div>
         </div>
         <ul className="card rows">

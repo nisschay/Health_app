@@ -1,4 +1,5 @@
 "use client";
+import Brand from "../Brand";
 
 import { useState, useEffect, useRef } from "react";
 import { sendPasswordResetEmail } from "firebase/auth";
@@ -141,11 +142,8 @@ export default function LoginPage() {
 
       <section className="auth-form-side">
         <div className="auth-card">
-          <div className="auth-brand row">
-            <span className="brand-mark" aria-hidden="true">
-              ↗
-            </span>
-            <strong>LabTrail</strong>
+          <div className="auth-brand brand">
+            <Brand />
           </div>
           <h1 className="h1">
             {mode === "login" ? "Welcome back" : "Create your account"}

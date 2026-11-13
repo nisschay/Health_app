@@ -20,7 +20,7 @@ from backend_api.app.database import (
     save_analysis,
     upsert_user,
 )
-from backend_api.app.schemas import CreateProfileRequest
+from backend_api.app.schemas import CreateProfileRequest, RenameStudyRequest
 
 
 def _everything(db, uid):
@@ -85,6 +85,16 @@ def test_someone_elses_study_cannot_be_deleted(db):
         main.delete_study_endpoint(study_id=study.id, user=RequestUser(user_id="uid-2", email=None), db=db)
     assert err.value.status_code == 404
     assert db.query(Study).count() == 1
+
+
+def test_a_study_can_be_renamed_by_its_owner_only(db):
+    requester, _, study = _populate(db)
+    renamed = main.rename_study_endpoint(study_id=study.id, payload=RenameStudyRequest(name="  Yearly checkup "), user=requester, db=db)
+    assert renamed.name == "Yearly checkup" and renamed.report_count == 2
+    upsert_user(db, "uid-2", "b@example.com", "B")
+    with pytest.raises(HTTPException) as err:
+        main.rename_study_endpoint(study_id=study.id, payload=RenameStudyRequest(name="Mine"), user=RequestUser(user_id="uid-2", email=None), db=db)
+    assert err.value.status_code == 404
 
 
 def test_a_family_member_can_be_removed_but_not_yourself(db):

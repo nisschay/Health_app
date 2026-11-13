@@ -1,10 +1,11 @@
+import Brand from "../Brand";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Privacy and data | LabTrail",
   description:
-    "What the LabTrail stores, who processes it, and how to download or delete it.",
+    "What LabTrail stores, who processes it, and how to download or delete it.",
 };
 
 /** Plain statement of what happens to an uploaded report. Linked from sign-in and the upload form. */
@@ -14,7 +15,7 @@ export default function PrivacyPage() {
       <header className="topbar">
         <div className="topbar-inner">
           <Link className="brand" href="/dashboard">
-            LabTrail
+            <Brand />
           </Link>
         </div>
       </header>

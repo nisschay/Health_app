@@ -45,7 +45,7 @@ export default function AllResults({
             <summary>
               <span className="chev">›</span>
               <strong className="cat-name">{g.category}</strong>
-              <span className="cat-n">{g.tests.length} tests</span>
+              <span className="cat-n">{g.tests.length} {g.tests.length === 1 ? "test" : "tests"}</span>
               <span className={`cat-state ${g.attention ? "high" : ""}`}>
                 {g.attention
                   ? `${g.attention} outside range`

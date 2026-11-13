@@ -320,6 +320,9 @@ export default function DashboardPage() {
                           await reload();
                           navigate("/dashboard");
                         }}
+                        renamed={async () => {
+                          await reload();
+                        }}
                       />
                     )}
                   </div>

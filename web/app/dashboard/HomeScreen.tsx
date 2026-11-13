@@ -82,166 +82,191 @@ export default function HomeScreen({
                 Add a lab report PDF for yourself or someone in your family. We
                 will read every result and show you what needs attention.
               </p>
-              <a className="btn btn-primary" href="/dashboard?view=upload">
-                Add your first report
-              </a>
               <ol className="how">
-                <li>Add the PDFs</li>
-                <li>See what matters</li>
-                <li>Watch the trend</li>
+                <li>Add the PDFs from the lab</li>
+                <li>See which results are outside the range</li>
+                <li>Follow each test over time</li>
               </ol>
+              <div>
+                <a className="btn btn-primary" href="/dashboard?view=upload">
+                  Add your first report
+                </a>
+              </div>
             </section>
           )}
-          <div className="v2-home">
-            <div className="col">
-              {summary.profiles.map((p) => (
-                <div className="col" key={p.profile_id}>
-                  <section className="card">
-                    <div className="person-head">
-                      <span className="avatar lg">
-                        {buildUserInitials(p.full_name)}
-                      </span>
-                      <div className="grow">
-                        <h2>
-                          {p.full_name}{" "}
-                          <span className="tag">
-                            {p.relationship === "self"
-                              ? "You"
-                              : relationshipLabel(p.relationship)}
-                          </span>
-                        </h2>
-                        {p.relationship !== "self" && (
-                          <details className="family-actions">
-                            <summary>Manage family member</summary>
-                            <button
-                              className="btn btn-quiet"
-                              onClick={async () => {
-                                if (
-                                  !confirm(
-                                    `Remove ${p.full_name} and all their studies and reports? This cannot be undone.`,
+          {(summary.total_reports > 0 || history.length > 0) && (
+            <div className="v2-home">
+              <div className="col">
+                {summary.profiles.map((p) => (
+                  <div className="col" key={p.profile_id}>
+                    <section className="card">
+                      <div className="person-head">
+                        <span className="avatar lg">
+                          {buildUserInitials(p.full_name)}
+                        </span>
+                        <div className="grow">
+                          <h2>
+                            {p.full_name}{" "}
+                            <span className="tag">
+                              {p.relationship === "self"
+                                ? "You"
+                                : relationshipLabel(p.relationship)}
+                            </span>
+                          </h2>
+                          {p.relationship !== "self" && (
+                            <details className="family-actions">
+                              <summary>Manage family member</summary>
+                              <button
+                                className="btn btn-quiet"
+                                onClick={async () => {
+                                  if (
+                                    !confirm(
+                                      `Remove ${p.full_name} and all their studies and reports? This cannot be undone.`,
+                                    )
                                   )
-                                )
-                                  return;
-                                try {
-                                  await run(() => deleteProfile(p.profile_id));
-                                  reload();
-                                } catch (e) {
-                                  setError(
-                                    e instanceof Error
-                                      ? e.message
-                                      : "Could not remove this family member.",
-                                  );
-                                }
-                              }}
-                            >
-                              Remove this family member
-                            </button>
-                          </details>
-                        )}
-                        <p>
-                          {p.studies[0]?.name} ·{" "}
-                          {p.studies.reduce((n, s) => n + s.report_count, 0)}{" "}
-                          reports{" "}
-                          {p.studies[0]?.consistent_lab_name &&
-                            ` · ${p.studies[0].consistent_lab_name}`}
-                        </p>
+                                    return;
+                                  try {
+                                    await run(() =>
+                                      deleteProfile(p.profile_id),
+                                    );
+                                    reload();
+                                  } catch (e) {
+                                    setError(
+                                      e instanceof Error
+                                        ? e.message
+                                        : "Could not remove this family member.",
+                                    );
+                                  }
+                                }}
+                              >
+                                Remove this family member
+                              </button>
+                            </details>
+                          )}
+                          <p>
+                            {p.studies[0]?.name} ·{" "}
+                            {p.studies.reduce((n, s) => n + s.report_count, 0)}{" "}
+                            reports{" "}
+                            {p.studies[0]?.consistent_lab_name &&
+                              ` · ${p.studies[0].consistent_lab_name}`}
+                          </p>
+                        </div>
+                        <a
+                          className="btn btn-secondary"
+                          href={`?view=upload&profile=${p.profile_id}`}
+                        >
+                          <Plus size={16} />
+                          Add reports
+                        </a>
                       </div>
-                      <a
-                        className="btn btn-secondary"
-                        href={`?view=upload&profile=${p.profile_id}`}
-                      >
-                        <Plus size={16} />
-                        Add reports
-                      </a>
-                    </div>
+                      {p.studies.map((study) => {
+                        const tests = reports[study.id]
+                          ? summariseTests(reports[study.id].records)
+                          : null;
+                        return (
+                          <div key={study.id}>
+                            {!study.report_count ? (
+                              <div className="card-pad">
+                                <p>{study.name}</p>
+                                <p className="muted">
+                                  No reports in this study yet.
+                                </p>
+                              </div>
+                            ) : tests ? (
+                              <StudySummary
+                                tests={tests}
+                                base={`?study=${study.id}`}
+                                home
+                              />
+                            ) : (
+                              <div className="card-pad">
+                                <p>{study.name}</p>
+                                <p className="muted">
+                                  Loading latest results...
+                                </p>
+                              </div>
+                            )}
+                            {study.report_count > 0 && (
+                              <div className="study-foot card-pad">
+                                <span className="eyebrow">
+                                  {study.range_start &&
+                                  study.range_end &&
+                                  study.range_start !== study.range_end
+                                    ? `${formatDate(study.range_start)} to ${formatDate(study.range_end)}`
+                                    : study.range_end || study.range_start
+                                      ? formatDate(
+                                          study.range_end || study.range_start,
+                                        )
+                                      : ""}
+                                </span>
+                                <a
+                                  className="btn btn-primary"
+                                  href={`?study=${study.id}`}
+                                >
+                                  See all results <ChevronRight size={16} />
+                                </a>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </section>
                     {p.studies.map((study) => {
                       const tests = reports[study.id]
-                        ? summariseTests(reports[study.id].records)
-                        : null;
+                        ? recentAttention(
+                            summariseTests(reports[study.id].records).filter(
+                              (t) => t.needsAttention,
+                            ),
+                          )
+                        : [];
                       return (
-                        <div key={study.id}>
-                          {tests ? (
-                            <StudySummary
-                              tests={tests}
-                              base={`?study=${study.id}`}
-                              home
-                            />
-                          ) : (
-                            <div className="card-pad">
-                              <p>{study.name}</p>
-                              <p className="muted">Loading latest results...</p>
+                        tests.length > 0 && (
+                          <section className="card latest" key={study.id}>
+                            <div className="mini-title">
+                              <h2>Most recent results outside range</h2>
+                              <a className="link" href={`?study=${study.id}`}>
+                                All {tests.length} ›
+                              </a>
                             </div>
-                          )}
-                          <div className="study-foot card-pad">
-                            <span className="eyebrow">
-                              {formatDate(study.range_start)} to{" "}
-                              {formatDate(study.range_end)}
-                            </span>
-                            <a
-                              className="btn btn-primary"
-                              href={`?study=${study.id}`}
-                            >
-                              See all results <ChevronRight size={16} />
-                            </a>
-                          </div>
-                        </div>
+                            <ul className="rows">
+                              {tests.slice(0, 3).map((t) => (
+                                <ResultRow
+                                  key={t.name}
+                                  test={t}
+                                  base={`?study=${study.id}`}
+                                />
+                              ))}
+                            </ul>
+                          </section>
+                        )
                       );
                     })}
-                  </section>
-                  {p.studies.map((study) => {
-                    const tests = reports[study.id]
-                      ? recentAttention(
-                          summariseTests(reports[study.id].records).filter(
-                            (t) => t.needsAttention,
-                          ),
-                        )
-                      : [];
-                    return (
-                      tests.length > 0 && (
-                        <section className="card latest" key={study.id}>
-                          <div className="mini-title">
-                            <h2>Most recent results outside range</h2>
-                            <a className="link" href={`?study=${study.id}`}>
-                              All {tests.length} ›
-                            </a>
-                          </div>
-                          <ul className="rows">
-                            {tests.slice(0, 3).map((t) => (
-                              <ResultRow
-                                key={t.name}
-                                test={t}
-                                base={`?study=${study.id}`}
-                              />
-                            ))}
-                          </ul>
-                        </section>
-                      )
-                    );
-                  })}
-                </div>
-              ))}
+                  </div>
+                ))}
+              </div>
+              <div className="col">
+                <HomeReports reports={reports} />
+                <section className="invite">
+                  <Plus size={24} />
+                  <div>
+                    <h2>Add a family member</h2>
+                    <p>
+                      Keep a parent&apos;s, partner&apos;s or child&apos;s
+                      reports here too. Each person gets their own results and
+                      history.
+                    </p>
+                    <a
+                      className="btn btn-secondary"
+                      href="?view=upload&newPerson=1"
+                    >
+                      <Plus size={16} />
+                      Add a family member
+                    </a>
+                  </div>
+                </section>
+              </div>
             </div>
-            <div className="col">
-              <HomeReports reports={reports} />
-              <section className="invite">
-                <Plus size={24} />
-                <div>
-                  <h2>Add a family member</h2>
-                  <p>
-                    Keep a parent&apos;s, partner&apos;s or child&apos;s reports
-                    here too. Each person gets their own results and history.
-                  </p>
-                  <a
-                    className="btn btn-secondary"
-                    href="?view=upload&newPerson=1"
-                  >
-                    <Plus size={16} />
-                    Add a family member
-                  </a>
-                </div>
-              </section>
-            </div>
-          </div>
+          )}
           {history.length > 0 && (
             <section className="stack">
               <h2 className="h2">Earlier one-off analyses</h2>

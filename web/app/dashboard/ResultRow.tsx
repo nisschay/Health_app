@@ -94,7 +94,7 @@ export default function ResultRow({
                 className={`spark ${tone}`}
                 viewBox="0 0 208 26"
                 role="img"
-                aria-label={`${readings.length} readings over the lab range`}
+                aria-label={`Trend of ${readings.length} readings against the lab range`}
               >
                 <rect
                   className="band"

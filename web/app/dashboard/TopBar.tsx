@@ -1,6 +1,7 @@
 "use client";
+import Brand from "../Brand";
 import { useState } from "react";
-import { ChartNoAxesCombined, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { buildUserInitials } from "./helpers";
 export function ThemePicker() {
   const [theme, setTheme] = useState(() =>
@@ -49,10 +50,7 @@ export default function TopBar({
     <header className="topbar">
       <div className="topbar-inner">
         <a className="brand" href="/dashboard">
-          <span className="brand-mark">
-            <ChartNoAxesCombined size={22} />
-          </span>
-          <span className="brand-name">LabTrail</span>
+          <Brand />
         </a>
         <span className="topbar-spacer" />
         <details

@@ -1827,14 +1827,24 @@ svg {
   max-width: 100%;
 }
 .welcome {
-  text-align: center;
   padding: 40px;
+  max-width: 640px;
 }
 .how {
-  display: flex;
-  gap: 24px;
-  justify-content: center;
-  flex-wrap: wrap;
+  display: grid;
+  gap: 8px;
+  list-style: decimal;
+  padding-left: 20px;
+  color: var(--text-2);
+}
+@media (max-width: 720px) {
+  .welcome {
+    padding: 24px;
+  }
+}
+.how li::marker {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
 .auth-card {
   display: flex;
@@ -3273,6 +3283,9 @@ summary:focus-visible {
   line-height: 21px;
   color: var(--text-2);
   margin-top: 8px;
+}
+.confirm-dialog .rename-field {
+  margin-top: 16px;
 }
 .confirm-dialog .actions {
   justify-content: flex-end;
