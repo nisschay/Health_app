@@ -83,6 +83,15 @@ def _firebase_enabled() -> bool:
     return True
 
 
+EMAIL_NOT_VERIFIED = "Verify your email address to continue. Check your inbox for the link."
+
+
+def needs_email_verification(decoded_token: dict) -> bool:
+    """Google and other providers vouch for the address; an email-and-password sign-up has to confirm it."""
+    provider = (decoded_token.get("firebase") or {}).get("sign_in_provider")
+    return provider == "password" and not decoded_token.get("email_verified")
+
+
 def delete_sign_in(firebase_uid: str) -> bool:
     """Remove the Firebase login itself. The browser cannot do this without a recent sign-in; the admin API can.
 
@@ -170,7 +179,23 @@ def get_request_user(authorization: str | None = Header(default=None)) -> Reques
             detail="Firebase token project mismatch. Please sign out and sign in again.",
         )
 
+    if settings.require_verified_email and needs_email_verification(decoded_token):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=EMAIL_NOT_VERIFIED)
+
     return RequestUser(
         user_id=decoded_token["uid"],
         email=decoded_token.get("email"),
     )
+
+
+def get_signed_in_user(authorization: str | None = Header(default=None)) -> RequestUser:
+    """Any valid sign-in, confirmed address or not. Only for deleting the account, which must always work."""
+    try:
+        return get_request_user(authorization)
+    except HTTPException as exc:
+        if exc.detail != EMAIL_NOT_VERIFIED:
+            raise
+    decoded_token = firebase_auth.verify_id_token(
+        _extract_bearer_token(authorization), clock_skew_seconds=settings.firebase_clock_skew_seconds
+    )
+    return RequestUser(user_id=decoded_token["uid"], email=decoded_token.get("email"))

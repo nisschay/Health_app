@@ -4614,3 +4614,48 @@ h1 {
 .legal-back {
   font-size: 0.85rem;
 }
+
+/* Verify-email gate: one centred card, same surface as the sign-in card. */
+.verify-email-shell {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6, 24px) 16px;
+  background: var(--bg-base);
+}
+
+.verify-email-card {
+  width: 100%;
+  max-width: 460px;
+  padding: 28px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  display: grid;
+  gap: 14px;
+}
+
+.verify-email-card h1 {
+  font-size: 1.4rem;
+  color: var(--text-primary);
+}
+
+.verify-email-card p {
+  color: var(--text-secondary, var(--text-muted));
+  line-height: 1.55;
+}
+
+.verify-email-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.verify-email-actions .link-button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 6px;
+  font: inherit;
+}

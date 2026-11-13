@@ -64,6 +64,8 @@ class Settings:
     max_pending_jobs: int = max(1, _as_int(os.getenv("MAX_PENDING_JOBS"), default=6))
     # The interactive API docs list every route; keep them for local development only.
     expose_api_docs: bool = _as_bool(os.getenv("EXPOSE_API_DOCS"), default=False)
+    # An email-and-password account must prove it owns the address before it can store health data.
+    require_verified_email: bool = _as_bool(os.getenv("REQUIRE_VERIFIED_EMAIL"), default=True)
 
 
 settings = Settings()

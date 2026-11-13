@@ -40,6 +40,7 @@ const ClinicalChatPanel = dynamic(() => import("./ClinicalChatPanel"), { ssr: fa
 
 import NavBar from "./NavBar";
 import StudyFlowModal from "./StudyFlowModal";
+import VerifyEmailPanel from "./VerifyEmailPanel";
 import {
   buildUserInitials,
   chatTarget,
@@ -69,7 +70,7 @@ import {
 } from "./types";
 
 export default function DashboardPage() {
-  const { user, loading, getToken, logout } = useAuth();
+  const { user, loading, getToken, logout, emailVerified, refreshEmailVerified, resendVerificationEmail } = useAuth();
   const router = useRouter();
 
   const hardRedirectToLogin = useCallback(() => {
@@ -231,7 +232,7 @@ export default function DashboardPage() {
     } catch { /* non-critical */ } finally { setHistoryLoading(false); }
   }, [runWithTokenRetry]);
 
-  useEffect(() => { if (user) loadDashboardData(); }, [user, loadDashboardData]);
+  useEffect(() => { if (user && emailVerified) loadDashboardData(); }, [user, emailVerified, loadDashboardData]);
 
   function resetStudyFlow() {
     setStudyFlowStep("who");
@@ -927,6 +928,17 @@ export default function DashboardPage() {
 
   if (loading || !user) {
     return <main className="auth-shell"><div className="auth-loading">Loading…</div></main>;
+  }
+
+  if (!emailVerified) {
+    return (
+      <VerifyEmailPanel
+        email={user.email}
+        onContinue={refreshEmailVerified}
+        onResend={resendVerificationEmail}
+        onSignOut={() => { void handleSignOut(); }}
+      />
+    );
   }
 
   return (
