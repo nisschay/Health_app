@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import jobs
-from .auth import RequestUser, get_request_user
+from .auth import RequestUser, delete_sign_in, get_request_user
 from .chat import ChatUnavailable
 from .config import settings
 from .database import (
@@ -546,11 +546,12 @@ def export_my_data(user: RequestUser = Depends(get_request_user), db: Session = 
 
 @app.delete(f"{settings.api_prefix}/me", status_code=status.HTTP_204_NO_CONTENT)
 def delete_my_account(user: RequestUser = Depends(get_request_user), db: Session = Depends(get_db)) -> Response:
-    """Delete every report, finding, study, profile, saved analysis, job and cached extraction. Not undoable."""
+    """Delete every report, finding, study, profile, saved analysis, job and cached extraction, then the login. Not undoable."""
     owner = get_user_by_firebase_uid(db, user.user_id)
     if owner:
         delete_account(db, owner)
         db.commit()
+    delete_sign_in(user.user_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

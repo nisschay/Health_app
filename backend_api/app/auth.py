@@ -83,6 +83,23 @@ def _firebase_enabled() -> bool:
     return True
 
 
+def delete_sign_in(firebase_uid: str) -> bool:
+    """Remove the Firebase login itself. The browser cannot do this without a recent sign-in; the admin API can.
+
+    Returns False, after logging, when the login could not be removed; a login that is already gone counts as removed.
+    """
+    if not _firebase_enabled():
+        return False
+    try:
+        firebase_auth.delete_user(firebase_uid)
+    except firebase_auth.UserNotFoundError:
+        pass
+    except Exception:  # the health data is already gone; report the leftover login instead of failing the request
+        logger.exception("Could not delete the Firebase login for a deleted account")
+        return False
+    return True
+
+
 def get_request_user(authorization: str | None = Header(default=None)) -> RequestUser:
     token = _extract_bearer_token(authorization)
 
