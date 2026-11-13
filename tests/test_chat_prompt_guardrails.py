@@ -159,3 +159,10 @@ def test_a_grounded_answer_is_left_alone(monkeypatch):
     monkeypatch.setattr(chat, "ask_model", lambda prompt, key: "Your LDL was 162 mg/dL on 15-03-2026.")
     records = [{"Test_Name": "LDL Cholesterol", "Result": "162", "Unit": "mg/dL", "Test_Date": "15-03-2026", "Status": "High"}]
     assert chat.answer_question(records, "What was my LDL?", [], "k") == "Your LDL was 162 mg/dL on 15-03-2026."
+
+
+def test_counts_spelled_with_spaces_or_in_thousands_are_found():
+    """A live answer wrote platelets as "248 000" and a range as "150-410 k"; all three were flagged."""
+    prompt = "Platelet Count 248000 /uL; 261000 /uL (range 150 - 410 10^3/uL)."
+    answer = "Platelets went from 248 000 to 261\u202f000 /µL, inside 150-410 k. That is up 13 000."
+    assert chat.unverified_numbers(answer, prompt) == ["13000"]

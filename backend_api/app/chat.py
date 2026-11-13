@@ -119,11 +119,16 @@ def ask_model(prompt: str, api_key: str) -> str:
         raise ChatUnavailable("The assistant could not answer just now. Please try again.", rate_limited=False) from exc
 
 
-_NUMBER = re.compile(r"(?<![\w.])\d{1,3}(?:,\d{2,3})+(?:\.\d+)?(?![\w])|(?<![\w.])\d+(?:\.\d+)?")
+# A grouped number: Indian or Western commas (2,45,000), or a space, no-break or thin space (248 000).
+_NUMBER = re.compile(
+    r"(?<![\w.])\d{1,3}(?:,\d{2,3})+(?:\.\d+)?(?![\w])"
+    r"|(?<![\w.])\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?:\.\d+)?(?!\.?\d)(?!\w)"
+    r"|(?<![\w.])\d+(?:\.\d+)?"
+)
 
 
 def _numbers(text: str) -> list[str]:
-    return [m.replace(",", "") for m in _NUMBER.findall(text)]
+    return [re.sub(r"[,\s\u00a0\u202f]", "", m) for m in _NUMBER.findall(text)]
 
 
 def unverified_numbers(answer: str, prompt: str) -> list[str]:
@@ -139,7 +144,8 @@ def unverified_numbers(answer: str, prompt: str) -> list[str]:
         if "." not in text and value <= 10:
             continue
         decimals = len(text.split(".")[1]) if "." in text else 0
-        if any(round(v, decimals) == value for v in shown):
+        # Counts are written per microlitre or in thousands ("248 000" or "248 k"): either scale counts.
+        if any(round(v * scale, decimals) == value for v in shown for scale in (1, 1000, 0.001)):
             continue
         if text not in missing:
             missing.append(text)
