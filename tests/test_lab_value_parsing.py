@@ -38,7 +38,7 @@ def test_a_urine_reading_no_longer_replaces_the_blood_reading_on_the_same_day():
         _row("Glucose (Urine)", "Present ++", category="Urinalysis"),
     ])
     assert {(r["Test_Name"], r["Result"]) for r in rows} == {
-        ("Fasting Blood Glucose", "92"),
+        ("Blood Glucose", "92"),
         ("Glucose (Urine)", "Present ++"),
     }
 
