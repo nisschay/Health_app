@@ -12,7 +12,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # Bump when normalisation output changes shape; the backfill re-normalises older rows.
-NORMALIZATION_VERSION = 4
+NORMALIZATION_VERSION = 5
 
 CANONICAL_CATEGORIES = [
     "Haematology",
@@ -176,7 +176,7 @@ TEST_NAME_MAP: dict[str, str] = {
     "triglycerides": "Triglycerides",
     "trigs": "Triglycerides",
     "tg": "Triglycerides",
-    "glucose": "Fasting Blood Glucose",
+    "glucose": "Blood Glucose",  # see _glucose_name: only a name that says fasting is called fasting
     "fasting glucose": "Fasting Blood Glucose",
     "fasting blood sugar": "Fasting Blood Glucose",
     "fbs": "Fasting Blood Glucose",
@@ -739,7 +739,7 @@ def is_urine_specimen(raw: str | None) -> bool:
 
 
 def _urine_name(key: str, canonical: str) -> str:
-    """'glucose' from a urine panel becomes 'Glucose (Urine)', never 'Fasting Blood Glucose'.
+    """'glucose' from a urine panel becomes 'Glucose (Urine)', never 'Blood Glucose'.
 
     'Urine Glucose' and 'Glucose (Urine)' are the same test, so both get the second form.
     """
@@ -763,7 +763,35 @@ def normalize_test_name(raw: str | None) -> str:
     key = _normalize_test_map_key(raw_text)
     if is_urine_specimen(raw_text):
         return _urine_name(key, _normalize_test_name_from_key(raw_text, key))
-    return _normalize_test_name_from_key(raw_text, key)
+    return _glucose_name(key) or _normalize_test_name_from_key(raw_text, key)
+
+
+_GLUCOSE_WORDS = {"glucose", "sugar"}
+_GLUCOSE_SHORTHANDS = {"fbs": "fasting", "fbg": "fasting", "fpg": "fasting", "ppbs": "pp", "ppbg": "pp", "rbs": "random", "rbg": "random"}
+_GLUCOSE_KINDS = (
+    ({"average", "avg", "eag", "abg", "mean", "estimated"}, "Estimated Average Glucose (eAG)"),
+    ({"fasting", "f"}, "Fasting Blood Glucose"),
+    ({"pp", "postprandial", "prandial"}, "Post-Prandial Blood Glucose"),
+    ({"random"}, "Random Blood Glucose"),
+)
+_PLAIN_GLUCOSE_WORDS = _GLUCOSE_WORDS | {"blood", "plasma", "serum", "level"}
+
+
+def _glucose_name(key: str) -> str | None:
+    """One trend line per kind of blood glucose, however the lab spells it.
+
+    'Plasma Glucose - F', 'FASTING BLOOD SUGAR(GLUCOSE)' and 'FBS' are all fasting
+    glucose; a bare 'Glucose' may be random or after a meal, so it is only 'Blood Glucose'.
+    Tolerance tests and anything unrecognised keep their own names.
+    """
+    words = re.findall(r"[a-z0-9]+", key)
+    words = [w for word in words for w in ((_GLUCOSE_SHORTHANDS[word], "glucose") if word in _GLUCOSE_SHORTHANDS else (word,))]
+    if not _GLUCOSE_WORDS & set(words) or {"tolerance", "gtt", "challenge", "csf"} & set(words):
+        return None
+    for markers, name in _GLUCOSE_KINDS:
+        if markers & set(words):
+            return name
+    return "Blood Glucose" if set(words) <= _PLAIN_GLUCOSE_WORDS else None
 
 
 def _normalize_test_name_from_key(raw_text: str, key: str) -> str:
