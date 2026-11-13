@@ -138,3 +138,24 @@ def test_a_rate_limited_model_raises(monkeypatch):
     with pytest.raises(chat.ChatUnavailable) as err:
         chat.ask_model("prompt", "key")
     assert err.value.rate_limited
+
+
+def test_numbers_the_model_was_not_shown_are_named():
+    prompt = "LDL 15-03-2026 162 mg/dL (< 100); 20-10-2026 118. HbA1c 5.92 %. Platelets 2,45,000. High: 160-189 mg/dL."
+    answer = "LDL fell from 162 to 118 (44 mg/dL, 27%). HbA1c 5.9%. Platelets 2,45,000. 1. Diet 2. Exercise, over 3 reports in 2026."
+    assert chat.unverified_numbers(answer, prompt) == ["44", "27"]
+
+
+def test_an_invented_value_gets_a_visible_note(monkeypatch):
+    """A made-up result in a health answer must not pass silently."""
+    monkeypatch.setattr(chat, "ask_model", lambda prompt, key: "Your LDL was 210 mg/dL in March.")
+    records = [{"Test_Name": "LDL Cholesterol", "Result": "162", "Unit": "mg/dL", "Test_Date": "15-03-2026", "Status": "High"}]
+    answer = chat.answer_question(records, "What was my LDL?", [], "k")
+    assert answer.startswith("Your LDL was 210 mg/dL in March.")
+    assert "Not found in your results: 210" in answer
+
+
+def test_a_grounded_answer_is_left_alone(monkeypatch):
+    monkeypatch.setattr(chat, "ask_model", lambda prompt, key: "Your LDL was 162 mg/dL on 15-03-2026.")
+    records = [{"Test_Name": "LDL Cholesterol", "Result": "162", "Unit": "mg/dL", "Test_Date": "15-03-2026", "Status": "High"}]
+    assert chat.answer_question(records, "What was my LDL?", [], "k") == "Your LDL was 162 mg/dL on 15-03-2026."
