@@ -1,140 +1,169 @@
 "use client";
-
 import {
-  CartesianGrid,
+  ComposedChart,
   Line,
-  LineChart,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
   XAxis,
   YAxis,
-  Area,
-  AreaChart,
+  CartesianGrid,
+  Tooltip,
+  ReferenceArea,
+  ReferenceLine,
+  ResponsiveContainer,
 } from "recharts";
-import type { MedicalRecord } from "@/lib/api";
-import { parseMedicalDate } from "@/lib/medicalDate";
-
-type Props = {
-  records: MedicalRecord[];
-  testName: string;
-};
-
-function parseRefRange(ref: string | null | undefined): { low: number | null; high: number | null } {
-  if (!ref) return { low: null, high: null };
-  // "3.5 - 5.0" or "< 5.0" or "> 3.5"
-  const rangeMatch = ref.match(/([0-9.]+)\s*[-–]\s*([0-9.]+)/);
-  if (rangeMatch) return { low: parseFloat(rangeMatch[1]), high: parseFloat(rangeMatch[2]) };
-  const ltMatch = ref.match(/[<≤]\s*([0-9.]+)/);
-  if (ltMatch) return { low: null, high: parseFloat(ltMatch[1]) };
-  const gtMatch = ref.match(/[>≥]\s*([0-9.]+)/);
-  if (gtMatch) return { low: parseFloat(gtMatch[1]), high: null };
-  return { low: null, high: null };
-}
-
-export default function TrendChart({ records, testName }: Props) {
-  // Sort by date
-  const sorted = [...records].sort(
-    (a, b) => parseMedicalDate(a.Test_Date) - parseMedicalDate(b.Test_Date)
+import type { TestSummary } from "@/lib/results";
+import { formatAmount, formatDate } from "@/lib/format";
+import { statusLabels } from "./ui";
+export default function TrendChart({ test }: { test: TestSummary }) {
+  const readings = test.readings.filter(
+    (r) =>
+      r.value !== null &&
+      r.unit === test.latest.unit &&
+      r.time !== Number.MAX_SAFE_INTEGER,
   );
-
-  const chartData = sorted
-    .map((r) => {
-      const val = typeof r.Result_Numeric === "number" ? r.Result_Numeric : parseFloat(String(r.Result ?? ""));
-      if (isNaN(val)) return null;
-      return {
-        date: r.Test_Date ?? "Unknown",
-        value: val,
-        unit: r.Unit ?? "",
-        status: r.Status ?? "",
-        reference: r.Reference_Range ?? "",
-      };
-    })
-    .filter(Boolean) as { date: string; value: number; unit: string; status: string; reference: string }[];
-
-  if (chartData.length === 0) {
-    return (
-      <div className="chart-no-data">
-        <p>No numeric data available for {testName}</p>
-        <p className="muted-copy">Results may be non-numeric or missing values.</p>
-      </div>
-    );
-  }
-
-  const { low, high } = parseRefRange(chartData[0]?.reference);
-  const unit = chartData[0]?.unit ?? "";
-  const isSinglePoint = chartData.length === 1;
-
+  const { low, high } = test.latest;
+  const nums = [
+    ...readings.map((r) => r.value!),
+    ...[low, high].filter((n): n is number => n !== null),
+  ];
+  const min = Math.min(...nums),
+    max = Math.max(...nums),
+    pad = (max - min || Math.abs(max) || 1) * 0.1;
+  const raw = (max + pad - (min - pad)) / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(raw || 1));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((s) => s >= raw) ?? raw;
+  const lo = Math.floor((min - pad) / step) * step, hi = Math.ceil((max + pad) / step) * step;
+  const domain = [lo, hi];
+  const ticks = Array.from({ length: Math.round((hi - lo) / step) + 1 }, (_, i) => +(lo + i * step).toFixed(6));
   return (
-    <div className="trend-chart-wrapper">
-      <div className="chart-header">
-        <h3>{testName}</h3>
-        {unit && <span className="chart-unit">{unit}</span>}
-        {(low !== null || high !== null) && (
-          <span className="chart-ref">
-            Reference: {low !== null ? low : ""}
-            {low !== null && high !== null ? " – " : ""}
-            {high !== null ? high : ""} {unit}
-          </span>
-        )}
-      </div>
-
-      <ResponsiveContainer width="100%" height={280}>
-        {isSinglePoint ? (
-          /* Bar-style for single data points */
-          <AreaChart data={chartData} margin={{ top: 16, right: 24, bottom: 16, left: 8 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#3f3a34" />
-            <XAxis dataKey="date" tick={{ fill: "#a8a29e", fontSize: 12 }} />
-            <YAxis tick={{ fill: "#a8a29e", fontSize: 12 }} />
-            <Tooltip
-              contentStyle={{ background: "#1c1917", border: "1px solid #d97706", borderRadius: 8, color: "#fef3c7" }}
-              formatter={(val) => [`${val} ${unit}`, testName]}
+    <>
+      <div
+        className="trend-chart"
+        role="img"
+        aria-label={`${test.name} over time. Every reading is listed in the table below.`}
+      >
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart
+            data={readings}
+            margin={{ top: 20, right: 20, bottom: 15, left: 0 }}
+          >
+            <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
+            <XAxis
+              dataKey="time"
+              type="number"
+              scale="time"
+              domain={["dataMin", "dataMax"]}
+              tickFormatter={(v) =>
+                formatDate(new Date(v).toISOString(), { year: false })
+              }
+              stroke="var(--ink-3)"
             />
-            {low !== null && <ReferenceLine y={low} stroke="#78716c" strokeDasharray="5 5" label={{ value: "Low", fill: "#a8a29e", fontSize: 11 }} />}
-            {high !== null && <ReferenceLine y={high} stroke="#78716c" strokeDasharray="5 5" label={{ value: "High", fill: "#a8a29e", fontSize: 11 }} />}
-            <Area type="monotone" dataKey="value" stroke="#d97706" fill="#d9770638" strokeWidth={2} dot={{ fill: "#d97706", r: 6 }} activeDot={{ r: 8 }} />
-          </AreaChart>
-        ) : (
-          <LineChart data={chartData} margin={{ top: 16, right: 24, bottom: 16, left: 8 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#3f3a34" />
-            <XAxis dataKey="date" tick={{ fill: "#a8a29e", fontSize: 12 }} />
-            <YAxis tick={{ fill: "#a8a29e", fontSize: 12 }} />
+            <YAxis domain={domain} ticks={ticks} width={58} stroke="var(--ink-3)" tickFormatter={(v: number) => formatAmount(v)} />
+            {(low !== null || high !== null) && (
+              <ReferenceArea
+                y1={low ?? domain[0]}
+                y2={high ?? domain[1]}
+                fill="var(--chart-band)"
+                fillOpacity={1}
+              />
+            )}
+            {[low, high].map(
+              (n, i) =>
+                n !== null && (
+                  <ReferenceLine
+                    key={i}
+                    y={n}
+                    stroke="var(--chart-band-edge)"
+                  />
+                ),
+            )}
             <Tooltip
-              contentStyle={{ background: "#1c1917", border: "1px solid #d97706", borderRadius: 8, color: "#fef3c7" }}
-              formatter={(val) => [`${val} ${unit}`, testName]}
-            />
-            {low !== null && <ReferenceLine y={low} stroke="#78716c" strokeDasharray="5 5" label={{ value: "Normal Low", fill: "#a8a29e", fontSize: 11 }} />}
-            {high !== null && <ReferenceLine y={high} stroke="#78716c" strokeDasharray="5 5" label={{ value: "Normal High", fill: "#a8a29e", fontSize: 11 }} />}
-            <Line
-              type="monotone"
-              dataKey="value"
-              stroke="#d97706"
-              strokeWidth={2.5}
-              dot={(props) => {
-                const d = chartData[props.index];
-                const color = d?.status?.toLowerCase() === "high" || d?.status?.toLowerCase() === "low" || d?.status?.toLowerCase() === "critical" ? "#92400e" : "#d97706";
-                return <circle key={props.index} cx={props.cx} cy={props.cy} r={6} fill={color} stroke="#0a0a0a" strokeWidth={2} />;
+              content={({ active, payload }) => {
+                const r = payload?.[0]?.payload;
+                return active && r ? (
+                  <div className="card card-pad">
+                    <p>{formatDate(r.date)}</p>
+                    <p>
+                      {r.valueText} {r.unit} ·{" "}
+                      {statusLabels[r.status as keyof typeof statusLabels]}
+                    </p>
+                    <p>Lab&apos;s range: {r.rangeText}</p>
+                  </div>
+                ) : null;
               }}
-              activeDot={{ r: 8, fill: "#d97706" }}
             />
-          </LineChart>
-        )}
-      </ResponsiveContainer>
-
-      {/* Data points table below chart */}
-      <div className="chart-data-points">
-        {chartData.map((d, i) => (
-          <div className="data-point-row" key={i}>
-            <span className="dp-date">{d.date}</span>
-            <span className="dp-value">{d.value} {unit}</span>
-            <span className={`status-pill ${
-              d.status?.toLowerCase() === "normal" ? "good" :
-              d.status?.toLowerCase() === "high" || d.status?.toLowerCase() === "low" ? "warn" :
-              d.status?.toLowerCase() === "critical" ? "bad" : "muted"
-            }`}>{d.status || "—"}</span>
-          </div>
-        ))}
+            <Line
+              type="linear"
+              dataKey="value"
+              stroke="var(--chart-line)"
+              strokeWidth={2}
+              isAnimationActive={false}
+              connectNulls={false}
+              dot={({ cx = 0, cy = 0, payload }) => {
+                const color = `var(--${["none", "detected"].includes(payload.status) ? "high" : payload.status}-solid)`;
+                const props = {
+                  fill:
+                    payload.status === "borderline" ? "var(--surface)" : color,
+                  stroke: "var(--surface)",
+                  strokeWidth: 2,
+                };
+                return (
+                  <g
+                    key={payload.time}
+                    tabIndex={0}
+                    onKeyDown={(event) => {
+                      if (!["ArrowLeft", "ArrowRight"].includes(event.key))
+                        return;
+                      event.preventDefault();
+                      const points = Array.from(
+                        event.currentTarget
+                          .closest("svg")
+                          ?.querySelectorAll<SVGElement>('g[tabindex="0"]') ??
+                          [],
+                      );
+                      const index = points.indexOf(event.currentTarget);
+                      points[
+                        (index +
+                          (event.key === "ArrowRight" ? 1 : -1) +
+                          points.length) %
+                          points.length
+                      ]?.focus();
+                    }}
+                    aria-label={`${formatDate(payload.date)}, ${payload.valueText} ${payload.unit}, ${payload.status}`}
+                  >
+                    <title>
+                      {formatDate(payload.date)}: {payload.valueText}{" "}
+                      {payload.unit}
+                    </title>
+                    {payload.status === "critical" ? (
+                      <path
+                        d={`M${cx},${cy - 8} l8,8 -8,8 -8,-8z`}
+                        {...props}
+                      />
+                    ) : ["high", "low"].includes(payload.status) ? (
+                      <path
+                        d={
+                          payload.status === "high"
+                            ? `M${cx},${cy - 8} l8,14 -16,0z`
+                            : `M${cx},${cy + 8} l8,-14 -16,0z`
+                        }
+                        {...props}
+                      />
+                    ) : (
+                      <circle cx={cx} cy={cy} r={6} {...props} />
+                    )}
+                  </g>
+                );
+              }}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
       </div>
-    </div>
+      <p className="small muted">
+        {test.readings.some((r) => r.rangeText !== test.latest.rangeText) &&
+          "The lab’s range changed between reports. The band shows the latest."}{" "}
+        {test.readings.some((r) => r.unit !== test.latest.unit) &&
+          "Only readings in the latest unit appear in the chart. Other units are listed below."}
+      </p>
+    </>
   );
 }

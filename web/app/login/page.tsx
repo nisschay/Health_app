@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { sendPasswordResetEmail } from "firebase/auth";
+import { auth } from "@/lib/firebase";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
@@ -8,11 +10,19 @@ import { useAuth } from "@/lib/auth-context";
 /** Where the middleware sent the user from, if it is a path on this site; else the dashboard. */
 function pathAfterLogin(): string {
   const next = new URLSearchParams(window.location.search).get("next");
-  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
+  return next && next.startsWith("/") && !next.startsWith("//")
+    ? next
+    : "/dashboard";
 }
 
 export default function LoginPage() {
-  const { user, loading, signInWithGoogle, signInWithEmail, registerWithEmail } = useAuth();
+  const {
+    user,
+    loading,
+    signInWithGoogle,
+    signInWithEmail,
+    registerWithEmail,
+  } = useAuth();
   const router = useRouter();
 
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -34,31 +44,6 @@ export default function LoginPage() {
     }
   }, [user, loading, router, isPending]);
 
-  // Keep auth fields empty on mount in case browser autofill injects values.
-  useEffect(() => {
-    const clearAutofilledInputs = () => {
-      if (displayNameInputRef.current?.value) {
-        displayNameInputRef.current.value = "";
-      }
-      if (emailInputRef.current?.value) {
-        emailInputRef.current.value = "";
-      }
-      if (passwordInputRef.current?.value) {
-        passwordInputRef.current.value = "";
-      }
-      setDisplayName("");
-      setEmail("");
-      setPassword("");
-    };
-
-    clearAutofilledInputs();
-    const timer = window.setTimeout(clearAutofilledInputs, 150);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, []);
-
   function handleModeChange(nextMode: "login" | "register") {
     setMode(nextMode);
     setDisplayName("");
@@ -74,7 +59,10 @@ export default function LoginPage() {
     setIsPending(true);
     try {
       if (mode === "login") {
-        await signInWithEmail(email, password);
+        await signInWithEmail(
+          emailInputRef.current?.value || email,
+          passwordInputRef.current?.value || password,
+        );
       } else {
         if (!displayName.trim()) {
           setError("Please enter your full name.");
@@ -87,7 +75,11 @@ export default function LoginPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Authentication failed.";
       // Surface friendly messages
-      if (msg.includes("user-not-found") || msg.includes("wrong-password") || msg.includes("invalid-credential")) {
+      if (
+        msg.includes("user-not-found") ||
+        msg.includes("wrong-password") ||
+        msg.includes("invalid-credential")
+      ) {
         setError("Invalid email or password.");
       } else if (msg.includes("email-already-in-use")) {
         setError("An account with this email already exists.");
@@ -118,42 +110,47 @@ export default function LoginPage() {
 
   if (loading) {
     return (
-      <main className="auth-shell">
+      <main className="auth">
         <div className="auth-loading">Loading…</div>
       </main>
     );
   }
 
   return (
-    <main className="auth-shell">
-      <section className="auth-visual" aria-hidden="true">
-        <span className="auth-kicker">Clinical Intelligence Platform</span>
-        <h2>See your health story with precision, not noise.</h2>
+    <main className="auth">
+      <section className="auth-story" aria-hidden="true">
+        <h2 className="display">
+          Follow your family&apos;s lab results over time.
+        </h2>
         <p>
-          Upload medical reports, unify trends across labs, and get AI-powered context
-          in one premium workspace built for clarity.
+          Add the PDF from the lab. See what is outside the normal range, how it
+          has changed, and what to ask your doctor.
         </p>
-        <div className="auth-highlights">
-          <span>Trend-aware timelines</span>
-          <span>Structured test extraction</span>
-          <span>Contextual AI assistant</span>
+        <div className="sample">
+          <strong>HbA1c</strong>
+          <strong>7.9 %</strong>
+          <span>Getting better · down 0.3 since 2 Nov</span>
+          <span className="chip high">↑ High</span>
         </div>
+        <ul className="auth-points">
+          <li>Keep reports for parents, partner and children in one place</li>
+          <li>See each test over time, against the lab&apos;s own range</li>
+          <li>Your reports stay yours. Download or delete them at any time</li>
+        </ul>
       </section>
 
-      <section className="auth-panel">
+      <section className="auth-form-side">
         <div className="auth-card">
-          <div className="auth-brand">
-            <span className="auth-logo" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Medical icon">
-                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.6" fill="none" />
-                <path d="M5 12h3l1.3-2.3 2.2 5 1.9-3.2H19" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-              </svg>
+          <div className="auth-brand row">
+            <span className="brand-mark" aria-hidden="true">
+              ↗
             </span>
-            <h1>Medical Report Analyzer</h1>
-            <p>Secure sign in to continue to your health workspace</p>
+            <strong>LabTrail</strong>
           </div>
-
-          <div className="auth-tabs" role="tablist" aria-label="Authentication mode">
+          <h1 className="h1">
+            {mode === "login" ? "Welcome back" : "Create your account"}
+          </h1>
+          <div className="tabs" role="tablist" aria-label="Authentication mode">
             <button
               className={`auth-tab ${mode === "login" ? "active" : ""}`}
               onClick={() => handleModeChange("login")}
@@ -161,7 +158,7 @@ export default function LoginPage() {
               role="tab"
               aria-selected={mode === "login"}
             >
-              Sign In
+              Sign in
             </button>
             <button
               className={`auth-tab ${mode === "register" ? "active" : ""}`}
@@ -170,7 +167,7 @@ export default function LoginPage() {
               role="tab"
               aria-selected={mode === "register"}
             >
-              Create Account
+              Create account
             </button>
           </div>
 
@@ -180,13 +177,21 @@ export default function LoginPage() {
             onClick={handleGoogle}
             type="button"
           >
-            <span className="google-glyph" aria-hidden="true">G</span>
+            <span className="google-glyph" aria-hidden="true">
+              G
+            </span>
             Continue with Google
           </button>
 
-          <div className="auth-divider"><span>or</span></div>
+          <div className="divider">
+            <span>or use your email</span>
+          </div>
 
-          <form autoComplete="off" className="auth-form" onSubmit={handleEmailSubmit}>
+          <form
+            autoComplete="on"
+            className="auth-form"
+            onSubmit={handleEmailSubmit}
+          >
             {mode === "register" && (
               <label className="auth-field">
                 <span>Full Name</span>
@@ -218,17 +223,14 @@ export default function LoginPage() {
               />
             </label>
 
-            {mode === "login" && (
-              <button className="auth-link" onClick={(e) => e.preventDefault()} type="button">
-                Forgot password?
-              </button>
-            )}
 
             <label className="auth-field auth-password-field">
               <span>Password</span>
               <div className="password-wrap">
                 <input
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
+                  autoComplete={
+                    mode === "login" ? "current-password" : "new-password"
+                  }
                   disabled={isPending}
                   minLength={6}
                   name={mode === "login" ? "password" : "new-password"}
@@ -252,35 +254,62 @@ export default function LoginPage() {
                 </button>
               </div>
             </label>
+            {mode === "login" && (
+              <button
+                className="auth-link"
+                onClick={async () => {
+                  setError(null);
+                  if (!emailInputRef.current?.value) {
+                    setError(
+                      "Enter your email first, then press Forgot password.",
+                    );
+                    return;
+                  }
+                  setIsPending(true);
+                  try {
+                    await sendPasswordResetEmail(
+                      auth,
+                      emailInputRef.current.value,
+                    );
+                    setError(
+                      "If an account uses this email, a reset link is on its way. Check your inbox and spam folder.",
+                    );
+                  } catch {
+                    setError(
+                      "We could not send the reset email. Please try again.",
+                    );
+                  } finally {
+                    setIsPending(false);
+                  }
+                }}
+                disabled={isPending}
+                type="button"
+              >
+                Forgot password?
+              </button>
+            )}
 
-            {error && <p className="auth-error">{error}</p>}
+            {error && (
+              <p className="auth-error" role="alert">
+                {error}
+              </p>
+            )}
 
-            <button className="primary-button auth-submit" disabled={isPending} type="submit">
+            <button
+              className="primary-button auth-submit"
+              disabled={isPending}
+              type="submit"
+            >
               {isPending
                 ? "Please wait…"
                 : mode === "login"
-                ? "Sign In"
-                : "Create Account"}
+                  ? "Sign in"
+                  : "Create account"}
             </button>
-
-            {mode === "login" ? (
-              <p className="auth-footnote">
-                Don&apos;t have an account?{" "}
-                <button className="auth-inline-action" onClick={() => handleModeChange("register")} type="button">
-                  Create one
-                </button>
-              </p>
-            ) : (
-              <p className="auth-footnote">
-                Already have an account?{" "}
-                <button className="auth-inline-action" onClick={() => handleModeChange("login")} type="button">
-                  Sign in
-                </button>
-              </p>
-            )}
           </form>
           <p className="auth-legal">
-            Not medical advice. <Link href="/privacy">How your data is handled</Link>
+            Not medical advice.{" "}
+            <Link href="/privacy">How your data is handled</Link>
           </p>
         </div>
       </section>

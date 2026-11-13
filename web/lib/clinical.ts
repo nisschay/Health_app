@@ -38,7 +38,7 @@ function severityFromCounts(critical: number, high: number, low: number): Severi
   return "normal";
 }
 
-export function groupByCategory(concerns: AnalysisConcern[]): GroupedCategoryAlert[] {
+function groupByCategory(concerns: AnalysisConcern[]): GroupedCategoryAlert[] {
   const grouped = new Map<string, GroupedCategoryAlert>();
 
   for (const concern of concerns) {
@@ -113,7 +113,7 @@ export type GroupedTestTimeline = {
   timeline: TestTimelineEntry[];
 };
 
-export function groupRecordsByDateAndCategory(records: MedicalRecord[]): DateCategoryGroup[] {
+function groupRecordsByDateAndCategory(records: MedicalRecord[]): DateCategoryGroup[] {
   const valid = records.filter(
     (r) => r.Test_Name && r.Test_Name !== "N/A" && r.Result !== null && r.Result !== undefined
   );
@@ -148,40 +148,6 @@ export function groupRecordsByDateAndCategory(records: MedicalRecord[]): DateCat
       };
     })
     .sort((a, b) => a.timestamp - b.timestamp);
-}
-
-export function groupByTestName(records: MedicalRecord[]): GroupedTestTimeline[] {
-  const grouped = new Map<string, TestTimelineEntry[]>();
-
-  for (const record of records) {
-    const testName = record.Test_Name?.trim();
-    if (!testName || testName === "N/A") continue;
-    if (record.Result === null || record.Result === undefined || String(record.Result).trim() === "") continue;
-
-    const entry: TestTimelineEntry = {
-      date: record.Test_Date ?? "Unknown",
-      timestamp: parseMedicalDate(record.Test_Date),
-      value: record.Result,
-      referenceRange: record.Reference_Range ?? "N/A",
-      status: record.Status ?? "N/A",
-      unit: record.Unit ?? "",
-      category: record.Test_Category?.trim() || "Uncategorized",
-    };
-
-    if (!grouped.has(testName)) grouped.set(testName, []);
-    grouped.get(testName)!.push(entry);
-  }
-
-  return Array.from(grouped.entries())
-    .map(([testName, timeline]) => {
-      const sorted = [...timeline].sort((a, b) => a.timestamp - b.timestamp);
-      return {
-        testName,
-        latest: sorted[sorted.length - 1]!,
-        timeline: sorted,
-      };
-    })
-    .sort((a, b) => a.testName.localeCompare(b.testName));
 }
 
 export function formatForPDF(records: MedicalRecord[], concerns: AnalysisConcern[]) {

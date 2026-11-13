@@ -1,122 +1,92 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { AnalysisResponse } from "./api";
-import { formatForPDF } from "./clinical";
-
-function text(doc: jsPDF, value: string, x: number, y: number, size = 11, weight: "normal" | "bold" = "normal") {
-  doc.setFont("helvetica", weight);
-  doc.setFontSize(size);
-  doc.text(value, x, y);
-}
-
-function addSectionTitle(doc: jsPDF, title: string, y: number): number {
-  text(doc, title, 14, y, 14, "bold");
-  doc.setDrawColor(220, 220, 220);
-  doc.line(14, y + 2, 196, y + 2);
-  return y + 10;
-}
-
+import {
+  summariseTests,
+  summariseStudy,
+  doctorList,
+  orderForAttention,
+} from "./results";
+import { formatDate } from "./format";
 export function generateClinicalPdfReport(analysis: AnalysisResponse): Blob {
-  const { groupedAlerts, groupedRecords } = formatForPDF(analysis.records, analysis.health_summary.concerns);
-
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-  let y = 20;
-
-  text(doc, "Medical Report Analyzer", 14, y, 20, "bold");
-  y += 10;
-  text(doc, `Patient: ${analysis.patient_info.name || "N/A"}`, 14, y);
-  y += 6;
-  text(doc, `Date: ${analysis.patient_info.date || "N/A"}`, 14, y);
-  y += 6;
-  text(doc, `Lab: ${analysis.patient_info.lab_name || "N/A"}`, 14, y);
-  y += 6;
-  text(doc, `Summary: ${analysis.total_records} tests, ${analysis.health_summary.concerns.length} alerts`, 14, y);
-
-  y += 14;
-  y = addSectionTitle(doc, "Overall Summary", y);
-  text(doc, `Overall Health Score: ${analysis.health_summary.overall_score}`, 14, y);
-  y += 6;
-  text(doc, `Alerts: ${analysis.health_summary.concerns.length}`, 14, y);
-  y += 6;
-  text(doc, `Categories Affected: ${groupedAlerts.length}`, 14, y);
-
-  y += 12;
-  y = addSectionTitle(doc, "Alerts by Category", y);
-
+  const doc = new jsPDF();
+  const tests = summariseTests(analysis.records);
+  const summary = summariseStudy(tests);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(20);
+  doc.text("LabTrail", 14, 20);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.text(
+    doc.splitTextToSize(
+      `${analysis.patient_info.name || "Your results"}\nMost recent report: ${formatDate(summary.latestReportDate)}\n${summary.attention} of ${summary.total} tests ${summary.attention === 1 ? "needs" : "need"} attention, counted from each test's latest reading.`,
+      180,
+    ),
+    14,
+    30,
+  );
+  doc.setFontSize(9);
+  doc.text(
+    doc.splitTextToSize(
+      "Not medical advice. Results can contain mistakes. Check every result with your doctor. Ranges come from the lab reports.",
+      180,
+    ),
+    14,
+    52,
+  );
   autoTable(doc, {
-    startY: y,
-    head: [["Category", "Alerts", "Critical", "High", "Low", "Severity"]],
-    body: groupedAlerts.map((row) => [
-      row.category,
-      String(row.totalAlerts),
-      String(row.criticalCount),
-      String(row.highCount),
-      String(row.lowCount),
-      row.severity.toUpperCase(),
+    startY: 68,
+    head: [
+      [
+        "Latest results needing attention",
+        "Result",
+        "Status",
+        "Lab's range",
+        "Date",
+      ],
+    ],
+    body: orderForAttention(tests.filter((t) => t.needsAttention)).map((t) => [
+      t.name,
+      `${t.latest.valueText} ${t.latest.unit}`,
+      t.latest.status,
+      t.latest.rangeText,
+      formatDate(t.latest.date),
     ]),
-    styles: { fontSize: 9, cellPadding: 2 },
-    headStyles: { fillColor: [245, 245, 245], textColor: 20 },
-    alternateRowStyles: { fillColor: [252, 252, 252] },
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [15, 88, 78] },
   });
-
-  y = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y;
-
-  for (const category of groupedAlerts) {
-    if (y > 240) {
-      doc.addPage();
-      y = 20;
-    }
-
-    y += 10;
-    y = addSectionTitle(doc, `Category: ${category.category}`, y);
-
+  const notes = doctorList(tests);
+  if (notes.length)
     autoTable(doc, {
-      startY: y,
-      head: [["Test", "Value", "Reference", "Status", "Date"]],
-      body: category.tests.map((test) => [
-        test.testName,
-        String(test.result ?? "N/A"),
-        test.reference || "N/A",
-        test.status || "N/A",
-        test.date || "N/A",
-      ]),
-      styles: { fontSize: 8.5, cellPadding: 2 },
-      headStyles: { fillColor: [245, 245, 245], textColor: 20 },
-      alternateRowStyles: { fillColor: [252, 252, 252] },
+      head: [["To discuss with the doctor"]],
+      body: notes.map((n) => [n]),
+      styles: { fontSize: 10 },
+      headStyles: { fillColor: [15, 88, 78] },
     });
-
-    y = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y;
-  }
-
-  if (groupedRecords.length > 0) {
-    if (y > 230) {
-      doc.addPage();
-      y = 20;
-    }
-
-    y += 10;
-    y = addSectionTitle(doc, "Trends", y);
-
-    autoTable(doc, {
-      startY: y,
-      head: [["Date", "Total Tests", "Categories", "Alerts"]],
-      body: groupedRecords.map((group) => {
-        let alerts = 0;
-        let total = 0;
-        for (const category of group.categories) {
-          total += category.tests.length;
-          alerts += category.tests.filter((t) => {
-            const status = (t.Status ?? "").toLowerCase();
-            return status === "high" || status === "low" || status === "critical" || status === "positive";
-          }).length;
-        }
-        return [group.date, String(total), String(group.categories.length), String(alerts)];
-      }),
-      styles: { fontSize: 9, cellPadding: 2 },
-      headStyles: { fillColor: [245, 245, 245], textColor: 20 },
-      alternateRowStyles: { fillColor: [252, 252, 252] },
-    });
-  }
-
+  doc.addPage();
+  doc.setFontSize(16);
+  doc.text("Every reading", 14, 20);
+  autoTable(doc, {
+    startY: 28,
+    head: [["Test", "Date", "Result", "Status", "Lab's range", "Lab"]],
+    body: tests.flatMap((t) =>
+      [...t.readings]
+        .reverse()
+        .map((r) => [
+          t.name,
+          formatDate(r.date),
+          `${r.valueText} ${r.unit}`,
+          r.status === "normal"
+            ? "In range"
+            : r.status === "none"
+              ? "No range given"
+              : r.status,
+          r.rangeText,
+          r.lab || "",
+        ]),
+    ),
+    styles: { fontSize: 8 },
+    headStyles: { fillColor: [15, 88, 78] },
+  });
   return doc.output("blob");
 }
