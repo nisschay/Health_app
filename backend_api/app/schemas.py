@@ -141,6 +141,10 @@ class CreateStudyRequest(BaseModel):
     description: str | None = Field(default=None, max_length=200)
 
 
+class RenameStudyRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
 class DashboardStudyItem(BaseModel):
     id: UUID
     name: str

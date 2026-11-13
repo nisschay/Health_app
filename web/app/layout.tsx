@@ -13,12 +13,6 @@ const bodyFont = localFont({
   variable: "--font-body-face",
   display: "swap",
 });
-const displayFont = localFont({
-  src: "../node_modules/@fontsource-variable/newsreader/files/newsreader-latin-wght-normal.woff2",
-  weight: "200 800",
-  variable: "--font-display-face",
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: "LabTrail",
@@ -32,15 +26,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en-IN"
-      suppressHydrationWarning
-      className={`${bodyFont.variable} ${displayFont.variable}`}
-    >
+    <html lang="en-IN" suppressHydrationWarning className={bodyFont.variable}>
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `try { const t = localStorage.getItem("health-app.theme"); if(t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch {}`,
+            __html: `try { const t = localStorage.getItem("health-app.theme"); if(t === "light" || t === "dark") document.documentElement.dataset.theme = t; else if(t === "system") document.documentElement.dataset.theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"; } catch {}`,
           }}
         />
       </head>

@@ -468,6 +468,13 @@ export async function exportExcel(
   if (!response.ok) throw new Error("Excel export failed.");
   return response.blob();
 }
+export async function renameStudy(id: string, name: string): Promise<StudySummary> {
+  const response = await authBackendFetch(`/api/v1/studies/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+  return parseJsonResponse<StudySummary>(response);
+}
 export async function deleteStudy(id: string): Promise<void> {
  const response = await authBackendFetch(`/api/v1/studies/${encodeURIComponent(id)}`, { method: 'DELETE' });
  if (!response.ok) await parseJsonResponse(response);

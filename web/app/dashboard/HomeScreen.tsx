@@ -2,16 +2,20 @@
 import { useEffect, useState } from "react";
 import {
   fetchStudyCombinedReport,
+  deleteProfile,
   type DashboardSummary,
   type AnalysisHistoryItem,
   type AnalysisResponse,
-  deleteProfile,
 } from "@/lib/api";
-import { summariseTests, summariseStudy } from "@/lib/results";
-import { formatDate, formatMonthRange, plural } from "@/lib/format";
+import { summariseTests } from "@/lib/results";
+import { formatDate, plural } from "@/lib/format";
 import { buildUserInitials, relationshipLabel } from "./helpers";
 import { Disclaimer, Skeleton } from "./ui";
-import { ChevronRight, Plus, TriangleAlert, Check } from "lucide-react";
+import { ChevronRight, Plus } from "lucide-react";
+import { recentAttention } from "@/lib/resultPresentation";
+import StudySummary from "./StudySummary";
+import ResultRow from "./ResultRow";
+import HomeReports from "./HomeReports";
 export default function HomeScreen({
   name,
   summary,
@@ -59,7 +63,11 @@ export default function HomeScreen({
             Good {hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening"},{" "}
             {first}
           </h1>
-          <p className="soft">Here is how everyone&apos;s latest reports look.</p>
+          <p className="soft">
+            {summary
+              ? `${summary.profiles.length} ${summary.profiles.length === 1 ? "person" : "people"}, ${summary.total_reports} reports.`
+              : "Your family’s latest reports."}
+          </p>
         </>
       )}
       {error && <p role="alert">{error}</p>}
@@ -74,158 +82,191 @@ export default function HomeScreen({
                 Add a lab report PDF for yourself or someone in your family. We
                 will read every result and show you what needs attention.
               </p>
-              <a className="btn btn-primary" href="/dashboard?view=upload">
-                Add your first report
-              </a>
               <ol className="how">
-                <li>Add the PDFs</li>
-                <li>See what matters</li>
-                <li>Watch the trend</li>
+                <li>Add the PDFs from the lab</li>
+                <li>See which results are outside the range</li>
+                <li>Follow each test over time</li>
               </ol>
+              <div>
+                <a className="btn btn-primary" href="/dashboard?view=upload">
+                  Add your first report
+                </a>
+              </div>
             </section>
           )}
-          {[...summary.profiles]
-            .sort(
-              (a, b) =>
-                Number(b.relationship === "self") -
-                  Number(a.relationship === "self") ||
-                (b.studies[0]?.last_updated ?? "").localeCompare(
-                  a.studies[0]?.last_updated ?? "",
-                ),
-            )
-            .map((p) => {
-              const critical = p.studies.flatMap((s) =>
-                reports[s.id]
-                  ? summariseStudy(
-                      summariseTests(reports[s.id]!.records),
-                    ).criticalTests.map((t) => ({ t, id: s.id }))
-                  : [],
-              );
-              return (
-                <div className="stack" key={p.profile_id}>
-                  {critical.length > 0 && (
-                    <div className="banner banner-critical" role="alert">
-                      <TriangleAlert />
-                      <div>
-                        <strong>
-                          {p.full_name} has{" "}
-                          {plural(critical.length, "critical result")}
-                        </strong>
-                        {critical.map(({ t, id }) => (
-                          <p key={id + t.name}>
-                            {t.name} was {t.latest.valueText} {t.latest.unit} on{" "}
-                            {formatDate(t.latest.date)}. The lab marked it
-                            critical. <a href={`?study=${id}`}>See results</a>
+          {(summary.total_reports > 0 || history.length > 0) && (
+            <div className="v2-home">
+              <div className="col">
+                {summary.profiles.map((p) => (
+                  <div className="col" key={p.profile_id}>
+                    <section className="card">
+                      <div className="person-head">
+                        <span className="avatar lg">
+                          {buildUserInitials(p.full_name)}
+                        </span>
+                        <div className="grow">
+                          <h2>
+                            {p.full_name}{" "}
+                            <span className="tag">
+                              {p.relationship === "self"
+                                ? "You"
+                                : relationshipLabel(p.relationship)}
+                            </span>
+                          </h2>
+                          {p.relationship !== "self" && (
+                            <details className="family-actions">
+                              <summary>Manage family member</summary>
+                              <button
+                                className="btn btn-quiet"
+                                onClick={async () => {
+                                  if (
+                                    !confirm(
+                                      `Remove ${p.full_name} and all their studies and reports? This cannot be undone.`,
+                                    )
+                                  )
+                                    return;
+                                  try {
+                                    await run(() =>
+                                      deleteProfile(p.profile_id),
+                                    );
+                                    reload();
+                                  } catch (e) {
+                                    setError(
+                                      e instanceof Error
+                                        ? e.message
+                                        : "Could not remove this family member.",
+                                    );
+                                  }
+                                }}
+                              >
+                                Remove this family member
+                              </button>
+                            </details>
+                          )}
+                          <p>
+                            {p.studies[0]?.name} ·{" "}
+                            {p.studies.reduce((n, s) => n + s.report_count, 0)}{" "}
+                            reports{" "}
+                            {p.studies[0]?.consistent_lab_name &&
+                              ` · ${p.studies[0].consistent_lab_name}`}
                           </p>
-                        ))}
-                        <p>Please contact a doctor promptly.</p>
-                      </div>
-                    </div>
-                  )}
-                  <section className="card">
-                    <div className="person-head">
-                      <span className="avatar">
-                        {buildUserInitials(p.full_name)}
-                      </span>
-                      <div className="grow">
-                        <div className="row row-wrap">
-                          <h2 className="person-name">{p.full_name}</h2>
-                          <span className="rel">
-                            {p.relationship === "self"
-                              ? "You"
-                              : relationshipLabel(p.relationship)}
-                          </span>
                         </div>
-                        <p className="person-status">
-                          {p.studies.length
-                            ? `Latest report ${formatDate([...p.studies].sort((a, b) => (b.range_end ?? "").localeCompare(a.range_end ?? ""))[0]?.range_end)}`
-                            : "No reports yet"}
-                        </p>
-                      </div>
-                      <a
-                        className="btn btn-secondary btn-sm"
-                        href={`?view=upload&profile=${p.profile_id}`}
-                      >
-                        <Plus size={16} />
-                        {p.studies.length ? "Add reports" : "Add first report"}
-                      </a>
-                    </div>
-                    {p.studies.map((s) => {
-                      const c = reports[s.id]
-                        ? summariseStudy(summariseTests(reports[s.id]!.records))
-                        : null;
-                      return (
                         <a
-                          className="study-row"
-                          key={s.id}
-                          href={`?study=${s.id}`}
+                          className="btn btn-secondary"
+                          href={`?view=upload&profile=${p.profile_id}`}
                         >
-                          <div>
-                            <span className="study-name">{s.name}</span>
-                            <p className="study-meta">
-                              {plural(s.report_count, "report")} ·{" "}
-                              {formatMonthRange(s.range_start, s.range_end)}
-                              {s.consistent_lab_name &&
-                                ` · ${s.consistent_lab_name}`}
-                            </p>
-                          </div>
-                          <span
-                            className={`chip ${c?.attention ? "high" : c?.total && c.inRange === c.total ? "normal" : ""}`}
-                          >
-                            {c?.attention ? (
-                              <TriangleAlert size={16} />
-                            ) : (
-                              <Check size={16} />
-                            )}{" "}
-                            {c
-                              ? c.attention
-                                ? `${c.attention} need attention${c.critical ? ` · ${c.critical} critical` : ""}`
-                                : c.total && c.inRange === c.total
-                                  ? "All in range"
-                                  : "No ranges to compare"
-                              : s.has_alerts
-                                ? "Has results to review"
-                                : "Checking latest results"}
-                          </span>
-                          <ChevronRight size={20} />
+                          <Plus size={16} />
+                          Add reports
                         </a>
+                      </div>
+                      {p.studies.map((study) => {
+                        const tests = reports[study.id]
+                          ? summariseTests(reports[study.id].records)
+                          : null;
+                        return (
+                          <div key={study.id}>
+                            {!study.report_count ? (
+                              <div className="card-pad">
+                                <p>{study.name}</p>
+                                <p className="muted">
+                                  No reports in this study yet.
+                                </p>
+                              </div>
+                            ) : tests ? (
+                              <StudySummary
+                                tests={tests}
+                                base={`?study=${study.id}`}
+                                home
+                              />
+                            ) : (
+                              <div className="card-pad">
+                                <p>{study.name}</p>
+                                <p className="muted">
+                                  Loading latest results...
+                                </p>
+                              </div>
+                            )}
+                            {study.report_count > 0 && (
+                              <div className="study-foot card-pad">
+                                <span className="eyebrow">
+                                  {study.range_start &&
+                                  study.range_end &&
+                                  study.range_start !== study.range_end
+                                    ? `${formatDate(study.range_start)} to ${formatDate(study.range_end)}`
+                                    : study.range_end || study.range_start
+                                      ? formatDate(
+                                          study.range_end || study.range_start,
+                                        )
+                                      : ""}
+                                </span>
+                                <a
+                                  className="btn btn-primary"
+                                  href={`?study=${study.id}`}
+                                >
+                                  See all results <ChevronRight size={16} />
+                                </a>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </section>
+                    {p.studies.map((study) => {
+                      const tests = reports[study.id]
+                        ? recentAttention(
+                            summariseTests(reports[study.id].records).filter(
+                              (t) => t.needsAttention,
+                            ),
+                          )
+                        : [];
+                      return (
+                        tests.length > 0 && (
+                          <section className="card latest" key={study.id}>
+                            <div className="mini-title">
+                              <h2>Most recent results outside range</h2>
+                              <a className="link" href={`?study=${study.id}`}>
+                                All {tests.length} ›
+                              </a>
+                            </div>
+                            <ul className="rows">
+                              {tests.slice(0, 3).map((t) => (
+                                <ResultRow
+                                  key={t.name}
+                                  test={t}
+                                  base={`?study=${study.id}`}
+                                />
+                              ))}
+                            </ul>
+                          </section>
+                        )
                       );
                     })}
-                    {p.relationship !== "self" && (
-                      <div className="card-pad">
-                        <button
-                          className="btn btn-quiet"
-                          onClick={async () => {
-                            if (
-                              !confirm(
-                                `Remove ${p.full_name} and all their studies and reports? This cannot be undone.`,
-                              )
-                            )
-                              return;
-                            try {
-                              await run(() => deleteProfile(p.profile_id));
-                              reload();
-                            } catch (e) {
-                              setError(
-                                e instanceof Error
-                                  ? e.message
-                                  : "Could not remove this family member.",
-                              );
-                            }
-                          }}
-                        >
-                          Remove this family member
-                        </button>
-                      </div>
-                    )}
-                  </section>
-                </div>
-              );
-            })}
-          <a className="add-person" href="?view=upload&newPerson=1">
-            <Plus />
-            Add a family member
-          </a>
+                  </div>
+                ))}
+              </div>
+              <div className="col">
+                <HomeReports reports={reports} />
+                <section className="invite">
+                  <Plus size={24} />
+                  <div>
+                    <h2>Add a family member</h2>
+                    <p>
+                      Keep a parent&apos;s, partner&apos;s or child&apos;s
+                      reports here too. Each person gets their own results and
+                      history.
+                    </p>
+                    <a
+                      className="btn btn-secondary"
+                      href="?view=upload&newPerson=1"
+                    >
+                      <Plus size={16} />
+                      Add a family member
+                    </a>
+                  </div>
+                </section>
+              </div>
+            </div>
+          )}
           {history.length > 0 && (
             <section className="stack">
               <h2 className="h2">Earlier one-off analyses</h2>

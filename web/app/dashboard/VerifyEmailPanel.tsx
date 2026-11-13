@@ -1,4 +1,5 @@
 "use client";
+import Brand from "../Brand";
 
 import { useState } from "react";
 
@@ -58,7 +59,9 @@ export default function VerifyEmailPanel({
       </section>
       <div className="auth-form-side">
         <section className="auth-card" aria-labelledby="verify-email-heading">
-          <strong>LabTrail</strong>
+          <div className="auth-brand brand">
+            <Brand />
+          </div>
           <h1 className="h1" id="verify-email-heading">
             Confirm your email
           </h1>

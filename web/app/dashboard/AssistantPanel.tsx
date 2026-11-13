@@ -215,13 +215,33 @@ export default function AssistantPanel({
   );
   return (
     <>
-      <aside className="rail">{!open && panel}</aside>
-      <button className="btn btn-primary ask-fab" onClick={() => setOpen(true)}>
-        <MessageCircle size={20} />
-        {test ? `Ask about ${test}` : "Ask about these results"}
-      </button>
+      <div className="card ask">
+        <button className="ask-input" onClick={() => setOpen(true)}>
+          <MessageCircle size={18} />
+          {test
+            ? `Ask about ${test}`
+            : `Ask about ${person.split(" ")[0]}'s results`}
+        </button>
+        {[
+          "Which results need attention?",
+          "What changed since the last report?",
+          "What should I ask the doctor?",
+        ].map((q) => (
+          <button
+            key={q}
+            className="sugg"
+            onClick={() => {
+              setQuestion(q);
+              setOpen(true);
+            }}
+          >
+            {q}
+          </button>
+        ))}
+      </div>
       <dialog
         className="assistant-dialog"
+        aria-label="Ask about these results"
         ref={dialog}
         onCancel={() => setOpen(false)}
       >

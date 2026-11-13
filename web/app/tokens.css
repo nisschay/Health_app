@@ -1,34 +1,137 @@
-/*
- * Design tokens for LabTrail.
- * Light is the default. Dark applies when the system asks for it, or when
- * <html data-theme="dark"> is set. <html data-theme="light"> forces light.
- *
- * Fonts: --font-body-face and --font-display-face are set by next/font/local
- * in app/layout.tsx (see IMPLEMENTATION_NOTES.md). The fallbacks below keep the
- * page readable before the font files arrive.
- *
- * Contrast figures are WCAG 2.1 ratios, measured against --surface unless noted.
- */
+/* LabTrail v2 tokens. Dark is the default; light is set with data-theme="light" on <html>. */
 
 :root {
+  /* type */
+  --font:
+    "Figtree Variable", "Figtree", system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --fs-display: 30px;
+  --lh-display: 38px; /* the one message at the top */
+  --fs-title: 22px;
+  --lh-title: 28px; /* page title */
+  --fs-section: 17px;
+  --lh-section: 24px; /* section headings */
+  --fs-body: 15px;
+  --lh-body: 22px; /* row names, body copy */
+  --fs-value: 17px; /* the number in a row */
+  --fs-small: 13px;
+  --lh-small: 18px; /* secondary lines, captions */
+  --fs-micro: 12px;
+  --lh-micro: 16px; /* chips, legends */
+  --w-regular: 400;
+  --w-medium: 500;
+  --w-semi: 600;
+
+  /* spacing: 4px base */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* shape */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-pill: 999px;
+
+  /* layout: one container for header and content */
+  --container: 1120px;
+  --gutter: 32px;
+  --header-h: 64px;
+}
+
+/* ---------- dark (default) ---------- */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1114; /* page */
+  --surface: #171b20; /* cards */
+  --surface-2: #1f242b; /* hover, inset, inputs */
+  --border: #2a3038; /* card and row dividers */
+  --border-strong: #3d4550; /* inputs, secondary buttons */
+  --text: #f0f2f5; /* 15.4:1 on surface */
+  --text-2: #b4bcc7; /* 9.0:1 on surface */
+  --text-3: #8d97a3; /* 5.8:1 on surface, smallest text */
+
+  --accent: #62d2ba; /* brand teal: links, focus, primary button fill */
+  --accent-ink: #062720; /* text on accent fill, 8.7:1 */
+  --accent-tint: rgba(98, 210, 186, 0.12);
+
+  --critical: #ff9385; /* 8.0:1 on surface */
+  --critical-tint: rgba(255, 147, 133, 0.11);
+  --critical-line: rgba(255, 147, 133, 0.32);
+  --outside: #f2b861; /* high and low share one hue, 9.7:1 */
+  --outside-tint: rgba(242, 184, 97, 0.12);
+  --ok: #86d3a8; /* in range, 9.8:1 */
+  --ok-tint: rgba(134, 211, 168, 0.1);
+  --none: #8d97a3;
+  --none-tint: rgba(141, 151, 163, 0.14);
+
+  --mark-critical: #ff9385; /* fills: bar markers, trend end points, summary bar */
+  --mark-outside: #f2b861;
+  --mark-ok: #86d3a8;
+  --track: #2a3038; /* range bar track */
+  --band: #3f6b5d; /* the lab's range on bars and trends */
+  --seg-ok: #3f7d66; /* in-range segment of the summary bar */
+  --seg-none: #3d4550;
+  --scrim: rgba(4, 6, 8, 0.62);
+  --shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+}
+
+/* ---------- light ---------- */
+:root[data-theme="light"] {
   color-scheme: light;
+  --bg: #f5f6f4;
+  --surface: #ffffff;
+  --surface-2: #f1f3f2;
+  --border: #e2e6e4;
+  --border-strong: #c5ccc9;
+  --text: #151a1e; /* 17.5:1 on surface */
+  --text-2: #47525c; /* 8.0:1 */
+  --text-3: #5c6873; /* 5.7:1 on surface, 5.3:1 on page */
 
-  /* ---------- Type ---------- */
-  --font-body: var(--font-body-face, "Figtree Variable"), "Figtree", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
-  --font-display: var(--font-display-face, "Newsreader Variable"), "Newsreader", Georgia, "Times New Roman", serif;
+  --accent: #0b7566; /* 5.6:1 on white; also the primary button fill */
+  --accent-ink: #ffffff;
+  --accent-tint: rgba(11, 117, 102, 0.09);
 
-  --text-display: 500 2.125rem/1.18 var(--font-display);   /* 34px  page greeting, login headline */
-  --text-h1: 500 1.75rem/1.2 var(--font-display);          /* 28px  page title (person, study, test) */
-  --text-h2: 650 1.3125rem/1.3 var(--font-body);           /* 21px  section title */
-  --text-h3: 650 1.125rem/1.4 var(--font-body);            /* 18px  card title, row title */
-  --text-body: 400 1.0625rem/1.55 var(--font-body);        /* 17px  default */
+  --critical: #b4321f; /* 6.1:1 */
+  --critical-tint: #fdeeeb;
+  --critical-line: #f3c3ba;
+  --outside: #8a5300; /* 6.3:1 */
+  --outside-tint: #fbf0dc;
+  --ok: #1d7048; /* 6.1:1 */
+  --ok-tint: #e9f5ee;
+  --none: #56626d;
+  --none-tint: #eef0f0;
+
+  --mark-critical: #d9503c;
+  --mark-outside: #e3a034;
+  --mark-ok: #2e9a68;
+  --track: #e4e8e6;
+  --band: #9fd3bf;
+  --seg-ok: #7fc2a8;
+  --seg-none: #c9d0cd;
+  --scrim: rgba(21, 26, 30, 0.38);
+  --shadow: 0 24px 64px rgba(21, 26, 30, 0.18);
+}
+
+:root {
+  --text-display: 500 2.125rem/1.18 var(--font-display);
+  --text-h1: 500 1.75rem/1.2 var(--font-display);
+  --text-h2: 650 1.3125rem/1.3 var(--font-body);
+  --text-h3: 650 1.125rem/1.4 var(--font-body);
+  --text-body: 400 1.0625rem/1.55 var(--font-body);
   --text-body-strong: 600 1.0625rem/1.55 var(--font-body);
-  --text-small: 400 0.9375rem/1.45 var(--font-body);       /* 15px  secondary lines */
-  --text-label: 600 0.875rem/1.3 var(--font-body);         /* 14px  form labels, chips, table headers. Smallest size allowed. */
-  --text-value-lg: 650 2rem/1.1 var(--font-body);          /* 32px  the one big number on a test page */
-  --text-value: 650 1.1875rem/1.3 var(--font-body);        /* 19px  a result value in a row */
-
-  /* ---------- Space (4px grid) ---------- */
+  --text-small: 400 0.9375rem/1.45 var(--font-body);
+  --text-label: 600 0.875rem/1.3 var(--font-body);
+  --text-value-lg: 650 2rem/1.1 var(--font-body);
+  --text-value: 650 1.1875rem/1.3 var(--font-body);
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -38,190 +141,69 @@
   --space-8: 32px;
   --space-10: 40px;
   --space-14: 56px;
-
-  --page-max: 1280px;
-  --page-gutter: 32px;        /* 16px under 720px, see the media query at the end */
   --reading-max: 68ch;
-  --rail-width: 368px;        /* assistant rail on wide screens */
-  --control-height: 48px;     /* buttons and inputs: large, easy targets */
+  --control-height: 48px;
   --control-height-sm: 40px;
-
-  /* ---------- Shape ---------- */
-  --radius-sm: 8px;           /* chips, small controls */
-  --radius-md: 12px;          /* buttons, inputs */
-  --radius-lg: 18px;          /* cards */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
   --radius-pill: 999px;
-
-  /* ---------- Colour: surfaces and ink (light) ---------- */
-  --bg: #F6F1E9;              /* page: warm paper */
-  --surface: #FFFDF9;         /* cards */
-  --surface-sunken: #EFE8DC;  /* wells, table header, hover */
-  --border: #E2D8C8;          /* hairlines, decorative only */
-  --border-strong: #8A7F6E;   /* input and control outlines: 3.9:1 on surface, 3.5:1 on bg */
-
-  --ink: #231F1A;             /* 16.1:1 */
-  --ink-2: #4F483F;           /* 8.9:1  secondary text */
-  --ink-3: #6B6257;           /* 5.9:1 on surface, 5.3:1 on bg, 4.9:1 on sunken. Lowest text colour. */
-
-  /* ---------- Colour: brand ---------- */
-  --primary: #0F5B52;         /* deep neem green. 7.8:1 as text; white on it 8.0:1 */
-  --primary-hover: #0A463F;
-  --primary-soft: #DCEBE6;    /* selected chips, reference band, user chat bubble */
-  --on-primary: #FFFFFF;
-  --link: #0F5B52;
-  --focus: #0F5B52;           /* focus ring colour, always drawn with a 2px gap */
-
-  /* ---------- Colour: result status ----------
-     Each status has: -fg (text and icon on -bg or on surface, all >= 6:1),
-     -bg (chip and banner fill), -solid (chart markers and bars, all >= 3:1).
-     Status is never shown by colour alone: every use also has an icon and a word. */
-  --critical-fg: #A1211B;
-  --critical-bg: #FBE5E1;
-  --critical-solid: #B3261E;
-  --high-fg: #864600;
-  --high-bg: #FAEAD0;
-  --high-solid: #C28400;
-  --low-fg: #2A4A9A;
-  --low-bg: #E3E9F8;
-  --low-solid: #3F64C5;
-  --borderline-fg: #665600;
-  --borderline-bg: #F4EDC6;
-  --borderline-solid: #8F7A00;
-  --normal-fg: #17604D;
-  --normal-bg: #E0EFE9;
-  --normal-solid: #1F7A63;
-  --neutral-fg: #4F483F;
-  --neutral-bg: #EFE8DC;
-
-  /* ---------- Colour: charts ---------- */
-  --chart-line: #4F483F;      /* the trend line itself is ink; the markers carry status */
-  --chart-grid: #E9E1D3;
-  --chart-band: #DCEBE6;      /* the lab's reference range */
-  --chart-band-edge: #9CC5BA;
-
-  /* ---------- Elevation ---------- */
-  --shadow-card: 0 1px 2px rgba(60, 45, 20, 0.05), 0 6px 20px -12px rgba(60, 45, 20, 0.18);
-  --shadow-raised: 0 2px 6px rgba(60, 45, 20, 0.08), 0 18px 40px -16px rgba(60, 45, 20, 0.28);
-  --scrim: rgba(35, 31, 26, 0.45);
-
-  /* ---------- Motion ---------- */
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --dur-fast: 120ms;
   --dur: 200ms;
+  --font: var(--font-body-face), "Figtree Variable", system-ui, sans-serif;
+  --font-body: var(--font);
+  --font-display: var(--font);
+  --text-display: 600 30px/38px var(--font);
+  --text-h1: 600 22px/28px var(--font);
+  --text-h2: 600 17px/24px var(--font);
+  --text-h3: 600 15px/22px var(--font);
+  --text-body: 400 15px/22px var(--font);
+  --text-small: 400 13px/18px var(--font);
+  --text-label: 500 12px/16px var(--font);
+  --text-value: 600 17px/22px var(--font);
+  --page-max: 1184px;
+  --page-gutter: 32px;
+  --radius-lg: 16px;
+  --control-height: 40px;
+  --surface-sunken: var(--surface-2);
+  --ink: var(--text);
+  --ink-2: var(--text-2);
+  --ink-3: var(--text-3);
+  --primary: var(--accent);
+  --primary-hover: var(--accent);
+  --primary-soft: var(--accent-tint);
+  --on-primary: var(--accent-ink);
+  --link: var(--accent);
+  --focus: var(--accent);
+  --chart-line: var(--text-2);
+  --chart-grid: var(--border);
+  --chart-band: var(--band);
+  --chart-band-edge: var(--band);
+  --shadow-card: none;
+  --shadow-raised: var(--shadow);
+  --critical-fg: var(--critical);
+  --critical-bg: var(--critical-tint);
+  --critical-solid: var(--mark-critical);
+  --high-fg: var(--outside);
+  --high-bg: var(--outside-tint);
+  --high-solid: var(--mark-outside);
+  --low-fg: var(--outside);
+  --low-bg: var(--outside-tint);
+  --low-solid: var(--mark-outside);
+  --borderline-fg: var(--outside);
+  --borderline-bg: var(--outside-tint);
+  --borderline-solid: var(--mark-outside);
+  --normal-fg: var(--ok);
+  --normal-bg: var(--ok-tint);
+  --normal-solid: var(--mark-ok);
+  --neutral-fg: var(--none);
+  --neutral-bg: var(--none-tint);
+  --neutral-solid: var(--mark-ok);
 }
-
-/* Dark values, written once and applied in two places below. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-
-    --bg: #141715;
-    --surface: #1C201E;
-    --surface-sunken: #252A27;
-    --border: #353B37;
-    --border-strong: #7C867E;   /* 4.4:1 on surface */
-
-    --ink: #F1EEE7;             /* 14.2:1 */
-    --ink-2: #C9C5BB;           /* 9.6:1 */
-    --ink-3: #A39F95;           /* 6.2:1 on surface, 5.5:1 on sunken */
-
-    --primary: #74CFBF;         /* 9.0:1 as text */
-    --primary-hover: #8FDCCE;
-    --primary-soft: #1D3A35;
-    --on-primary: #06231F;      /* 9.0:1 on primary */
-    --link: #74CFBF;
-    --focus: #74CFBF;
-
-    --critical-fg: #FFA197;
-    --critical-bg: #48201C;
-    --critical-solid: #E5605E;
-    --high-fg: #F3B75C;
-    --high-bg: #3E2E0E;
-    --high-solid: #D29A24;
-    --low-fg: #A3BBFF;
-    --low-bg: #1F2B4C;
-    --low-solid: #6C8EE6;
-    --borderline-fg: #E1D172;
-    --borderline-bg: #37320E;
-    --borderline-solid: #BFAE45;
-    --normal-fg: #86D3BE;
-    --normal-bg: #17342D;
-    --normal-solid: #3BA28A;
-    --neutral-fg: #C9C5BB;
-    --neutral-bg: #252A27;
-
-    --chart-line: #C9C5BB;
-    --chart-grid: #2B312D;
-    --chart-band: #1D3A35;
-    --chart-band-edge: #3B7267;
-
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow-raised: 0 2px 6px rgba(0, 0, 0, 0.4), 0 18px 40px -16px rgba(0, 0, 0, 0.7);
-    --scrim: rgba(0, 0, 0, 0.6);
-  }
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-
-  --bg: #141715;
-  --surface: #1C201E;
-  --surface-sunken: #252A27;
-  --border: #353B37;
-  --border-strong: #7C867E;
-
-  --ink: #F1EEE7;
-  --ink-2: #C9C5BB;
-  --ink-3: #A39F95;
-
-  --primary: #74CFBF;
-  --primary-hover: #8FDCCE;
-  --primary-soft: #1D3A35;
-  --on-primary: #06231F;
-  --link: #74CFBF;
-  --focus: #74CFBF;
-
-  --critical-fg: #FFA197;
-  --critical-bg: #48201C;
-  --critical-solid: #E5605E;
-  --high-fg: #F3B75C;
-  --high-bg: #3E2E0E;
-  --high-solid: #D29A24;
-  --low-fg: #A3BBFF;
-  --low-bg: #1F2B4C;
-  --low-solid: #6C8EE6;
-  --borderline-fg: #E1D172;
-  --borderline-bg: #37320E;
-  --borderline-solid: #BFAE45;
-  --normal-fg: #86D3BE;
-  --normal-bg: #17342D;
-  --normal-solid: #3BA28A;
-  --neutral-fg: #C9C5BB;
-  --neutral-bg: #252A27;
-
-  --chart-line: #C9C5BB;
-  --chart-grid: #2B312D;
-  --chart-band: #1D3A35;
-  --chart-band-edge: #3B7267;
-
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-raised: 0 2px 6px rgba(0, 0, 0, 0.4), 0 18px 40px -16px rgba(0, 0, 0, 0.7);
-  --scrim: rgba(0, 0, 0, 0.6);
-}
-
 @media (max-width: 720px) {
   :root {
     --page-gutter: 16px;
-    --text-display: 500 1.75rem/1.2 var(--font-display);  /* 28px */
-    --text-h1: 500 1.5rem/1.22 var(--font-display);       /* 24px */
-    --text-h2: 650 1.1875rem/1.3 var(--font-body);        /* 19px */
-    --text-value-lg: 650 1.75rem/1.1 var(--font-body);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  :root {
-    --dur-fast: 0ms;
-    --dur: 0ms;
+    --text-display: 600 24px/30px var(--font);
   }
 }

@@ -61,6 +61,7 @@ from .schemas import (
     JobResponse,
     PatientInfo,
     ProfileResponse,
+    RenameStudyRequest,
     RequestUserModel,
     StudySummaryResponse,
     TrendPoint,
@@ -553,6 +554,30 @@ def delete_my_account(user: RequestUser = Depends(get_signed_in_user), db: Sessi
         db.commit()
     delete_sign_in(user.user_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.patch(f"{settings.api_prefix}/studies/{{study_id}}", response_model=StudySummaryResponse)
+def rename_study_endpoint(
+    study_id: UUID,
+    payload: RenameStudyRequest,
+    user: RequestUser = Depends(get_request_user),
+    db: Session = Depends(get_db),
+) -> StudySummaryResponse:
+    owner = _current_account_owner(user, db)
+    study, _ = _owned_study(db, owner, study_id)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Give the study a name.")
+    study.name = name
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        if "uq_studies_profile_name" in str(exc):
+            raise HTTPException(status_code=409, detail="A study with this name already exists for this profile.") from exc
+        raise
+    db.refresh(study)
+    return _study_summary(study, study_report_stats(db, [study.id]).get(study.id, (0, None, None)))
 
 
 @app.delete(f"{settings.api_prefix}/studies/{{study_id}}", status_code=status.HTTP_204_NO_CONTENT)
