@@ -54,7 +54,15 @@ export default function TopBar({
           <Plus size={16} />
           Add reports
         </a>
-        <details className="account-menu">
+        <details
+          className="account-menu"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.currentTarget.open = false;
+              e.currentTarget.querySelector("summary")?.focus();
+            }
+          }}
+        >
           <summary className="account-btn">
             <span className="avatar sm">{buildUserInitials(name, email)}</span>
             <span className="hide-sm">{name.split(" ")[0]}</span>

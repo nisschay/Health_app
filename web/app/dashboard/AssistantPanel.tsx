@@ -33,8 +33,14 @@ export default function AssistantPanel({
     end.current?.scrollIntoView({ block: "nearest" });
   }, [history, busy]);
   useEffect(() => {
-    if (open) dialog.current?.showModal();
-    else dialog.current?.close();
+    const previousOverflow = document.body.style.overflow;
+    if (open) {
+      dialog.current?.showModal();
+      document.body.style.overflow = "hidden";
+    } else dialog.current?.close();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
   }, [open]);
   async function send(q: string) {
     const to = chatTarget(target);
@@ -174,7 +180,11 @@ export default function AssistantPanel({
           rows={2}
           placeholder="Type your question"
           value={question}
-          onChange={(e) => setQuestion(e.target.value)}
+          onChange={(e) => {
+            setQuestion(e.target.value);
+            e.target.style.height = "auto";
+            e.target.style.height = `${Math.min(128, e.target.scrollHeight)}px`;
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -208,7 +218,7 @@ export default function AssistantPanel({
       <aside className="rail">{!open && panel}</aside>
       <button className="btn btn-primary ask-fab" onClick={() => setOpen(true)}>
         <MessageCircle size={20} />
-        Ask about these results
+        {test ? `Ask about ${test}` : "Ask about these results"}
       </button>
       <dialog
         className="assistant-dialog"

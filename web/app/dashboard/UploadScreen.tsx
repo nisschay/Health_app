@@ -552,7 +552,9 @@ export default function UploadScreen({
               >
                 {pending
                   ? "Preparing..."
-                  : `Read ${files.length} ${files.length === 1 ? "report" : "reports"}`}
+                  : files.length
+                    ? `Read ${files.length} ${files.length === 1 ? "report" : "reports"}`
+                    : "Read spreadsheet results"}
               </button>
               {missing && <p className="small muted">{missing}</p>}
             </div>

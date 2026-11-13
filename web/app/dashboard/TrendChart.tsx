@@ -96,7 +96,8 @@ export default function TrendChart({ test }: { test: TestSummary }) {
               dot={({ cx = 0, cy = 0, payload }) => {
                 const color = `var(--${["none", "detected"].includes(payload.status) ? "high" : payload.status}-solid)`;
                 const props = {
-                  fill: color,
+                  fill:
+                    payload.status === "borderline" ? "var(--surface)" : color,
                   stroke: "var(--surface)",
                   strokeWidth: 2,
                 };
@@ -104,6 +105,24 @@ export default function TrendChart({ test }: { test: TestSummary }) {
                   <g
                     key={payload.time}
                     tabIndex={0}
+                    onKeyDown={(event) => {
+                      if (!["ArrowLeft", "ArrowRight"].includes(event.key))
+                        return;
+                      event.preventDefault();
+                      const points = Array.from(
+                        event.currentTarget
+                          .closest("svg")
+                          ?.querySelectorAll<SVGElement>('g[tabindex="0"]') ??
+                          [],
+                      );
+                      const index = points.indexOf(event.currentTarget);
+                      points[
+                        (index +
+                          (event.key === "ArrowRight" ? 1 : -1) +
+                          points.length) %
+                          points.length
+                      ]?.focus();
+                    }}
                     aria-label={`${formatDate(payload.date)}, ${payload.valueText} ${payload.unit}, ${payload.status}`}
                   >
                     <title>
