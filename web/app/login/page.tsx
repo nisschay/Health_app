@@ -26,11 +26,13 @@ export default function LoginPage() {
   const emailInputRef = useRef<HTMLInputElement>(null);
   const passwordInputRef = useRef<HTMLInputElement>(null);
 
+  // While a form submit runs, it redirects itself when done: sign-up must save the name and sync it first,
+  // or the dashboard loads the profile under the email-made placeholder.
   useEffect(() => {
-    if (!loading && user) {
+    if (!loading && user && !isPending) {
       router.replace(pathAfterLogin());
     }
-  }, [user, loading, router]);
+  }, [user, loading, router, isPending]);
 
   // Keep auth fields empty on mount in case browser autofill injects values.
   useEffect(() => {
