@@ -61,7 +61,7 @@ export default function BackendWakeupOverlay() {
   return (
     <div className="backend-wakeup-pill" role="status" aria-live="polite">
       <span className="backend-wakeup-spinner" aria-hidden="true" />
-      <span>{waking === "database" ? "Database is waking up" : "Backend is waking up"}</span>
+      <span>Waking up the server. This can take a minute.</span>
       <button type="button" className="backend-wakeup-dismiss" aria-label="Dismiss" onClick={() => setDismissed(true)}>
         ×
       </button>
